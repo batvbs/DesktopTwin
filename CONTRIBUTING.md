@@ -12,6 +12,26 @@ dotnet build -c Release
 
 编译通过即可提交。**注意：程序清单要求管理员权限，调试时需要以管理员身份启动 IDE 或生成的 exe。**
 
+### 提交前自检
+
+CI 会跑这三步，本地先过一遍可以少一轮往返：
+
+```powershell
+dotnet build DesktopTwin.sln -c Release -warnaserror   # 警告即错误
+powershell -NoProfile -ExecutionPolicy Bypass -File build/verify-xaml.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File build/verify-invariants.ps1
+dotnet test DesktopTwin.sln -c Release --no-build
+```
+
+`verify-xaml.ps1` 校验 XAML 里的绑定路径、资源键、`SymbolRegular` 图标名是否真实存在。
+这类错误编译器不报，只在运行时抛异常或静默失效，所以单独做了一道静态检查。
+改了 ViewModel 属性名或图标名之后务必重跑。
+
+`verify-invariants.ps1` 校验安全常量（任务计划程序的 CLSID、HKCU 的 COM 注册根路径）
+在整个文件里只出现一次。它们被「查覆盖」「报错给用户」「比对 HKLM」三处共用，
+复制一份到别处不会编译失败、也不会让测试变红，但改漏一处就会出现
+「检查的是 A、报给用户的是 B」。新增这类共用常量时，请一并把它加进脚本的检查列表。
+
 ## 代码约定
 
 - C# 文件使用 **UTF-8 无 BOM**（`.editorconfig` 已声明，Windows 上注意不要用 PowerShell 的默认编码写文件）

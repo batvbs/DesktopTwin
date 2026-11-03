@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -22,6 +23,25 @@ public static class ChildSessionProcessLauncher
     /// 临时计划任务的前缀。启动后会被删除，异常退出时可能在系统里残留。
     /// </summary>
     private const string TaskNamePrefix = "DesktopTwin-SessionLaunch-";
+
+    /// <summary>
+    /// 用户级 COM 注册所在的根路径。
+    ///
+    /// 与 <see cref="TaskSchedulerClsid"/> 同理，只写一次。守卫要拼它去查 HKCU，
+    /// 测试要拼它去验证「这个位置真的存在」——如果测试用自己的字面量拼路径，
+    /// 生产把 <c>Classes</c> 写成 <c>Class</c> 时测试照样绿，守卫永远不触发，
+    /// 那种测试比没有测试更糟：它给出虚假的安全感。
+    /// </summary>
+    internal const string UserClassesPrefix = @"Software\Classes";
+
+    /// <summary>
+    /// <c>Schedule.Service</c> 的 COM 类标识。
+    ///
+    /// 只在这里写一次：守卫要拿它去查 HKCU 覆盖，报错要拿它告诉用户查哪个键，
+    /// HKLM 校验要拿它比对 ProgID 指向。三处各写一份字面量的话，
+    /// 改漏一处就会出现「检查的是 A、报给用户的是 B」，而两边都不报错。
+    /// </summary>
+    internal const string TaskSchedulerClsid = "{0f87369f-a4e5-4cfc-bd3e-73e6154572dd}";
 
     private const int TaskActionExecute = 0;
     private const int TaskCreate = 2;
@@ -175,24 +195,43 @@ public static class ChildSessionProcessLauncher
 
     private static string[] EnumerateTaskNames(dynamic rootFolder)
     {
+        object? taskCollection = null;
+        var names = new List<string>();
+
         try
         {
-            dynamic tasks = rootFolder.GetTasks(1);
+            taskCollection = rootFolder.GetTasks(1);
+            dynamic tasks = taskCollection;
             var count = (int)tasks.Count;
-            var names = new string[count];
+
             for (var index = 1; index <= count; index++)
             {
-                dynamic task = tasks.Item(index);
-                names[index - 1] = (string)task.Name;
+                object? taskObject = null;
+                try
+                {
+                    taskObject = tasks.Item(index);
+                    dynamic task = taskObject;
+                    names.Add((string)task.Name);
+                }
+                finally
+                {
+                    // 每个 task 都是独立的 RCW，不清掉会一直堆到 GC 才回收。
+                    ReleaseComObject(taskObject);
+                }
             }
 
-            return names;
+            return [.. names];
         }
         catch (Exception exception) when (exception is COMException
                                               or Microsoft.CSharp.RuntimeBinder.RuntimeBinderException
                                               or InvalidCastException)
         {
-            return [];
+            // 枚举失败时返回已经拿到的部分，调用方只关心名字前缀匹配。
+            return [.. names];
+        }
+        finally
+        {
+            ReleaseComObject(taskCollection);
         }
     }
 
@@ -217,31 +256,24 @@ public static class ChildSessionProcessLauncher
     ///
     /// 读不到注册表时同样拒绝：既然无法确认是否被覆盖，就不该以管理员权限创建该 COM 对象。
     /// 攻击者也可以用拒绝读取权限的方式让本检查抛异常，fail-open 会正好被这一手绕过。
+    ///
+    /// 可见性为 internal 而非 private，是为了让测试能直接调这个真实入口做烟囱验证。
+    /// 判定本身在 <see cref="ThrowIfOverridePresent"/> 里，那个方法是纯函数、不碰注册表。
     /// </summary>
-    private static void EnsureNoUserClassOverride()
+    internal static void EnsureNoUserClassOverride()
     {
-        const string taskSchedulerClsid = "{0f87369f-a4e5-4cfc-bd3e-73e6154572dd}";
+        bool clsidOverride;
+        bool progIdOverride;
 
         try
         {
             using var userClasses = Registry.CurrentUser.OpenSubKey(
-                $@"Software\Classes\CLSID\{taskSchedulerClsid}");
-            if (userClasses is not null)
-            {
-                throw new InvalidOperationException(
-                    @"任务计划程序的 COM 类存在用户级注册覆盖（HKCU\Software\Classes\CLSID\"
-                    + taskSchedulerClsid
-                    + "），可能已被劫持。已中止在分身中启动程序。");
-            }
+                $@"{UserClassesPrefix}\CLSID\{TaskSchedulerClsid}");
+            clsidOverride = userClasses is not null;
 
             using var userProgId = Registry.CurrentUser.OpenSubKey(
-                @"Software\Classes\Schedule.Service");
-            if (userProgId is not null)
-            {
-                throw new InvalidOperationException(
-                    @"任务计划程序的 ProgID 存在用户级注册覆盖（HKCU\Software\Classes\Schedule.Service），"
-                    + "可能已被劫持。已中止在分身中启动程序。");
-            }
+                $@"{UserClassesPrefix}\Schedule.Service");
+            progIdOverride = userProgId is not null;
         }
         catch (Exception exception) when (exception is System.Security.SecurityException
                                               or UnauthorizedAccessException
@@ -251,6 +283,32 @@ public static class ChildSessionProcessLauncher
             throw new InvalidOperationException(
                 "无法读取当前用户的 COM 注册信息，无法确认任务计划程序未被劫持，已中止在分身中启动程序。",
                 exception);
+        }
+
+        ThrowIfOverridePresent(clsidOverride, progIdOverride);
+    }
+
+    /// <summary>
+    /// 根据 HKCU 覆盖情况抛出结论。
+    ///
+    /// 纯函数：只依赖两个布尔值，不读注册表也不写任何东西，所以可以直接单测四种组合。
+    /// 判定逻辑放在这里而不是散在上面的读取代码里，是为了让「读到了什么」和「该不该拒绝」
+    /// 两件事分开——前者依赖环境，后者必须可复现。
+    /// </summary>
+    internal static void ThrowIfOverridePresent(bool clsidOverride, bool progIdOverride)
+    {
+        if (clsidOverride)
+        {
+            throw new InvalidOperationException(
+                $@"任务计划程序的 COM 类存在用户级注册覆盖（HKCU\{UserClassesPrefix}\CLSID\{TaskSchedulerClsid}），"
+                + "可能已被劫持。已中止在分身中启动程序。");
+        }
+
+        if (progIdOverride)
+        {
+            throw new InvalidOperationException(
+                $@"任务计划程序的 ProgID 存在用户级注册覆盖（HKCU\{UserClassesPrefix}\Schedule.Service），"
+                + "可能已被劫持。已中止在分身中启动程序。");
         }
     }
 
@@ -262,9 +320,8 @@ public static class ChildSessionProcessLauncher
     /// </summary>
     private static void EnsureMachineRegistrationIsSystemOwned()
     {
-        const string progIdPath = @"SOFTWARE\Classes\Schedule.Service\CLSID";
-        const string classesRoot = @"SOFTWARE\Classes\CLSID";
-        const string taskSchedulerClsid = "{0f87369f-a4e5-4cfc-bd3e-73e6154572dd}";
+        const string progIdPath = $@"{UserClassesPrefix}\Schedule.Service\CLSID";
+        const string classesRoot = $@"{UserClassesPrefix}\CLSID";
 
         try
         {
@@ -280,7 +337,7 @@ public static class ChildSessionProcessLauncher
                 return;
             }
 
-            if (!string.Equals(clsid, taskSchedulerClsid, StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(clsid, TaskSchedulerClsid, StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidOperationException(
                     "任务计划程序的 ProgID 指向了非预期的 COM 类（"
@@ -297,10 +354,26 @@ public static class ChildSessionProcessLauncher
 
             var systemDirectory = Environment.GetFolderPath(Environment.SpecialFolder.System);
             var expanded = Environment.ExpandEnvironmentVariables(serverPath);
-            var isUnderSystem = Path.GetFullPath(expanded)
-                .StartsWith(
-                    Path.GetFullPath(systemDirectory) + Path.DirectorySeparatorChar,
-                    StringComparison.OrdinalIgnoreCase);
+
+            bool isUnderSystem;
+            try
+            {
+                isUnderSystem = Path.GetFullPath(expanded)
+                    .StartsWith(
+                        Path.GetFullPath(systemDirectory) + Path.DirectorySeparatorChar,
+                        StringComparison.OrdinalIgnoreCase);
+            }
+            catch (Exception exception) when (exception is ArgumentException
+                                                  or NotSupportedException
+                                                  or PathTooLongException)
+            {
+                // 注册表里的路径本身畸形（含非法字符、过长等）。这不是「读不到」，是「读到了垃圾」，
+                // 不能按 fail-open 放行；同时也不能让 .NET 的英文原始消息直接弹给用户。
+                AppLog.Warn($"任务计划程序的 COM 注册路径无法解析：{expanded}", exception);
+                throw new InvalidOperationException(
+                    "任务计划程序的 COM 注册指向了无法解析的路径（" + expanded + "），已中止在分身中启动程序。",
+                    exception);
+            }
 
             if (!isUnderSystem)
             {

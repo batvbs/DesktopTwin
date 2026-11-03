@@ -29,4 +29,9 @@
 		<PackageReference Include="WPF-UI" Version="4.2.0" />
 	</ItemGroup>
 
+	<ItemGroup>
+		<!-- 让测试能直接调用 internal 的安全守卫，而不必把它们提升成公共 API -->
+		<InternalsVisibleTo Include="DesktopTwin.Tests" />
+	</ItemGroup>
+
 </Project>

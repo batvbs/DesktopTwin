@@ -29,6 +29,10 @@ jobs:
       - name: 校验 XAML 绑定与资源键
         run: powershell -NoProfile -ExecutionPolicy Bypass -File build/verify-xaml.ps1
 
+      # 安全常量必须只有一处定义。这类约束编译器管不到，测试也测不出来。
+      - name: 校验常量单一来源
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File build/verify-invariants.ps1
+
       - name: 单元测试
         run: dotnet test DesktopTwin.sln -c Release --no-build --logger "console;verbosity=normal"
 

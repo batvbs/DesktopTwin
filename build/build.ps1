@@ -55,11 +55,20 @@ if (-not $version) {
     $version = "0.0.0"
 }
 
+# 调试符号对最终用户没用，还会暴露源码路径和符号名。
+Get-ChildItem $publishDir -Filter *.pdb -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force
+
 $zipPath = Join-Path $artifactsDir "DesktopTwin-$version-win-x64.zip"
 if (Test-Path $zipPath) {
     Remove-Item $zipPath -Force
 }
 
 Compress-Archive -Path (Join-Path $publishDir "*") -DestinationPath $zipPath
+
+$hash = (Get-FileHash $zipPath -Algorithm SHA256).Hash
+$sizeMb = [math]::Round((Get-Item $zipPath).Length / 1MB, 2)
+
 Write-Host ""
 Write-Host "完成：$zipPath"
+Write-Host "大小：$sizeMb MB"
+Write-Host "SHA256：$hash"
