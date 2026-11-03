@@ -158,6 +158,7 @@ public partial class MainWindowViewModel : ObservableObject
         _childSessionService.ConnectionFailed += OnChildSessionConnectionFailed;
         _childSessionService.SystemShortcutsReconnectCompleted += OnSystemShortcutsReconnectCompleted;
         _childSessionService.AudioReconnectCompleted += OnAudioReconnectCompleted;
+        _childSessionService.AutoLaunchSkipped += OnAutoLaunchSkipped;
         UpdateConnectionStatus();
     }
 
@@ -416,6 +417,23 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private async Task LaunchTargetAsync()
     {
+        var launch = _settings.Current.Launch;
+        if (launch.RunAsAdministrator && !string.IsNullOrWhiteSpace(launch.TargetPath))
+        {
+            // 提权启动等于在本机管理员上下文里执行这个文件，必须让用户看清目标再确认一次。
+            var confirmed = await Dialogs.ConfirmAsync(
+                $"即将以管理员权限在桌面分身中启动：\n\n{launch.TargetPath}"
+                + (string.IsNullOrWhiteSpace(launch.TargetArguments)
+                    ? string.Empty
+                    : $"\n参数：{launch.TargetArguments}")
+                + "\n\n请确认这是你要运行的程序。",
+                "确认以管理员权限启动");
+            if (!confirmed)
+            {
+                return;
+            }
+        }
+
         await ExecuteAsync(_childSessionService.LaunchTargetAsync);
     }
 
@@ -651,10 +669,7 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void OpenLogFolder()
     {
-        Execute(() => Process.Start(new ProcessStartInfo(AppLog.LogDirectory)
-        {
-            UseShellExecute = true
-        }));
+        Execute(() => OpenDirectory(AppLog.LogDirectory));
     }
 
     /// <summary>
@@ -663,10 +678,22 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void OpenSettingsFolder()
     {
-        Execute(() => Process.Start(new ProcessStartInfo(_settings.SettingsDirectory)
+        Execute(() => OpenDirectory(_settings.SettingsDirectory));
+    }
+
+    /// <summary>
+    /// 用资源管理器打开目录。
+    ///
+    /// 这里刻意不直接 ShellExecute 目录路径：本程序以管理员权限运行，
+    /// 对用户可写目录做 ShellExecute 会执行该目录下的 autorun 类处理程序。
+    /// </summary>
+    private static void OpenDirectory(string directory)
+    {
+        Directory.CreateDirectory(directory);
+        _ = Process.Start(new ProcessStartInfo("explorer.exe", $"\"{directory}\"")
         {
-            UseShellExecute = true
-        }));
+            UseShellExecute = false
+        });
     }
 
     /// <summary>
@@ -777,6 +804,21 @@ public partial class MainWindowViewModel : ObservableObject
                         ? "系统组合键现在会发送到桌面分身。"
                         : "系统组合键现在会在本机生效。",
                     InfoBarSeverity.Success);
+            }));
+    }
+
+    private void OnAutoLaunchSkipped(object? sender, EventArgs e)
+    {
+        _ = Application.Current.Dispatcher.BeginInvoke(
+            DispatcherPriority.Normal,
+            new Action(() =>
+            {
+                ShowNotification(
+                    "已跳过自动启动",
+                    "目标程序设置为以管理员权限启动，出于安全考虑不会自动执行。"
+                    + "请用「控制中心 → 立即在分身中启动」手动确认一次。",
+                    InfoBarSeverity.Warning,
+                    TimeSpan.FromSeconds(10));
             }));
     }
 

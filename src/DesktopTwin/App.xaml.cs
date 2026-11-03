@@ -1,4 +1,6 @@
 using System;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
 using DesktopTwin.Services;
@@ -12,9 +14,12 @@ namespace DesktopTwin;
 /// </summary>
 public partial class App : Application
 {
+    private const string SingleInstanceMutexName = @"Global\DesktopTwin.SingleInstance";
+
     private SettingsService? _settings;
     private ChildSessionService? _childSessionService;
     private MainWindow? _mainWindow;
+    private Mutex? _singleInstanceMutex;
 
     /// <inheritdoc />
     protected override void OnStartup(StartupEventArgs e)
@@ -24,7 +29,26 @@ public partial class App : Application
         DispatcherUnhandledException += OnDispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += OnDomainUnhandledException;
 
+        // 只允许一个实例：两个实例同时操作子会话会互相把对方的会话注销掉。
+        _singleInstanceMutex = new Mutex(
+            initiallyOwned: true,
+            SingleInstanceMutexName,
+            out var createdNew);
+        if (!createdNew)
+        {
+            MessageBox.Show(
+                "DesktopTwin 已经在运行了。\n\n请切换到已打开的窗口（可能在任务栏）。",
+                "桌面分身",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            Shutdown();
+            return;
+        }
+
         AppLog.Info($"DesktopTwin 启动，版本 {typeof(App).Assembly.GetName().Version}");
+
+        // 上一次异常退出可能留下临时计划任务，启动时在后台清扫，不阻塞界面。
+        _ = Task.Run(ChildSessionProcessLauncher.SweepOrphanTasks);
 
         _settings = new SettingsService();
         _childSessionService = new ChildSessionService(_settings);
@@ -43,6 +67,11 @@ public partial class App : Application
 
         _childSessionService?.Dispose();
         _settings?.Dispose();
+
+        _singleInstanceMutex?.ReleaseMutex();
+        _singleInstanceMutex?.Dispose();
+        _singleInstanceMutex = null;
+
         base.OnExit(e);
     }
 

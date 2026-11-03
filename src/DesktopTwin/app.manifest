@@ -24,6 +24,13 @@
 
 	<application xmlns="urn:schemas-microsoft-com:asm.v3">
 		<windowsSettings>
+			<!--
+				WPF 的 DPI 感知只能由清单声明（WPF 没有 ApplicationHighDpiMode 这类 API）。
+				本项目是 WPF 为主、WinForms 只用于承载 AxHost，因此以清单为准，
+				并在 csproj 里关闭 WinForms 的 WFO0003 分析器提示。
+			-->
+			<dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+			<dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
 			<longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
 		</windowsSettings>
 	</application>

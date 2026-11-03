@@ -179,6 +179,17 @@ internal static class ChildSessionNativeMethods
     }
 
     /// <summary>
+    /// 仅当当前 Child Session 与预期标识一致时注销会话，并指定是否等待注销完成。
+    /// 退出流程用 <c>wait: false</c>，避免阻塞进程关闭。
+    /// </summary>
+    /// <param name="expectedSessionId">需要匹配的会话标识。</param>
+    /// <param name="wait">是否等待注销操作完成。</param>
+    internal static uint? TerminateChildSession(uint expectedSessionId, bool wait)
+    {
+        return TerminateChildSession((uint?)expectedSessionId, wait);
+    }
+
+    /// <summary>
     /// 查询并注销当前 Child Session，可选校验预期会话标识。
     /// </summary>
     /// <param name="expectedSessionId">需要匹配的会话标识；为空时注销当前 Child Session。</param>

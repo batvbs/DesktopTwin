@@ -70,6 +70,11 @@ public sealed class ChildSessionService : IDisposable
     public event EventHandler? AudioReconnectCompleted;
 
     /// <summary>
+    /// 因为目标程序要求管理员权限，自动启动被跳过，需要用户手动确认。
+    /// </summary>
+    public event EventHandler? AutoLaunchSkipped;
+
+    /// <summary>
     /// 分身窗口实例。窗口在首次显示或首次连接时创建，未创建时为 null。
     /// </summary>
     public MainWindow? Window => _desktopWindow;
@@ -606,7 +611,11 @@ public sealed class ChildSessionService : IDisposable
         try
         {
             // 应用正在退出，注销失败不应阻止主程序关闭；但会话残留会占着第二个桌面，必须尝试。
-            _ = ChildSessionNativeMethods.TerminateChildSession(wait: false);
+            // 带上当前会话号：若期间会话已被重建，宁可残留也不要误注销别人的会话。
+            var sessionId = ChildSessionNativeMethods.TryGetChildSessionId();
+            _ = sessionId is null
+                ? ChildSessionNativeMethods.TerminateChildSession(wait: false)
+                : ChildSessionNativeMethods.TerminateChildSession(sessionId.Value, wait: false);
         }
         catch (Exception exception) when (IsExpectedChildSessionException(exception))
         {
@@ -847,11 +856,21 @@ public sealed class ChildSessionService : IDisposable
                 var launch = _settings.Current.Launch;
                 if (!string.IsNullOrWhiteSpace(launch.TargetPath))
                 {
-                    await LaunchProgramCoreAsync(
-                        launch.TargetPath,
-                        launch.TargetArguments,
-                        launch.RunAsAdministrator,
-                        isAutomatic: true);
+                    if (launch.RunAsAdministrator)
+                    {
+                        // 安全边界：自动启动 + 提权 = 只要有人改了 settings.json 就能在管理员上下文里执行任意程序。
+                        // 因此提权启动永远不自动执行，改为提示用户手动确认一次。
+                        RefreshState("已跳过自动启动：管理员权限启动需要手动确认");
+                        AutoLaunchSkipped?.Invoke(this, EventArgs.Empty);
+                    }
+                    else
+                    {
+                        await LaunchProgramCoreAsync(
+                            launch.TargetPath,
+                            launch.TargetArguments,
+                            runAsAdministrator: false,
+                            isAutomatic: true);
+                    }
                 }
             }
         }
@@ -1068,6 +1087,7 @@ public sealed class ChildSessionService : IDisposable
     {
         return exception is Win32Exception
             or COMException
+            or Microsoft.CSharp.RuntimeBinder.RuntimeBinderException
             or EntryPointNotFoundException
             or TargetInvocationException
             or InvalidCastException

@@ -74,7 +74,9 @@ internal sealed class RdpActiveXHost : AxHost
         var width = Math.Clamp(desktopSize.Width, 200, 8192);
         var height = Math.Clamp(desktopSize.Height, 200, 8192);
 
-        SetComProperty(client, "Server", "localhost");
+        // 显式使用回环 IP 而不是 "localhost"：目标地址不参与任何名称解析，
+        // 避免 hosts 文件或 DNS 配置把连接引到别处。
+        SetComProperty(client, "Server", "127.0.0.1");
         SetComProperty(client, "DesktopWidth", width);
         SetComProperty(client, "DesktopHeight", height);
         SetComProperty(client, "ColorDepth", 32);
