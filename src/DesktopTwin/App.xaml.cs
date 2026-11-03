@@ -20,6 +20,7 @@ public partial class App : Application
     private ChildSessionService? _childSessionService;
     private MainWindow? _mainWindow;
     private Mutex? _singleInstanceMutex;
+    private bool _ownsSingleInstanceMutex;
 
     /// <inheritdoc />
     protected override void OnStartup(StartupEventArgs e)
@@ -30,10 +31,21 @@ public partial class App : Application
         AppDomain.CurrentDomain.UnhandledException += OnDomainUnhandledException;
 
         // 只允许一个实例：两个实例同时操作子会话会互相把对方的会话注销掉。
-        _singleInstanceMutex = new Mutex(
-            initiallyOwned: true,
-            SingleInstanceMutexName,
-            out var createdNew);
+        // 创建失败（例如另一个用户已用 Global\ 建过同名互斥体）时按「已在运行」处理，
+        // 不要让启动过程直接抛异常。
+        var createdNew = false;
+        try
+        {
+            _singleInstanceMutex = new Mutex(
+                initiallyOwned: true,
+                SingleInstanceMutexName,
+                out createdNew);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            createdNew = false;
+        }
+
         if (!createdNew)
         {
             MessageBox.Show(
@@ -44,6 +56,9 @@ public partial class App : Application
             Shutdown();
             return;
         }
+
+        // 只有真正持有互斥体时才记录，OnExit 里据此决定是否 ReleaseMutex。
+        _ownsSingleInstanceMutex = true;
 
         AppLog.Info($"DesktopTwin 启动，版本 {typeof(App).Assembly.GetName().Version}");
 
@@ -68,7 +83,13 @@ public partial class App : Application
         _childSessionService?.Dispose();
         _settings?.Dispose();
 
-        _singleInstanceMutex?.ReleaseMutex();
+        // ReleaseMutex 只能由持有者线程调用，未持有（第二个实例）时调用会抛 ApplicationException。
+        if (_ownsSingleInstanceMutex)
+        {
+            _singleInstanceMutex?.ReleaseMutex();
+            _ownsSingleInstanceMutex = false;
+        }
+
         _singleInstanceMutex?.Dispose();
         _singleInstanceMutex = null;
 

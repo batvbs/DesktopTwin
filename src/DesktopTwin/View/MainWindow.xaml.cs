@@ -49,8 +49,10 @@ public partial class MainWindow : FluentWindow
         InitializeComponent();
         RdpFormsHost.Child = RdpHost;
 
-        // 窗口外观设置在构造后立即应用一次，避免首帧跳动。
-        Topmost = settings.Current.Session.Topmost;
+        // Topmost 由 XAML 里的 OneWay 绑定驱动（MainWindow.xaml:20），
+        // ViewModel 构造时已用设置里的值初始化 IsTopmost。
+        // 这里绝不能再给 Topmost 赋值：对已有绑定的依赖属性调用 SetValue 会清掉绑定，
+        // 置顶按钮从此失效（要保留绑定只能用 SetCurrentValue）。
         Background = new SolidColorBrush(Color.FromRgb(0x20, 0x20, 0x20));
     }
 

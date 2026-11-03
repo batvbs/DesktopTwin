@@ -163,11 +163,6 @@ public partial class MainWindowViewModel : ObservableObject
     }
 
     /// <summary>
-    /// 窗口是否置顶。
-    /// </summary>
-    public bool IsTopmostForWindow => IsTopmost;
-
-    /// <summary>
     /// 置顶按钮提示文本。
     /// </summary>
     public string TopmostButtonToolTip => IsTopmost ? "取消置顶" : "置顶";
@@ -284,7 +279,6 @@ public partial class MainWindowViewModel : ObservableObject
     partial void OnIsTopmostChanged(bool value)
     {
         OnPropertyChanged(nameof(TopmostButtonToolTip));
-        OnPropertyChanged(nameof(IsTopmostForWindow));
     }
 
     partial void OnIsSmallWindowModeChanged(bool value)
@@ -311,6 +305,11 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private async Task StartAsync()
     {
+        if (!await EnsureSystemChangeDisclosedAsync())
+        {
+            return;
+        }
+
         if (_childSessionService.ConnectedState != 1)
         {
             _childSessionService.RefreshEnvironmentCheck();
@@ -355,6 +354,39 @@ public partial class MainWindowViewModel : ObservableObject
             _startRequested = false;
             UpdateConnectionStatus();
         }
+    }
+
+    /// <summary>
+    /// 首次启动前，把「会修改系统级设置」这件事明确告诉用户。
+    ///
+    /// 这一步不能省：`WTSEnableChildSessions(true)` 是持久设置，重启后依然生效，
+    /// 用户有权在第一次动手之前就知道，而不是事后从 README 里读到。
+    /// </summary>
+    /// <returns>用户是否同意继续。</returns>
+    private async Task<bool> EnsureSystemChangeDisclosedAsync()
+    {
+        if (_settings.Current.ChildSessionNoticeAccepted)
+        {
+            return true;
+        }
+
+        var accepted = await Dialogs.ConfirmAsync(
+            "启动桌面分身之前，请先了解它会做什么：\n\n"
+            + "1. 本程序以管理员权限运行，并会打开 Windows 的「子会话（Child Sessions）」功能。\n"
+            + "   这是一个系统级设置，关闭程序后仍然保留，重启电脑也不会自动恢复。\n"
+            + "2. 你可以在「控制中心 → 诊断 → 关闭 Child Sessions（恢复系统原状）」中随时还原。\n"
+            + "3. 桌面分身会创建一个与当前账户相同的第二个桌面。它不是沙盒：\n"
+            + "   分身里能访问的文件和权限，与主桌面完全一样。\n\n"
+            + "是否继续？",
+            "首次使用说明");
+        if (!accepted)
+        {
+            return false;
+        }
+
+        _settings.Current.ChildSessionNoticeAccepted = true;
+        _settings.SaveSoon();
+        return true;
     }
 
     [RelayCommand]
@@ -690,10 +722,21 @@ public partial class MainWindowViewModel : ObservableObject
     private static void OpenDirectory(string directory)
     {
         Directory.CreateDirectory(directory);
-        _ = Process.Start(new ProcessStartInfo("explorer.exe", $"\"{directory}\"")
+
+        // 必须给出 explorer.exe 的完整路径：UseShellExecute=false 走 CreateProcess 的搜索顺序，
+        // 第一站是「本程序所在目录」。本程序以管理员权限运行，如果被解压到 Downloads 这类
+        // 用户可写目录，同目录放一个 explorer.exe 就能在管理员上下文里执行。
+        var explorerPath = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+            "explorer.exe");
+        var startInfo = new ProcessStartInfo(explorerPath)
         {
             UseShellExecute = false
-        });
+        };
+
+        // 用 ArgumentList 而不是手工拼引号，避免目录名含引号时参数被截断。
+        startInfo.ArgumentList.Add(directory);
+        _ = Process.Start(startInfo);
     }
 
     /// <summary>
@@ -815,8 +858,8 @@ public partial class MainWindowViewModel : ObservableObject
             {
                 ShowNotification(
                     "已跳过自动启动",
-                    "目标程序设置为以管理员权限启动，出于安全考虑不会自动执行。"
-                    + "请用「控制中心 → 立即在分身中启动」手动确认一次。",
+                    "自动启动已被跳过：目标程序要求管理员权限，或当前系统（UAC 未启用）无法真正降权。"
+                    + "出于安全考虑不会自动执行，请用「控制中心 → 立即在分身中启动」手动确认一次。",
                     InfoBarSeverity.Warning,
                     TimeSpan.FromSeconds(10));
             }));

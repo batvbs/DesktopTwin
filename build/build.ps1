@@ -1,4 +1,4 @@
-# 本地打包脚本
+﻿# 本地打包脚本
 #
 # 用法：
 #   pwsh build/build.ps1              # 框架依赖，需要目标机装 .NET 10 桌面运行时
@@ -33,12 +33,13 @@ $publishArgs = @(
     "-o", $publishDir,
     "-p:PublishSingleFile=true",
     "-p:IncludeNativeLibrariesForSelfExtract=true",
-    "-p:EnableCompressionInSingleFile=true",
     "--nologo"
 )
 
 if ($SelfContained) {
     $publishArgs += @("--self-contained", "true")
+    # 压缩只在自带运行时时可用，框架依赖模式下 dotnet 会直接报 NETSDK1176
+    $publishArgs += @("-p:EnableCompressionInSingleFile=true")
 }
 else {
     $publishArgs += @("--self-contained", "false")

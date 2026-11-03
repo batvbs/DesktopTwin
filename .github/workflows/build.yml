@@ -25,12 +25,23 @@ jobs:
       - name: 编译（Release，警告视为错误）
         run: dotnet build DesktopTwin.sln -c Release --no-restore -warnaserror
 
+      # 用 Windows PowerShell 而不是 pwsh：脚本在 5.1 上验证过，两个引擎的正则/编码行为不完全一致。
+      - name: 校验 XAML 绑定与资源键
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File build/verify-xaml.ps1
+
+      - name: 单元测试
+        run: dotnet test DesktopTwin.sln -c Release --no-build --logger "console;verbosity=normal"
+
       - name: 发布（框架依赖）
         run: >
           dotnet publish src/DesktopTwin/DesktopTwin.csproj
           -c Release -r win-x64 --self-contained false
           -p:PublishSingleFile=true
           -o artifacts/publish
+
+      # 发布包只给最终用户看，调试符号既没用又占体积，还会暴露源码路径。
+      - name: 剔除调试符号
+        run: Get-ChildItem artifacts/publish -Filter *.pdb -Recurse | Remove-Item -Force
 
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
@@ -54,8 +65,17 @@ jobs:
       - name: 打包
         run: Compress-Archive -Path artifacts/publish/* -DestinationPath DesktopTwin-${{ github.ref_name }}-win-x64.zip
 
+      # 用户下载后可以自行核对，避免中途被替换。
+      - name: 生成校验和
+        run: |
+          $zip = "DesktopTwin-${{ github.ref_name }}-win-x64.zip"
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash
+          "$hash  $zip" | Out-File -FilePath SHA256SUMS.txt -Encoding utf8
+
       - name: 创建 Release
         uses: softprops/action-gh-release@v2
         with:
-          files: DesktopTwin-${{ github.ref_name }}-win-x64.zip
+          files: |
+            DesktopTwin-${{ github.ref_name }}-win-x64.zip
+            SHA256SUMS.txt
           generate_release_notes: true

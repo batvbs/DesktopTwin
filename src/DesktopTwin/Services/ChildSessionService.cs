@@ -763,6 +763,29 @@ public sealed class ChildSessionService : IDisposable
         }
     }
 
+    /// <summary>
+    /// 判断「普通权限运行」是否真的会降权。
+    ///
+    /// 计划任务的 TASK_RUNLEVEL_LUA 只在 UAC 启用时才产生受限令牌；
+    /// UAC 关闭（EnableLUA=0）或使用内置 Administrator 账户时，LUA 等同于最高权限。
+    /// 读不到注册表时按「不降权」处理，宁可多弹一次确认也不要静默提权。
+    /// </summary>
+    private static bool IsLeastPrivilegeEnforced()
+    {
+        try
+        {
+            using var policiesKey = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(
+                @"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System");
+            return policiesKey?.GetValue("EnableLUA") is int enableLua && enableLua != 0;
+        }
+        catch (Exception exception) when (exception is System.Security.SecurityException
+                                              or UnauthorizedAccessException
+                                              or IOException)
+        {
+            return false;
+        }
+    }
+
     private void OnDesktopWindowVisibilityChanged(object sender, DependencyPropertyChangedEventArgs e)
     {
         RefreshState();
@@ -856,11 +879,17 @@ public sealed class ChildSessionService : IDisposable
                 var launch = _settings.Current.Launch;
                 if (!string.IsNullOrWhiteSpace(launch.TargetPath))
                 {
-                    if (launch.RunAsAdministrator)
+                    if (launch.RunAsAdministrator || !IsLeastPrivilegeEnforced())
                     {
                         // 安全边界：自动启动 + 提权 = 只要有人改了 settings.json 就能在管理员上下文里执行任意程序。
                         // 因此提权启动永远不自动执行，改为提示用户手动确认一次。
-                        RefreshState("已跳过自动启动：管理员权限启动需要手动确认");
+                        //
+                        // 注意这里判断的是「实际会不会降权」而不是 RunAsAdministrator 标志：
+                        // UAC 关闭时 TASK_RUNLEVEL_LUA 不降权，RunAsAdministrator=false 的目标程序
+                        // 仍然以高完整性运行，只看标志会被绕过去。
+                        RefreshState(launch.RunAsAdministrator
+                            ? "已跳过自动启动：管理员权限启动需要手动确认"
+                            : "已跳过自动启动：当前系统未启用 UAC，普通权限无法真正降权");
                         AutoLaunchSkipped?.Invoke(this, EventArgs.Empty);
                     }
                     else

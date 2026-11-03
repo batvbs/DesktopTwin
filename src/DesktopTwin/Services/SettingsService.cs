@@ -28,9 +28,12 @@ public sealed class SettingsService : IDisposable
     /// <summary>
     /// 创建设置服务并立即加载已有配置。
     /// </summary>
-    public SettingsService()
+    /// <param name="settingsDirectory">
+    /// 设置目录。默认 <c>%AppData%\DesktopTwin</c>；传入其他路径主要用于测试。
+    /// </param>
+    public SettingsService(string? settingsDirectory = null)
     {
-        SettingsDirectory = Path.Combine(
+        SettingsDirectory = settingsDirectory ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "DesktopTwin");
         SettingsPath = Path.Combine(SettingsDirectory, "settings.json");

@@ -22,6 +22,12 @@ public sealed class AppSettings
     /// 窗口外观相关设置。
     /// </summary>
     public WindowSettings Window { get; set; } = new();
+
+    /// <summary>
+    /// 用户是否已确认过「本程序会修改系统级 Child Sessions 开关」的首次运行提示。
+    /// 未确认前不会真正启动分身，避免用户在不了解后果的情况下改动系统设置。
+    /// </summary>
+    public bool ChildSessionNoticeAccepted { get; set; }
 }
 
 /// <summary>

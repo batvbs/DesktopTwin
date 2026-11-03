@@ -13,7 +13,6 @@
             <!-- ===== 全局 Converter ===== -->
             <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter" />
             <converters:BooleanToVisibilityRevertConverter x:Key="BooleanToVisibilityRevertConverter" />
-            <converters:InverseBooleanConverter x:Key="InverseBooleanConverter" />
         </ResourceDictionary>
     </Application.Resources>
 </Application>

@@ -114,6 +114,11 @@ public static class ChildSessionProcessLauncher
         object? rootFolderObject = null;
         try
         {
+            // 清扫同样会 CoCreateInstance("Schedule.Service")，而且是在启动时立刻执行，
+            // 不校验就等于给了一条不经过 LaunchWithTemporaryTask 的劫持通道。
+            // 这里只查 HKCU（fail-closed）；HKLM 那层是兜底，读不到也没必要阻止清扫。
+            EnsureNoUserClassOverride();
+
             var schedulerType = Type.GetTypeFromProgID("Schedule.Service");
             if (schedulerType is null)
             {
@@ -148,6 +153,12 @@ public static class ChildSessionProcessLauncher
                     AppLog.Warn($"清理残留计划任务 {taskName} 失败。", exception);
                 }
             }
+        }
+        catch (InvalidOperationException exception)
+        {
+            // 守卫判定不可信（或注册表读不到）。清扫只是清理垃圾，没必要因此让程序起不来，
+            // 但要留下记录：真正启动程序时同一个守卫会再次拦下。
+            AppLog.Warn("跳过残留计划任务清扫：COM 注册未通过校验。", exception);
         }
         catch (Exception exception) when (exception is COMException
                                               or Microsoft.CSharp.RuntimeBinder.RuntimeBinderException
@@ -186,16 +197,74 @@ public static class ChildSessionProcessLauncher
     }
 
     /// <summary>
-    /// 确认 <c>Schedule.Service</c> 的 COM 注册指向系统目录里的 DLL。
+    /// 在创建 <c>Schedule.Service</c> 的 COM 对象之前校验注册表，避免被本地提权。
     ///
-    /// 这里只用 HKLM 注册表解析 CLSID，不使用 <see cref="Type.GetTypeFromProgID(string)"/> 的解析结果，
-    /// 目的是发现「COM 劫持」——若某处把 Schedule.Service 的 CLSID 指向了用户可写目录，
-    /// 本程序就会以管理员权限加载并执行那个 DLL。
+    /// 本程序以管理员权限运行，一旦 <c>CoCreateInstance</c> 被引到攻击者的 DLL，
+    /// 那个 DLL 就会在管理员上下文里加载。检查分两层，两层的失败策略刻意不同：
+    /// 1. HKCU 覆盖检查 fail-closed。CoCreateInstance 解析 CLSID 时 HKCU 优先于 HKLM，
+    ///    而 HKCU 是普通权限进程就能写的——这是唯一现实的劫持入口，读不到也必须拒绝。
+    /// 2. HKLM 注册检查 fail-open。改 HKLM 已经需要管理员权限，这一层只做兜底；
+    ///    读不到时放行并记日志，避免策略收紧的机器上功能整体不可用。
     /// </summary>
     private static void EnsureTaskSchedulerIsTrusted()
     {
+        EnsureNoUserClassOverride();
+        EnsureMachineRegistrationIsSystemOwned();
+    }
+
+    /// <summary>
+    /// 拒绝 HKCU 下对 <c>Schedule.Service</c> 的 COM 注册覆盖。
+    ///
+    /// 读不到注册表时同样拒绝：既然无法确认是否被覆盖，就不该以管理员权限创建该 COM 对象。
+    /// 攻击者也可以用拒绝读取权限的方式让本检查抛异常，fail-open 会正好被这一手绕过。
+    /// </summary>
+    private static void EnsureNoUserClassOverride()
+    {
+        const string taskSchedulerClsid = "{0f87369f-a4e5-4cfc-bd3e-73e6154572dd}";
+
+        try
+        {
+            using var userClasses = Registry.CurrentUser.OpenSubKey(
+                $@"Software\Classes\CLSID\{taskSchedulerClsid}");
+            if (userClasses is not null)
+            {
+                throw new InvalidOperationException(
+                    @"任务计划程序的 COM 类存在用户级注册覆盖（HKCU\Software\Classes\CLSID\"
+                    + taskSchedulerClsid
+                    + "），可能已被劫持。已中止在分身中启动程序。");
+            }
+
+            using var userProgId = Registry.CurrentUser.OpenSubKey(
+                @"Software\Classes\Schedule.Service");
+            if (userProgId is not null)
+            {
+                throw new InvalidOperationException(
+                    @"任务计划程序的 ProgID 存在用户级注册覆盖（HKCU\Software\Classes\Schedule.Service），"
+                    + "可能已被劫持。已中止在分身中启动程序。");
+            }
+        }
+        catch (Exception exception) when (exception is System.Security.SecurityException
+                                              or UnauthorizedAccessException
+                                              or IOException)
+        {
+            AppLog.Warn("无法读取 HKCU 的 COM 注册，按「可能已被覆盖」处理。", exception);
+            throw new InvalidOperationException(
+                "无法读取当前用户的 COM 注册信息，无法确认任务计划程序未被劫持，已中止在分身中启动程序。",
+                exception);
+        }
+    }
+
+    /// <summary>
+    /// 校验 HKLM 下 <c>Schedule.Service</c> 的 ProgID/CLSID 指向系统目录里的模块。
+    ///
+    /// 这一层挡不住普通用户（改 HKLM 已需管理员），只用于发现被管理员级工具改写过的注册。
+    /// 注册表读不到时放行，但留日志，便于排查「功能在策略收紧的机器上不可用」这类问题。
+    /// </summary>
+    private static void EnsureMachineRegistrationIsSystemOwned()
+    {
         const string progIdPath = @"SOFTWARE\Classes\Schedule.Service\CLSID";
         const string classesRoot = @"SOFTWARE\Classes\CLSID";
+        const string taskSchedulerClsid = "{0f87369f-a4e5-4cfc-bd3e-73e6154572dd}";
 
         try
         {
@@ -209,6 +278,14 @@ public static class ChildSessionProcessLauncher
             {
                 // 读不到就交给后续 COM 调用报错，不在这里拦死。
                 return;
+            }
+
+            if (!string.Equals(clsid, taskSchedulerClsid, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    "任务计划程序的 ProgID 指向了非预期的 COM 类（"
+                    + clsid
+                    + "），可能已被劫持。已中止在分身中启动程序。");
             }
 
             using var clsidKey = localMachine.OpenSubKey($@"{classesRoot}\{clsid}\InprocServer32");
@@ -237,7 +314,7 @@ public static class ChildSessionProcessLauncher
                                               or UnauthorizedAccessException
                                               or IOException)
         {
-            // 读注册表失败时不做判定，交给后续 COM 调用。
+            AppLog.Warn("无法读取 HKLM 的任务计划程序注册信息，跳过该层校验。", exception);
         }
     }
 
