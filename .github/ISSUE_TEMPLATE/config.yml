@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 使用与排查说明
+    url: https://github.com/OWNER/desktop-twin/blob/main/docs/troubleshooting.md
+    about: 连接失败、密码不对、鼠标不能转视角等问题，先看这里
+  - name: 讨论区
+    url: https://github.com/OWNER/desktop-twin/discussions
+    about: 经验分享、环境兼容性反馈

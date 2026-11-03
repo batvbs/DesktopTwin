@@ -1,0 +1,38 @@
+## 构建产物
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+publish/
+artifacts/
+
+## Visual Studio / Rider
+.vs/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.DotSettings.user
+
+## 测试与覆盖率
+[Tt]est[Rr]esult*/
+coverage*.json
+coverage*.xml
+*.coverage
+*.coveragexml
+
+## 打包
+*.nupkg
+*.snupkg
+*.zip
+
+## 系统
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+## 本地临时文件
+*.tmp
+*.bak
+*.orig

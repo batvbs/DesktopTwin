@@ -1,0 +1,69 @@
+name: 问题反馈
+description: 启动失败、连不上、画面异常等
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        这个功能完全建立在 Windows 的 RDP / 子会话能力之上，**「在我这台机器上不行」不等于「程序有 bug」**。
+        提交前请先过一遍 [排查手册](https://github.com/OWNER/desktop-twin/blob/main/docs/troubleshooting.md)。
+
+  - type: textarea
+    id: symptom
+    attributes:
+      label: 现象
+      description: 你做了什么、期望什么、实际发生了什么
+      placeholder: 点击「启动」后停在「正在连接桌面分身」，约 60 秒后提示连接超时。
+    validations:
+      required: true
+
+  - type: textarea
+    id: snapshot
+    attributes:
+      label: 环境信息
+      description: 请粘贴「控制中心 → 诊断 → 复制环境信息」的内容
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: 日志
+      description: 粘贴 `%AppData%\DesktopTwin\logs\` 里对应时间段的日志（至少包含失败前 20 行）
+      render: text
+    validations:
+      required: true
+
+  - type: dropdown
+    id: windows
+    attributes:
+      label: Windows 版本
+      options:
+        - Windows 11 专业版 / 企业版 / 教育版
+        - Windows 11 家庭版
+        - Windows 10 专业版 / 企业版 / 教育版
+        - Windows 10 家庭版
+        - 其他（请在现象里说明）
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: tried
+    attributes:
+      label: 已经试过
+      options:
+        - label: 重启过程序
+        - label: 重启过系统
+        - label: 确认没有安装 RDP Wrapper
+        - label: 确认账户有密码，且已关闭「仅允许 Windows Hello 登录」
+        - label: 确认系统不是精简版 / 优化版
+
+  - type: input
+    id: version
+    attributes:
+      label: DesktopTwin 版本
+      placeholder: 0.1.0
+    validations:
+      required: true

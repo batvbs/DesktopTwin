@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+	<PropertyGroup>
+		<OutputType>WinExe</OutputType>
+		<TargetFramework>net10.0-windows</TargetFramework>
+		<RootNamespace>DesktopTwin</RootNamespace>
+		<AssemblyName>DesktopTwin</AssemblyName>
+		<UseWPF>true</UseWPF>
+		<UseWindowsForms>true</UseWindowsForms>
+		<Nullable>enable</Nullable>
+		<LangVersion>14.0</LangVersion>
+		<ImplicitUsings>disable</ImplicitUsings>
+		<ApplicationManifest>app.manifest</ApplicationManifest>
+		<!-- WPF 与 WinForms 混用，DPI 感知必须由同一处声明，避免两份清单冲突 -->
+		<ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+		<Version>0.1.0</Version>
+		<Product>DesktopTwin 桌面分身</Product>
+		<Description>把 Windows 自带的第二个桌面会话（RDP Child Session）变成桌面上的一个窗口。</Description>
+		<Company>DesktopTwin contributors</Company>
+		<Copyright>Copyright (C) 2026 DesktopTwin contributors</Copyright>
+		<IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+		<SatelliteResourceLanguages>en;zh-Hans</SatelliteResourceLanguages>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+		<PackageReference Include="Microsoft.Xaml.Behaviors.Wpf" Version="1.1.135" />
+		<PackageReference Include="WPF-UI" Version="4.2.0" />
+	</ItemGroup>
+
+</Project>
