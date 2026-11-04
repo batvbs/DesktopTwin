@@ -92,7 +92,7 @@ public partial class MainWindow : FluentWindow
         {
             if (!_childSessionService.HasActiveChildSession())
             {
-                Hide();
+                ExitApplication();
                 return;
             }
 
@@ -112,10 +112,32 @@ public partial class MainWindow : FluentWindow
             {
                 await _childSessionService.LogoffAndHideAsync();
             }
+
+            ExitApplication();
         }
         finally
         {
             _closeRequestInProgress = false;
         }
+    }
+
+    /// <summary>
+    /// 结束进程。
+    ///
+    /// 这里必须是「退出」而不是「隐藏」。本程序没有托盘图标，窗口一旦隐藏就再没有入口叫回来，
+    /// 而单实例互斥体还在手上——用户再次双击只会看到「已经在运行了」，然后对着一个不存在的窗口发呆。
+    /// </summary>
+    private void ExitApplication()
+    {
+        // 放行 OnClosing 里的拦截，否则 Shutdown 关闭窗口时又会被当成用户点 X，再次弹确认框。
+        AllowClose = true;
+
+        if (Application.Current is { } application)
+        {
+            application.Shutdown();
+            return;
+        }
+
+        Close();
     }
 }

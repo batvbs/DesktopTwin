@@ -237,6 +237,21 @@ public partial class MainWindowViewModel : ObservableObject
         && _settings.Current.Session.DesktopHeight == 720;
 
     /// <summary>
+    /// 当前分辨率不在预设列表里，也就是用户自定义的尺寸。
+    /// </summary>
+    public bool IsCustomResolutionSelected =>
+        !IsDefaultResolutionSelected
+        && !IsQuadHdResolutionSelected
+        && !IsHdPlusResolutionSelected
+        && !IsHdResolutionSelected;
+
+    /// <summary>
+    /// 当前分辨率的显示文本，形如 <c>1920 × 1080</c>。
+    /// </summary>
+    public string CurrentResolutionText =>
+        $"{_settings.Current.Session.DesktopWidth} × {_settings.Current.Session.DesktopHeight}";
+
+    /// <summary>
     /// 断开 RDP 并注销分身会话，用于关闭窗口前的确认流程。
     /// </summary>
     public async Task LogoffAndHideAsync()
@@ -511,10 +526,37 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
+        NotifyResolutionChanged();
+    }
+
+    /// <summary>
+    /// 打开对话框输入自定义分辨率。
+    /// </summary>
+    [RelayCommand]
+    private void CustomResolution()
+    {
+        var session = _settings.Current.Session;
+        if (ResolutionDialog.Show(session.DesktopWidth, session.DesktopHeight) is not { } size)
+        {
+            return;
+        }
+
+        if (!Execute(() => _childSessionService.SetDesktopSize(size.Width, size.Height)))
+        {
+            return;
+        }
+
+        NotifyResolutionChanged();
+    }
+
+    private void NotifyResolutionChanged()
+    {
         OnPropertyChanged(nameof(IsDefaultResolutionSelected));
         OnPropertyChanged(nameof(IsQuadHdResolutionSelected));
         OnPropertyChanged(nameof(IsHdPlusResolutionSelected));
         OnPropertyChanged(nameof(IsHdResolutionSelected));
+        OnPropertyChanged(nameof(IsCustomResolutionSelected));
+        OnPropertyChanged(nameof(CurrentResolutionText));
     }
 
     [RelayCommand]

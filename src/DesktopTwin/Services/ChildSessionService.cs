@@ -320,7 +320,7 @@ public sealed class ChildSessionService : IDisposable
     }
 
     /// <summary>
-    /// 切换画面自适应 / 1:1。
+    /// 切换画面「自适应缩放 / 1:1」。
     /// </summary>
     public void SetSmartSizing(bool enabled)
     {
@@ -328,7 +328,7 @@ public sealed class ChildSessionService : IDisposable
         EnsureDesktopWindow().RdpHost.SetSmartSizing(enabled);
         _settings.Current.Session.SmartSizing = enabled;
         _settings.SaveSoon();
-        RefreshState(enabled ? "窗口显示模式已切换为自适应" : "窗口显示模式已切换为 1:1");
+        RefreshState(enabled ? "窗口显示模式已切换为自适应缩放" : "窗口显示模式已切换为 1:1");
     }
 
     /// <summary>
@@ -419,9 +419,12 @@ public sealed class ChildSessionService : IDisposable
     public void SetDesktopSize(int width, int height)
     {
         ThrowIfDisposed();
-        if (width <= 0 || height <= 0)
+        if (!SessionSettings.IsValidDesktopSize(width, height))
         {
-            throw new ArgumentOutOfRangeException(nameof(width), "分辨率必须是正整数。");
+            throw new ArgumentOutOfRangeException(
+                nameof(width),
+                $"分辨率必须在 {SessionSettings.MinDesktopWidth}×{SessionSettings.MinDesktopHeight}"
+                + $" 到 {SessionSettings.MaxDesktopWidth}×{SessionSettings.MaxDesktopHeight} 之间。");
         }
 
         _settings.Current.Session.DesktopWidth = width;

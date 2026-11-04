@@ -9,6 +9,16 @@ namespace DesktopTwin.Models;
 public sealed class AppSettings
 {
     /// <summary>
+    /// 当前设置文件的结构版本。新增需要迁移的默认值变更时递增。
+    /// </summary>
+    public const int CurrentVersion = 1;
+
+    /// <summary>
+    /// 设置文件写入时的结构版本。旧文件里没有这一项，反序列化后为 0。
+    /// </summary>
+    public int SettingsVersion { get; set; }
+
+    /// <summary>
     /// 桌面分身会话相关设置。
     /// </summary>
     public SessionSettings Session { get; set; } = new();
@@ -36,6 +46,33 @@ public sealed class AppSettings
 public sealed class SessionSettings
 {
     /// <summary>
+    /// 分身桌面宽度的下限。再小的话 Windows 桌面和登录界面会显示不全。
+    /// </summary>
+    public const int MinDesktopWidth = 640;
+
+    /// <summary>
+    /// 分身桌面宽度的上限。8K 已经远超 RDP 的实用范围，再大只会拖慢编码。
+    /// </summary>
+    public const int MaxDesktopWidth = 7680;
+
+    /// <summary>
+    /// 分身桌面高度的下限。
+    /// </summary>
+    public const int MinDesktopHeight = 480;
+
+    /// <summary>
+    /// 分身桌面高度的上限。
+    /// </summary>
+    public const int MaxDesktopHeight = 4320;
+
+    /// <summary>
+    /// 判断一组尺寸是否在允许范围内。
+    /// </summary>
+    public static bool IsValidDesktopSize(int width, int height) =>
+        width >= MinDesktopWidth && width <= MaxDesktopWidth
+        && height >= MinDesktopHeight && height <= MaxDesktopHeight;
+
+    /// <summary>
     /// 分身桌面的逻辑分辨率宽度，默认 1920。
     /// </summary>
     public int DesktopWidth { get; set; } = 1920;
@@ -47,8 +84,11 @@ public sealed class SessionSettings
 
     /// <summary>
     /// RDP 画面是否自适应窗口。关闭时按 1:1 像素显示。
+    ///
+    /// 默认关闭（1:1）：分身桌面通常是 1920×1080，而窗口大小取决于屏幕与用户拖动，
+    /// 自适应缩放会把画面重采样，文字发虚。1:1 是清晰的那一档，需要铺满时再手动切。
     /// </summary>
-    public bool SmartSizing { get; set; } = true;
+    public bool SmartSizing { get; set; }
 
     /// <summary>
     /// 拖动窗口边缘时是否保持 16:9 宽高比。

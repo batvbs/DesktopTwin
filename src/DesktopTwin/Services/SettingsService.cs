@@ -24,6 +24,7 @@ public sealed class SettingsService : IDisposable
     private readonly Timer _saveTimer;
     private bool _savePending;
     private bool _disposed;
+    private bool _migrated;
 
     /// <summary>
     /// 创建设置服务并立即加载已有配置。
@@ -39,6 +40,12 @@ public sealed class SettingsService : IDisposable
         SettingsPath = Path.Combine(SettingsDirectory, "settings.json");
         _saveTimer = new Timer(OnSaveTimerElapsed, state: null, Timeout.Infinite, Timeout.Infinite);
         Current = Load();
+
+        // 迁移过就立刻写回，否则每次启动都要再迁一遍，而且用户看到的是被临时改过的值。
+        if (_migrated)
+        {
+            SaveSoon();
+        }
     }
 
     /// <summary>
@@ -130,20 +137,50 @@ public sealed class SettingsService : IDisposable
         {
             if (!File.Exists(SettingsPath))
             {
-                return new AppSettings();
+                return new AppSettings { SettingsVersion = AppSettings.CurrentVersion };
             }
 
             var json = File.ReadAllText(SettingsPath);
-            var settings = JsonSerializer.Deserialize<AppSettings>(json, SerializerOptions);
-            return settings ?? new AppSettings();
+            var settings = JsonSerializer.Deserialize<AppSettings>(json, SerializerOptions)
+                ?? new AppSettings { SettingsVersion = AppSettings.CurrentVersion };
+
+            _migrated = Migrate(settings);
+            return settings;
         }
         catch (Exception exception) when (exception is IOException
                                               or UnauthorizedAccessException
                                               or JsonException)
         {
             AppLog.Warn($"读取设置失败，已回退到默认设置：{SettingsPath}", exception);
-            return new AppSettings();
+            return new AppSettings { SettingsVersion = AppSettings.CurrentVersion };
         }
+    }
+
+    /// <summary>
+    /// 把旧版本写下的设置迁移到当前默认值。
+    ///
+    /// 默认值一改，旧文件里存的仍是按旧默认值记下的值——用户升级后看不到任何变化。
+    /// 所以凡是「改默认值」都要在这里补一条迁移，并把 <see cref="AppSettings.CurrentVersion"/> 加一。
+    /// </summary>
+    /// <returns>有改动时返回 true，调用方据此立刻写回。</returns>
+    private static bool Migrate(AppSettings settings)
+    {
+        if (settings.SettingsVersion >= AppSettings.CurrentVersion)
+        {
+            return false;
+        }
+
+        // JSON 里显式写了 "Session": null 时反序列化结果是 null，后面取值会炸。
+        settings.Session ??= new SessionSettings();
+
+        // v1：画面显示比例默认值由「自适应缩放」改为 1:1。
+        if (settings.SettingsVersion < 1)
+        {
+            settings.Session.SmartSizing = false;
+        }
+
+        settings.SettingsVersion = AppSettings.CurrentVersion;
+        return true;
     }
 
     private void WriteToDisk()

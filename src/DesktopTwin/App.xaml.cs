@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -16,11 +17,18 @@ public partial class App : Application
 {
     private const string SingleInstanceMutexName = @"Global\DesktopTwin.SingleInstance";
 
+    /// <summary>
+    /// 第二个实例用它通知已运行的实例「把窗口叫到前台」。
+    /// </summary>
+    private const string ActivateEventName = @"Global\DesktopTwin.Activate";
+
     private SettingsService? _settings;
     private ChildSessionService? _childSessionService;
     private MainWindow? _mainWindow;
     private Mutex? _singleInstanceMutex;
     private bool _ownsSingleInstanceMutex;
+    private EventWaitHandle? _activateEvent;
+    private RegisteredWaitHandle? _activateRegistration;
 
     /// <inheritdoc />
     protected override void OnStartup(StartupEventArgs e)
@@ -48,6 +56,14 @@ public partial class App : Application
 
         if (!createdNew)
         {
+            // 已有实例在跑。正常情况下它只是被隐藏了，通知它把窗口显示出来即可——
+            // 这才是「再次双击图标」应有的行为，而不是弹一句「已经在运行了」让用户自己去找。
+            if (TrySignalExistingInstance())
+            {
+                Shutdown();
+                return;
+            }
+
             MessageBox.Show(
                 "DesktopTwin 已经在运行了。\n\n请切换到已打开的窗口（可能在任务栏）。",
                 "桌面分身",
@@ -61,6 +77,8 @@ public partial class App : Application
         _ownsSingleInstanceMutex = true;
 
         AppLog.Info($"DesktopTwin 启动，版本 {typeof(App).Assembly.GetName().Version}");
+
+        StartActivationListener();
 
         // 上一次异常退出可能留下临时计划任务，启动时在后台清扫，不阻塞界面。
         _ = Task.Run(ChildSessionProcessLauncher.SweepOrphanTasks);
@@ -93,7 +111,120 @@ public partial class App : Application
         _singleInstanceMutex?.Dispose();
         _singleInstanceMutex = null;
 
+        // 先注销等待再释放句柄，否则回调可能在已释放的句柄上触发。
+        _activateRegistration?.Unregister(waitObject: null);
+        _activateRegistration = null;
+        _activateEvent?.Dispose();
+        _activateEvent = null;
+
         base.OnExit(e);
+    }
+
+    /// <summary>
+    /// 创建「显示窗口」通知事件，并在后台等待它被第二个实例触发。
+    /// </summary>
+    private void StartActivationListener()
+    {
+        try
+        {
+            _activateEvent = new EventWaitHandle(
+                initialState: false,
+                EventResetMode.AutoReset,
+                ActivateEventName);
+
+            _activateRegistration = ThreadPool.RegisterWaitForSingleObject(
+                waitObject: _activateEvent,
+                callBack: static (state, _) =>
+                {
+                    if (state is App app)
+                    {
+                        app.BringToForeground();
+                    }
+                },
+                state: this,
+                millisecondsTimeOutInterval: Timeout.Infinite,
+                executeOnlyOnce: false);
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException
+                                              or IOException
+                                              or NotSupportedException)
+        {
+            // 通知不到也不影响主流程，最坏情况是第二个实例退化成弹提示框。
+            AppLog.Warn("无法创建单实例通知事件，再次启动时将只提示而不唤起窗口。", exception);
+            _activateEvent?.Dispose();
+            _activateEvent = null;
+        }
+    }
+
+    /// <summary>
+    /// 通知已运行的实例把窗口叫到前台。
+    /// </summary>
+    /// <returns>成功通知到返回 true。</returns>
+    private static bool TrySignalExistingInstance()
+    {
+        try
+        {
+            using var activateEvent = EventWaitHandle.OpenExisting(ActivateEventName);
+            activateEvent.Set();
+            return true;
+        }
+        catch (Exception exception) when (exception is WaitHandleCannotBeOpenedException
+                                              or UnauthorizedAccessException
+                                              or IOException)
+        {
+            AppLog.Warn("无法通知已运行的实例显示窗口。", exception);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 把主窗口从隐藏/最小化状态恢复到前台。
+    /// </summary>
+    private void BringToForeground()
+    {
+        if (Dispatcher.HasShutdownStarted)
+        {
+            return;
+        }
+
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (_childSessionService is null)
+            {
+                return;
+            }
+
+            // 窗口可能已被隐藏（「隐藏」按钮），ShowWindow 会重新显示它。
+            _childSessionService.ShowWindow();
+
+            var window = _childSessionService.Window;
+            if (window is null)
+            {
+                return;
+            }
+
+            if (window.WindowState == WindowState.Minimized)
+            {
+                window.WindowState = WindowState.Normal;
+            }
+
+            window.Activate();
+            ForceForeground(window);
+        }));
+    }
+
+    /// <summary>
+    /// 把窗口顶到最前面。
+    ///
+    /// 系统有前台锁，<see cref="Window.Activate"/> 在窗口被别的程序挡住时经常无效，
+    /// 「临时置顶再还原」是常用解法。这里必须用 <c>SetCurrentValue</c>：
+    /// 直接给 <c>Topmost</c> 赋值会清掉 XAML 里的 OneWay 绑定，置顶按钮从此失效（这个坑踩过一次）。
+    /// </summary>
+    private static void ForceForeground(Window window)
+    {
+        var original = window.Topmost;
+        window.SetCurrentValue(Window.TopmostProperty, true);
+        window.SetCurrentValue(Window.TopmostProperty, original);
     }
 
     private static void OnDispatcherUnhandledException(

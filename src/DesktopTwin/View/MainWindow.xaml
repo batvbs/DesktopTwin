@@ -174,10 +174,16 @@
                                                  Header="1280 × 720"
                                                  IsCheckable="True"
                                                  IsChecked="{Binding IsHdResolutionSelected, Mode=OneWay}" />
+                                    <Separator />
+                                    <ui:MenuItem Command="{Binding CustomResolutionCommand}"
+                                                 Header="自定义…"
+                                                 IsCheckable="True"
+                                                 IsChecked="{Binding IsCustomResolutionSelected, Mode=OneWay}"
+                                                 ToolTip="输入任意宽高。当前分辨率会在状态栏显示。" />
                                 </ui:MenuItem>
                                 <ui:MenuItem Header="窗口">
                                     <ui:MenuItem Command="{Binding UseAdaptiveCommand}"
-                                                 Header="自适应"
+                                                 Header="自适应缩放"
                                                  IsCheckable="True"
                                                  IsChecked="{Binding IsAdaptive, Mode=OneWay}" />
                                     <ui:MenuItem Command="{Binding UseOneToOneCommand}"
