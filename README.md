@@ -59,10 +59,21 @@ DesktopTwin 做的事情就是：
 
 关闭窗口会**注销分身会话**，里面所有程序都会被关闭，请提前保存。
 
-> **校验下载文件**：每个 Release 都附带 `SHA256SUMS.txt`，解压前先核对
-> `Get-FileHash .\DesktopTwin-<版本>-win-x64.zip -Algorithm SHA256`，一致再运行。
-> 本项目目前**没有代码签名证书**，Windows SmartScreen 会提示「未知发布者」，
-> 这是预期行为——校验哈希比点「仍要运行」更可靠。
+> **下载后先校验，再运行**
+>
+> 每个 Release 都附带 `SHA256SUMS.txt`，解压前先核对：
+>
+> ```powershell
+> Get-FileHash .\DesktopTwin-<版本>-win-x64.zip -Algorithm SHA256
+> ```
+>
+> 本项目**没有代码签名证书**，所以双击 exe 时 Windows 会拦一道：
+> SmartScreen 提示「阻止了无法识别的应用启动」，提权时 UAC 显示「未知发布者」。
+> 这两处都是**声誉判定**，不是病毒检出——未签名的文件无法确认发布者，属预期行为。
+>
+> 判断能不能放行的依据是**哈希一致**，不是提示本身。确认无误后，
+> 先 `Unblock-File` 或右键 zip → 属性 → 解除锁定，再解压，之后启动就不会再弹。
+> 详细说明见 [排查手册 · 启动之前](docs/troubleshooting.md#启动之前)。
 
 ### 从源码构建
 

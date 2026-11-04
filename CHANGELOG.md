@@ -61,7 +61,9 @@
 
 - 分身内提权是否可用取决于环境，失败时需用「以管理员权限启动」入口
 - 无托盘图标，关闭窗口即注销会话
-- 发布包无代码签名，SmartScreen 会提示「未知发布者」；请用 Release 附带的
-  `SHA256SUMS.txt` 校验
+- 发布包无代码签名：SmartScreen 会提示「阻止了无法识别的应用启动」，
+  提权时 UAC 显示「未知发布者」。均为声誉判定而非病毒检出，
+  放行前请用 Release 附带的 `SHA256SUMS.txt` 校验，详见
+  `docs/troubleshooting.md` 的「启动之前」
 - **v0.1.0 未在真实环境中完整跑通连接流程**，仅通过编译、17 项单元测试与
   XAML 静态校验。首次使用请按 `docs/troubleshooting.md` 排查
