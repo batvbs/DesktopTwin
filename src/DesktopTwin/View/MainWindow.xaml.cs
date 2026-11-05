@@ -24,6 +24,16 @@ public partial class MainWindow : FluentWindow
     /// </summary>
     private const double FullscreenBarHotZone = 6;
 
+    /// <summary>
+    /// 通知条在正常模式下距窗口顶端的位置（让开 32px 的标题栏）。
+    /// </summary>
+    private const double NormalNotificationOffset = 32;
+
+    /// <summary>
+    /// 通知条在全屏模式下距屏幕顶端的位置（没有标题栏，贴近一点）。
+    /// </summary>
+    private const double FullscreenNotificationOffset = 8;
+
     private readonly ChildSessionService _childSessionService;
     private readonly SettingsService _settings;
     private bool _closeRequestInProgress;
@@ -38,7 +48,6 @@ public partial class MainWindow : FluentWindow
     private bool _smartSizingBeforeFullscreen;
     private DispatcherTimer? _barAutoHideTimer;
     private DispatcherTimer? _cursorWatchTimer;
-    private DispatcherTimer? _remoteSizeWatchTimer;
     private HwndSource? _windowSource;
 
     /// <summary>
@@ -256,13 +265,14 @@ public partial class MainWindow : FluentWindow
         RdpFormsHost.ClearValue(FrameworkElement.MarginProperty);
         RdpFormsHost.Margin = new Thickness(0);
 
+        // 通知条贴在画面顶端（正常模式下在标题栏下方）。
+        NotificationPopup.VerticalOffset = FullscreenNotificationOffset;
+
         ApplyFullscreenBounds();
 
         UpdatePinButtons();
         ShowFullscreenBar();
         StartCursorWatch();
-        StartRemoteSizeWatch();
-        NotifyResolutionMismatch();
     }
 
     /// <summary>
@@ -277,8 +287,9 @@ public partial class MainWindow : FluentWindow
 
         _isFullscreen = false;
         StopCursorWatch();
-        StopRemoteSizeWatch();
         HideFullscreenBar();
+
+        NotificationPopup.VerticalOffset = NormalNotificationOffset;
 
         _suppressStateChange = true;
         try
@@ -352,6 +363,15 @@ public partial class MainWindow : FluentWindow
             && session.DesktopHeight == monitorHeight;
 
         _childSessionService.SetSmartSizing(!matchesScreen, persist: false);
+
+        if (matchesScreen)
+        {
+            return;
+        }
+
+        // 只有真的退到自适应缩放时才提示模糊——这是唯一会让人察觉画面变差的场景。
+        // 提示走 Popup（独立窗口），所以画在外层桌面、浮在分身画面之上，不会被 RDP 画面盖住。
+        NotifyResolutionMismatch();
     }
 
     private IntPtr OnWindowMessage(
@@ -382,51 +402,8 @@ public partial class MainWindow : FluentWindow
             return;
         }
 
+        // 重新贴合新尺寸；缩放模式与模糊提示都在 UpdateFullscreenScaling 里一并处理。
         ApplyFullscreenBounds();
-        NotifyResolutionMismatch();
-    }
-
-    /// <summary>
-    /// 盯着「分身内部」的分辨率。
-    ///
-    /// 用户可能在分身里自己打开「显示设置」改分辨率——那不会经过我们的菜单，
-    /// 也没有任何事件通知。只能定期读一次 RDP 控件的实际尺寸，
-    /// 发现变了就同步回设置并重新判定缩放模式。
-    ///
-    /// 只在全屏期间轮询：非全屏时窗口布局与缩放都不由我们强制，没有实时响应的必要。
-    /// </summary>
-    private void StartRemoteSizeWatch()
-    {
-        _remoteSizeWatchTimer ??= new DispatcherTimer(DispatcherPriority.Background)
-        {
-            Interval = TimeSpan.FromSeconds(2)
-        };
-
-        _remoteSizeWatchTimer.Tick -= OnRemoteSizeTick;
-        _remoteSizeWatchTimer.Tick += OnRemoteSizeTick;
-        _remoteSizeWatchTimer.Start();
-    }
-
-    private void StopRemoteSizeWatch()
-    {
-        _remoteSizeWatchTimer?.Stop();
-    }
-
-    private void OnRemoteSizeTick(object? sender, EventArgs e)
-    {
-        if (!_isFullscreen)
-        {
-            return;
-        }
-
-        if (_childSessionService.RemoteDesktopSize is not { } size)
-        {
-            return;
-        }
-
-        // 值没变就什么也不做；变了才写设置并触发重新判定
-        // （SyncDesktopSizeFromRemote 会发 DesktopSizeChanged，进而重新算缩放）。
-        _ = _childSessionService.SyncDesktopSizeFromRemote(size.Width, size.Height);
     }
 
     /// <summary>

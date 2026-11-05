@@ -311,14 +311,19 @@
             </ui:TitleBar.TrailingContent>
         </ui:TitleBar>
 
-        <!-- ===== 通知条：从标题栏下方滑出 ===== -->
-        <Popup Width="{Binding ActualWidth, ElementName=RootGrid}"
+        <!-- ===== 通知条 =====
+             挂在根容器上而不是标题栏：全屏时标题栏是 Collapsed，
+             以它为锚点的 Popup 会失去定位基准，提示就飘到看不见的地方。
+             Popup 是独立窗口，所以提示始终画在外层桌面、浮在分身画面之上。 -->
+        <Popup x:Name="NotificationPopup"
+               Width="{Binding ActualWidth, ElementName=RootGrid}"
                AllowsTransparency="True"
                IsOpen="{Binding IsNotificationOpen, Mode=TwoWay}"
-               Placement="Bottom"
-               PlacementTarget="{Binding ElementName=WindowTitleBar}"
+               Placement="Relative"
+               PlacementTarget="{Binding ElementName=RootGrid}"
                PopupAnimation="Fade"
-               StaysOpen="True">
+               StaysOpen="True"
+               VerticalOffset="32">
             <Grid Background="Transparent">
                 <Border MaxWidth="720"
                         Margin="8"
