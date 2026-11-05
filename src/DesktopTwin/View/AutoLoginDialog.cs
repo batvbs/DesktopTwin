@@ -1,3 +1,4 @@
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -40,22 +41,18 @@ internal static class AutoLoginDialog
     /// <param name="userName">自动登录使用的账户名。</param>
     /// <param name="systemAutoLoginEnabled">Windows 自动登录是否已开启。</param>
     /// <param name="systemAutoLoginUser">Windows 自动登录配置的账户。</param>
-    internal static Choice Show(
+    internal static Task<Choice> ShowAsync(
         bool appAutoLoginEnabled,
         bool hasPassword,
         string userName,
         bool systemAutoLoginEnabled,
         string systemAutoLoginUser)
     {
-        var dialog = new FluentWindow
-        {
-            Title = "自动登录设置",
-            Width = 600,
-            SizeToContent = SizeToContent.Height,
-            ResizeMode = ResizeMode.NoResize,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            ShowInTaskbar = false
-        };
+        var completion = new TaskCompletionSource<Choice>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var dialog = Dialogs.CreateWindow("自动登录设置", 600);
+        dialog.SizeToContent = SizeToContent.Height;
 
         var choice = Choice.None;
 
@@ -143,19 +140,27 @@ internal static class AutoLoginDialog
         enableButton.Click += (_, _) =>
         {
             choice = Choice.EnableAppAutoLogin;
-            dialog.DialogResult = true;
+            completion.TrySetResult(choice);
+            dialog.Close();
         };
 
         openButton.Click += (_, _) =>
         {
             choice = Choice.OpenSystemAutoLogin;
-            dialog.DialogResult = true;
+            completion.TrySetResult(choice);
+            dialog.Close();
         };
 
-        closeButton.Click += (_, _) => dialog.DialogResult = false;
+        closeButton.Click += (_, _) =>
+        {
+            completion.TrySetResult(Choice.None);
+            dialog.Close();
+        };
 
-        _ = dialog.ShowDialog();
-        return choice;
+        dialog.Closed += (_, _) => completion.TrySetResult(choice);
+
+        Dialogs.Show(dialog);
+        return completion.Task;
     }
 
     private static Border BuildCard(

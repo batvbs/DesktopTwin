@@ -25,7 +25,7 @@
     <Grid x:Name="RootGrid"
           Background="Black">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
+            <RowDefinition x:Name="TitleRow" Height="Auto" />
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
@@ -245,6 +245,10 @@
                                 </ui:MenuItem>
                                 <Separator />
                                 <ui:MenuItem Header="诊断">
+                                    <ui:MenuItem Command="{Binding OpenDiagnosticsCommand}"
+                                                 Header="诊断与修复…"
+                                                 ToolTip="列出所有可能影响启动的环境问题，可自动修复的直接在面板里修。" />
+                                    <Separator />
                                     <ui:MenuItem Command="{Binding CopyDiagnosticsCommand}"
                                                  Header="复制环境信息"
                                                  Icon="{ui:SymbolIcon Copy24}" />
@@ -489,6 +493,69 @@
                     </ScrollViewer>
                 </Border>
             </Grid>
+
+            <!-- ===== 全屏顶栏 =====
+                 必须用 Popup 承载：分身画面是 WindowsFormsHost 里的独立 HWND，
+                 WPF 元素没法画在它上面（airspace 问题）。Popup 是独立窗口，才能真的浮在画面之上。 -->
+            <Popup x:Name="FullscreenBarPopup"
+                   AllowsTransparency="True"
+                   Placement="Relative"
+                   PlacementTarget="{Binding ElementName=RootGrid}"
+                   PopupAnimation="Fade"
+                   StaysOpen="True">
+                <Border Padding="10,6"
+                        Background="#E61F1F1F"
+                        BorderBrush="#40FFFFFF"
+                        BorderThickness="1"
+                        CornerRadius="8">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Margin="4,0,14,0"
+                                   VerticalAlignment="Center"
+                                   FontWeight="SemiBold"
+                                   Foreground="White"
+                                   Text="桌面分身" />
+                        <ui:Button Width="36"
+                                   Height="30"
+                                   Click="OnFullscreenMinimizeClicked"
+                                   Content="—"
+                                   ToolTip="最小化" />
+                        <ui:Button Width="52"
+                                   Height="30"
+                                   Margin="6,0,0,0"
+                                   Click="OnFullscreenRestoreClicked"
+                                   Content="还原"
+                                   ToolTip="退出全屏，回到窗口模式" />
+                        <ui:Button Width="36"
+                                   Height="30"
+                                   Margin="6,0,0,0"
+                                   Click="OnFullscreenCloseClicked"
+                                   Content="✕"
+                                   ToolTip="关闭" />
+                        <Border Width="1"
+                                Margin="10,4"
+                                Background="#33FFFFFF" />
+                        <ui:Button x:Name="FullscreenPinOnButton"
+                                   Width="36"
+                                   Height="30"
+                                   Click="OnFullscreenTogglePinClicked"
+                                   ToolTip="固定显示这条工具栏（会记住）">
+                            <ui:Button.Icon>
+                                <ui:SymbolIcon FontSize="14" Symbol="Pin24" />
+                            </ui:Button.Icon>
+                        </ui:Button>
+                        <ui:Button x:Name="FullscreenPinOffButton"
+                                   Width="36"
+                                   Height="30"
+                                   Click="OnFullscreenTogglePinClicked"
+                                   ToolTip="取消固定（会记住）"
+                                   Visibility="Collapsed">
+                            <ui:Button.Icon>
+                                <ui:SymbolIcon FontSize="14" Symbol="PinOff24" />
+                            </ui:Button.Icon>
+                        </ui:Button>
+                    </StackPanel>
+                </Border>
+            </Popup>
         </Grid>
     </Grid>
 </ui:FluentWindow>

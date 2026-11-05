@@ -174,6 +174,14 @@ public sealed class WindowSettings
     /// 上次退出时是否处于小窗模式。
     /// </summary>
     public bool SmallWindowMode { get; set; }
+
+    /// <summary>
+    /// 全屏模式下顶部的悬浮按钮栏是否固定显示。
+    ///
+    /// 默认 false：只在鼠标移到屏幕顶端、以及刚进入全屏时显示 10 秒。
+    /// 用户点过图钉后记下来，之后每次进全屏都保持固定。
+    /// </summary>
+    public bool FullscreenBarPinned { get; set; }
 }
 
 /// <summary>

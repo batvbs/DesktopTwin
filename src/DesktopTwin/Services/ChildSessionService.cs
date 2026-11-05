@@ -409,12 +409,19 @@ public sealed class ChildSessionService : IDisposable
     /// <summary>
     /// 切换画面「自适应缩放 / 1:1」。
     /// </summary>
-    public void SetSmartSizing(bool enabled)
+    public void SetSmartSizing(bool enabled, bool persist = true)
     {
         ThrowIfDisposed();
         EnsureDesktopWindow().RdpHost.SetSmartSizing(enabled);
-        _settings.Current.Session.SmartSizing = enabled;
-        _settings.SaveSoon();
+
+        // 全屏模式会临时强制自适应，退出时要还原用户原本的选择，
+        // 因此这条路径不能写设置，否则用户的选择会被悄悄改掉。
+        if (persist)
+        {
+            _settings.Current.Session.SmartSizing = enabled;
+            _settings.SaveSoon();
+        }
+
         RefreshState(enabled ? "窗口显示模式已切换为自适应缩放" : "窗口显示模式已切换为 1:1");
     }
 
@@ -665,7 +672,7 @@ public sealed class ChildSessionService : IDisposable
 
         foreach (var issue in _environmentIssues)
         {
-            AppLog.Warn($"环境预检：{issue.Title}。{issue.Message}");
+            AppLog.Warn($"环境预检：{issue.Title}。{issue.Summary}");
         }
     }
 

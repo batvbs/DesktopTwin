@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Security;
 using System.Threading;
 using System.Threading.Tasks;
@@ -34,10 +35,43 @@ internal sealed class AutoLoginService : IDisposable
     private const string CredentialDialogClassName = "Credential Dialog Xaml Host";
 
     /// <summary>
+    /// 经典 Win32 凭据对话框的类名。
+    /// </summary>
+    private const string LegacyDialogClassName = "#32770";
+
+    /// <summary>
+    /// 经典对话框靠标题区分，中英文各取一个关键字。
+    /// </summary>
+    private static readonly string[] LegacyDialogTitleKeywords = ["安全", "Security", "凭据", "Credential"];
+
+    /// <summary>
     /// Windows 自动登录的配置位置。只读取状态，不读取、不写入密码。
     /// </summary>
     private const string WinlogonRegistryPath =
         @"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon";
+
+    /// <summary>
+    /// 微软账户在本机的身份信息。子键名就是账户邮箱，用于 UPN 形式的登录。
+    /// </summary>
+    private const string MicrosoftAccountPropertiesPath =
+        @"Software\Microsoft\IdentityCRL\UserExtendedProperties";
+
+    private const int Logon32LogonNetwork = 3;
+    private const int Logon32ProviderDefault = 0;
+
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool LogonUserW(
+        string userName,
+        string domain,
+        string password,
+        int logonType,
+        int logonProvider,
+        out IntPtr token);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(IntPtr handle);
 
     /// <summary>
     /// 一次连接最多自动填几次。凭据框反复出现通常意味着密码本身就是错的，
@@ -115,6 +149,153 @@ internal sealed class AutoLoginService : IDisposable
         ThrowIfDisposed();
         _settings.Current.Automation.AutoLoginPassword = null;
         _settings.SaveSoon();
+    }
+
+    /// <summary>
+    /// 密码校验结论。
+    /// </summary>
+    public enum PasswordCheckResult
+    {
+        /// <summary>密码当前有效。</summary>
+        Valid,
+
+        /// <summary>用户名或密码错误。</summary>
+        InvalidPassword,
+
+        /// <summary>账户被禁用。</summary>
+        AccountDisabled,
+
+        /// <summary>密码已过期。</summary>
+        PasswordExpired,
+
+        /// <summary>账户限制（空密码、登录时段、工作站限制）。</summary>
+        AccountRestricted,
+
+        /// <summary>无法判定（权限不足或未知错误）。</summary>
+        Unknown
+    }
+
+    /// <summary>
+    /// 校验一组凭据当前是否有效。
+    ///
+    /// 用 <c>LogonUser</c> 做一次网络登录验证，不产生界面、不创建进程。
+    /// 错误码能把「密码错了」和「账户被禁用 / 密码过期」区分开，比让用户反复试密码有用。
+    /// </summary>
+    /// <param name="password">待校验的密码。</param>
+    /// <param name="errorCode">Win32 错误码，成功时为 0。</param>
+    public PasswordCheckResult VerifyPassword(string password, out int errorCode)
+    {
+        var (userName, domain) = ResolveLogonIdentity();
+        return VerifyPassword(userName, domain, password, out errorCode);
+    }
+
+    /// <summary>
+    /// 用指定的用户名/域校验凭据。用于校验「凭据框里实际提交的那一组」。
+    /// </summary>
+    /// <param name="userName">用户名。</param>
+    /// <param name="domain">域；本地账户留空即可。</param>
+    /// <param name="password">密码。</param>
+    /// <param name="errorCode">Win32 错误码，成功时为 0。</param>
+    public PasswordCheckResult VerifyPassword(
+        string userName,
+        string domain,
+        string password,
+        out int errorCode)
+    {
+        errorCode = 0;
+
+        if (LogonUserW(
+                userName,
+                domain,
+                password,
+                Logon32LogonNetwork,
+                Logon32ProviderDefault,
+                out var token))
+        {
+            if (token != IntPtr.Zero)
+            {
+                _ = CloseHandle(token);
+            }
+
+            return PasswordCheckResult.Valid;
+        }
+
+        errorCode = Marshal.GetLastPInvokeError();
+        return errorCode switch
+        {
+            1326 => PasswordCheckResult.InvalidPassword,
+            1331 => PasswordCheckResult.AccountDisabled,
+            1330 => PasswordCheckResult.PasswordExpired,
+            1327 or 1385 => PasswordCheckResult.AccountRestricted,
+            _ => PasswordCheckResult.Unknown
+        };
+    }
+
+    /// <summary>
+    /// 尝试读取当前账户的微软账户邮箱。
+    ///
+    /// 该邮箱是 <c>runas /u:MicrosoftAccount\&lt;邮箱&gt;</c> 与 <c>LogonUser</c> 需要的用户名，
+    /// 本地用户名（C:\Users 下那个）并不是它。
+    /// </summary>
+    /// <param name="email">读到的邮箱。</param>
+    public bool TryGetMicrosoftAccountEmail(out string email)
+    {
+        email = string.Empty;
+
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(MicrosoftAccountPropertiesPath);
+            if (key is null)
+            {
+                return false;
+            }
+
+            foreach (var name in key.GetSubKeyNames())
+            {
+                if (name.Contains('@'))
+                {
+                    email = name;
+                    return true;
+                }
+            }
+        }
+        catch (Exception exception) when (exception is SecurityException
+                                              or UnauthorizedAccessException
+                                              or IOException)
+        {
+            AppLog.Warn("读取微软账户邮箱失败。", exception);
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 生成「刷新本机凭据缓存」的命令，供用户复制执行。
+    ///
+    /// 对应社区做法：<c>runas /u:MicrosoftAccount\&lt;邮箱&gt; winver</c>，
+    /// 用新密码登录一次，让 Windows 把本地缓存的凭据验证器更新过来。
+    /// 输入密码时命令行不会有任何提示，属正常现象。
+    /// </summary>
+    public string BuildPasswordSyncCommand()
+    {
+        var identity = TryGetMicrosoftAccountEmail(out var email)
+            ? $@"MicrosoftAccount\{email}"
+            : $@"{Environment.MachineName}\{Environment.UserName}";
+
+        return $"runas /u:{identity} winver";
+    }
+
+    /// <summary>
+    /// 决定 <c>LogonUser</c> 用哪个用户名/域：微软账户用 UPN + MicrosoftAccount，本地账户用机器名。
+    /// </summary>
+    private (string UserName, string Domain) ResolveLogonIdentity()
+    {
+        if (TryGetMicrosoftAccountEmail(out var email))
+        {
+            return (email, "MicrosoftAccount");
+        }
+
+        return (Environment.UserName, Environment.MachineName);
     }
 
     /// <summary>
@@ -223,9 +404,18 @@ internal sealed class AutoLoginService : IDisposable
     /// <summary>
     /// 开始监听凭据弹窗。每次连接尝试调用一次。
     /// </summary>
-    public void StartWatching()
+    /// <param name="force">
+    /// 忽略「自动登录已启用」这个前提。用于「保存并验证」——那时开关可能还没打开，
+    /// 但同样需要自动填充。
+    /// </param>
+    public void StartWatching(bool force = false)
     {
-        if (_disposed || !IsEnabled || !HasStoredPassword)
+        if (_disposed || !HasStoredPassword)
+        {
+            return;
+        }
+
+        if (!force && !IsEnabled)
         {
             return;
         }
@@ -323,7 +513,7 @@ internal sealed class AutoLoginService : IDisposable
     /// </summary>
     private bool TryFillCredentialDialog()
     {
-        var handle = WindowNativeMethods.FindWindowByClassName(CredentialDialogClassName);
+        var handle = FindCredentialDialog();
         if (handle == IntPtr.Zero || handle == _lastFilledDialog)
         {
             return false;
@@ -411,6 +601,33 @@ internal sealed class AutoLoginService : IDisposable
             AppLog.Warn("自动登录：填写凭据弹窗失败。", exception);
             return false;
         }
+    }
+
+    /// <summary>
+    /// 找当前存在的凭据弹窗。
+    ///
+    /// 现代系统上是 XAML 版（<c>Credential Dialog Xaml Host</c>），
+    /// 但 <c>CredUIPromptForWindowsCredentials</c> 在部分配置下走的是经典 Win32 对话框
+    /// （<c>#32770</c>）。两种都要认，否则「保存并验证」在某些机器上会填不进去。
+    /// </summary>
+    private static IntPtr FindCredentialDialog()
+    {
+        var handle = WindowNativeMethods.FindWindowByClassName(CredentialDialogClassName);
+        if (handle != IntPtr.Zero)
+        {
+            return handle;
+        }
+
+        foreach (var keyword in LegacyDialogTitleKeywords)
+        {
+            handle = WindowNativeMethods.FindWindowByClassName(LegacyDialogClassName, keyword);
+            if (handle != IntPtr.Zero)
+            {
+                return handle;
+            }
+        }
+
+        return IntPtr.Zero;
     }
 
     private static bool TrySetValue(AutomationElement element, string value, bool onlyWhenEmpty)

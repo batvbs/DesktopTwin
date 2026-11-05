@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -16,6 +17,8 @@ namespace DesktopTwin.View;
 ///
 /// 和「输入一串文本」相比，录制不会录进拼写错误，也能天然拦下「没有修饰键」这种
 /// 会把整个系统按键吃掉的危险配置。
+///
+/// 非模态：录制期间分身窗口仍可操作（见 <see cref="Dialogs"/>）。
 /// </summary>
 internal static class HotkeyDialog
 {
@@ -24,17 +27,12 @@ internal static class HotkeyDialog
     /// </summary>
     /// <param name="current">当前组合键，形如 <c>Ctrl+Alt+U</c>。</param>
     /// <returns>录制成功返回新组合键，取消返回 null。</returns>
-    internal static string? Show(string current)
+    internal static Task<string?> ShowAsync(string current)
     {
-        var dialog = new FluentWindow
-        {
-            Title = "设置切换快捷键",
-            Width = 420,
-            SizeToContent = SizeToContent.Height,
-            ResizeMode = ResizeMode.NoResize,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            ShowInTaskbar = false
-        };
+        var completion = new TaskCompletionSource<string?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var dialog = Dialogs.CreateWindow("设置切换快捷键", 420);
 
         var preview = new TextBlock
         {
@@ -65,8 +63,6 @@ internal static class HotkeyDialog
         panel.Children.Add(hint);
         dialog.Content = panel;
 
-        string? result = null;
-
         // 用 PreviewKeyDown 而不是 KeyDown：Tab、方向键这类键会被控件先吃掉。
         dialog.PreviewKeyDown += (_, e) =>
         {
@@ -75,7 +71,8 @@ internal static class HotkeyDialog
 
             if (key == Key.Escape)
             {
-                dialog.DialogResult = false;
+                completion.TrySetResult(null);
+                dialog.Close();
                 return;
             }
 
@@ -107,11 +104,14 @@ internal static class HotkeyDialog
             var combination = DescribeModifiers(modifiers) + "+" + token;
             preview.Text = GlobalHotkeyService.Format(combination);
             preview.Foreground = new SolidColorBrush(Color.FromRgb(0x60, 0xB9, 0xF4));
-            result = combination;
-            dialog.DialogResult = true;
+            completion.TrySetResult(combination);
+            dialog.Close();
         };
 
-        return dialog.ShowDialog() == true ? result : null;
+        dialog.Closed += (_, _) => completion.TrySetResult(null);
+
+        Dialogs.Show(dialog);
+        return completion.Task;
     }
 
     private static bool IsModifierKey(Key key) => key is Key.LeftCtrl or Key.RightCtrl

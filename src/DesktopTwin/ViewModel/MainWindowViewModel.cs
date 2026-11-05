@@ -31,6 +31,7 @@ public partial class MainWindowViewModel : ObservableObject
     private readonly UuViewSwitchService _uuViewSwitchService;
     private GlobalHotkeyService? _globalHotkey;
     private Window? _hotkeyWindow;
+    private DiagnosticsWindow? _diagnosticsWindow;
     private bool _startRequested;
     private bool _uuSwitchInProgress;
 
@@ -619,10 +620,10 @@ public partial class MainWindowViewModel : ObservableObject
     /// 录制新的切换热键。
     /// </summary>
     [RelayCommand]
-    private void ConfigureUuHotkey()
+    private async Task ConfigureUuHotkeyAsync()
     {
         var current = _settings.Current.Automation.UuViewSwitchHotkey;
-        if (HotkeyDialog.Show(current) is not { } combination)
+        if (await HotkeyDialog.ShowAsync(current) is not { } combination)
         {
             return;
         }
@@ -639,10 +640,56 @@ public partial class MainWindowViewModel : ObservableObject
     }
 
     /// <summary>
+    /// 全屏时提示「分身分辨率与屏幕分辨率不一致」。
+    /// </summary>
+    /// <param name="screenWidth">屏幕物理宽度。</param>
+    /// <param name="screenHeight">屏幕物理高度。</param>
+    internal void NotifyFullscreenResolution(int screenWidth, int screenHeight)
+    {
+        var session = _settings.Current.Session;
+        if (session.DesktopWidth == screenWidth && session.DesktopHeight == screenHeight)
+        {
+            return;
+        }
+
+        ShowNotification(
+            "分辨率与屏幕不一致",
+            $"桌面分身当前是 {session.DesktopWidth} × {session.DesktopHeight}，"
+            + $"屏幕是 {screenWidth} × {screenHeight}。全屏下画面会被拉伸，内容可能模糊；"
+            + $"建议在「控制中心 → 桌面分辨率」里改为 {screenWidth} × {screenHeight}。",
+            InfoBarSeverity.Warning,
+            TimeSpan.FromSeconds(12));
+    }
+
+    /// <summary>
+    /// 打开诊断与修复面板。已经打开时把它叫到前面并刷新一次。
+    /// </summary>
+    [RelayCommand]
+    private void OpenDiagnostics()
+    {
+        if (_diagnosticsWindow is { IsLoaded: true } existing)
+        {
+            existing.RefreshNow();
+            if (existing.WindowState == WindowState.Minimized)
+            {
+                existing.WindowState = WindowState.Normal;
+            }
+
+            existing.Activate();
+            return;
+        }
+
+        var window = new DiagnosticsWindow();
+        window.Closed += (_, _) => _diagnosticsWindow = null;
+        _diagnosticsWindow = window;
+        Dialogs.Show(window);
+    }
+
+    /// <summary>
     /// 打开「自动登录方式」对话框：让用户在本程序自动登录与 Windows 系统自动登录之间自己选。
     /// </summary>
     [RelayCommand]
-    private void ShowAutoLoginOptions()
+    private async Task ShowAutoLoginOptionsAsync()
     {
         var autoLogin = _childSessionService.AutoLogin;
         if (autoLogin is null)
@@ -652,7 +699,7 @@ public partial class MainWindowViewModel : ObservableObject
         }
 
         var systemEnabled = autoLogin.IsSystemAutoLoginEnabled(out var systemUser);
-        var choice = AutoLoginDialog.Show(
+        var choice = await AutoLoginDialog.ShowAsync(
             AutoLoginEnabled,
             HasAutoLoginPassword,
             autoLogin.UserName,
@@ -662,7 +709,7 @@ public partial class MainWindowViewModel : ObservableObject
         switch (choice)
         {
             case AutoLoginDialog.Choice.EnableAppAutoLogin:
-                if (!HasAutoLoginPassword && !TrySaveAutoLoginPassword())
+                if (!HasAutoLoginPassword && !await TrySaveAndVerifyPasswordAsync())
                 {
                     return;
                 }
@@ -721,7 +768,7 @@ public partial class MainWindowViewModel : ObservableObject
     /// 启用 / 关闭分身自动登录。
     /// </summary>
     [RelayCommand]
-    private void ToggleAutoLogin()
+    private async Task ToggleAutoLoginAsync()
     {
         var autoLogin = _childSessionService.AutoLogin;
         if (autoLogin is null)
@@ -743,7 +790,7 @@ public partial class MainWindowViewModel : ObservableObject
         }
 
         // 没有密码就先要一个：只开开关不存密码，等于开了个没用的开关。
-        if (!autoLogin.HasStoredPassword && !TrySaveAutoLoginPassword())
+        if (!autoLogin.HasStoredPassword && !await TrySaveAndVerifyPasswordAsync())
         {
             return;
         }
@@ -752,18 +799,12 @@ public partial class MainWindowViewModel : ObservableObject
     }
 
     /// <summary>
-    /// 设置（或更新）自动登录密码。
+    /// 设置（或更新）自动登录密码，并立即校验一次。
     /// </summary>
     [RelayCommand]
-    private void SetAutoLoginPassword()
+    private async Task SetAutoLoginPasswordAsync()
     {
-        if (TrySaveAutoLoginPassword())
-        {
-            ShowNotification(
-                "密码已保存",
-                "密码已用 DPAPI 加密保存在本机，只有当前 Windows 账户能解开。",
-                InfoBarSeverity.Success);
-        }
+        _ = await TrySaveAndVerifyPasswordAsync();
     }
 
     /// <summary>
@@ -784,9 +825,14 @@ public partial class MainWindowViewModel : ObservableObject
     }
 
     /// <summary>
-    /// 弹出密码框并保存。用户取消或加密失败返回 false。
+    /// 弹出密码框、加密保存，并立即验证一次。
+    ///
+    /// 验证方式：用 <c>CredUIPromptForWindowsCredentials</c> 弹一个**独立的**
+    /// 「Windows 安全中心」凭据框（不碰分身会话），自动填充后校验提交上来的那组凭据。
+    /// 这样既验证了密码本身，也验证了自动填充这条链路——而且不会打断正在用的分身。
     /// </summary>
-    private bool TrySaveAutoLoginPassword()
+    /// <returns>验证通过返回 true。</returns>
+    private async Task<bool> TrySaveAndVerifyPasswordAsync()
     {
         var autoLogin = _childSessionService.AutoLogin;
         if (autoLogin is null)
@@ -794,7 +840,7 @@ public partial class MainWindowViewModel : ObservableObject
             return false;
         }
 
-        if (PasswordDialog.Show(autoLogin.UserName) is not { } password)
+        if (await PasswordDialog.ShowAsync(autoLogin.UserName) is not { } password)
         {
             return false;
         }
@@ -809,7 +855,112 @@ public partial class MainWindowViewModel : ObservableObject
         }
 
         HasAutoLoginPassword = true;
-        return true;
+
+        ShowNotification(
+            "正在验证",
+            "即将弹出 Windows 凭据框，程序会自动填入刚保存的密码并提交。",
+            InfoBarSeverity.Informational,
+            TimeSpan.FromSeconds(4));
+
+        // 强制开启监听：此刻自动登录开关可能还没打开，但同样需要自动填充。
+        autoLogin.StartWatching(force: true);
+        CredentialPromptService.PromptResult prompt;
+        try
+        {
+            prompt = await CredentialPromptService.PromptAsync(
+                GetOwnerWindowHandle(),
+                TimeSpan.FromSeconds(90),
+                CancellationToken.None);
+        }
+        finally
+        {
+            autoLogin.StopWatching();
+        }
+
+        if (prompt.Canceled)
+        {
+            ShowNotification(
+                "已取消验证",
+                "密码已保存，但没有验证。可以稍后再点一次「设置登录密码…」。",
+                InfoBarSeverity.Informational,
+                TimeSpan.FromSeconds(6));
+            return false;
+        }
+
+        if (!prompt.Success)
+        {
+            ShowNotification("验证未完成", prompt.Message, InfoBarSeverity.Warning, TimeSpan.FromSeconds(10));
+            return false;
+        }
+
+        var check = autoLogin.VerifyPassword(
+            prompt.UserName,
+            prompt.Domain,
+            prompt.Password,
+            out var errorCode);
+
+        if (check == AutoLoginService.PasswordCheckResult.Valid)
+        {
+            ShowNotification(
+                "验证通过",
+                "凭据有效，自动填充也已生效。下次重连分身时会直接使用这组密码。",
+                InfoBarSeverity.Success,
+                TimeSpan.FromSeconds(7));
+            return true;
+        }
+
+        ShowNotification(
+            "密码校验未通过",
+            BuildVerifyFailureMessage(check, errorCode, autoLogin),
+            InfoBarSeverity.Warning,
+            TimeSpan.FromSeconds(14));
+        return false;
+    }
+
+    /// <summary>
+    /// 取主窗口句柄，用作凭据框的父窗口。窗口尚未创建时返回 0。
+    /// </summary>
+    private IntPtr GetOwnerWindowHandle()
+    {
+        var window = _childSessionService.Window;
+        if (window is null)
+        {
+            return IntPtr.Zero;
+        }
+
+        var handle = new System.Windows.Interop.WindowInteropHelper(window).Handle;
+        return handle;
+    }
+
+    /// <summary>
+    /// 把校验失败翻译成可执行的说明。
+    ///
+    /// 特别注意 1326 不能直接断言「密码错了」：微软账户的本机凭据缓存过期时，
+    /// 即使密码是新的也会返回同一个错误，两者必须一起提示。
+    /// </summary>
+    private static string BuildVerifyFailureMessage(
+        AutoLoginService.PasswordCheckResult result,
+        int errorCode,
+        AutoLoginService autoLogin)
+    {
+        return result switch
+        {
+            AutoLoginService.PasswordCheckResult.AccountDisabled =>
+                "该 Windows 账户已被禁用，无法用于登录。请先启用账户。",
+            AutoLoginService.PasswordCheckResult.PasswordExpired =>
+                "账户密码已过期，请先修改密码再重新设置。",
+            AutoLoginService.PasswordCheckResult.AccountRestricted =>
+                "账户受限：可能是空密码、登录时段或工作站限制。请给账户设置密码后再试。",
+            AutoLoginService.PasswordCheckResult.InvalidPassword =>
+                $"用户名或密码错误（错误 {errorCode}）。如果密码确实是对的，"
+                + "可能是本机缓存的微软账户凭据已过期，用下面这条命令刷新一次再重试："
+                + Environment.NewLine + Environment.NewLine
+                + autoLogin.BuildPasswordSyncCommand()
+                + Environment.NewLine + Environment.NewLine
+                + "（执行后输入一次账户密码，命令行不会有任何提示，属正常现象）",
+            _ =>
+                $"无法校验这组凭据（错误 {errorCode}）。请确认账户类型后重试。"
+        };
     }
 
     /// <summary>
@@ -891,10 +1042,10 @@ public partial class MainWindowViewModel : ObservableObject
     /// 打开对话框输入自定义分辨率。
     /// </summary>
     [RelayCommand]
-    private void CustomResolution()
+    private async Task CustomResolutionAsync()
     {
         var session = _settings.Current.Session;
-        if (ResolutionDialog.Show(session.DesktopWidth, session.DesktopHeight) is not { } size)
+        if (await ResolutionDialog.ShowAsync(session.DesktopWidth, session.DesktopHeight) is not { } size)
         {
             return;
         }
@@ -1227,9 +1378,13 @@ public partial class MainWindowViewModel : ObservableObject
                 UpdateConnectionStatus();
                 ShowNotification(
                     "RDP 连接失败",
-                    e.Message,
+                    e.Message + " 已打开诊断面板，可直接查看可能的原因。",
                     InfoBarSeverity.Error,
                     TimeSpan.FromSeconds(10));
+
+                // 连接失败时自动弹诊断面板：RDP ActiveX 只会回报「发生内部错误」，
+                // 真正的原因几乎都在环境检查里，让用户自己去菜单里找太绕。
+                OpenDiagnostics();
             }));
     }
 

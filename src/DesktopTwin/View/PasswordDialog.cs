@@ -1,3 +1,4 @@
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -13,6 +14,8 @@ namespace DesktopTwin.View;
 ///
 /// 用 <see cref="PasswordBox"/> 而不是普通输入框：至少不会在录屏、截图、输入法候选里露出来。
 /// 密码本身不在这里落盘，交给调用方用 DPAPI 加密后写进设置。
+///
+/// 非模态：打开时分身窗口仍可操作（见 <see cref="Dialogs"/>）。
 /// </summary>
 internal static class PasswordDialog
 {
@@ -20,23 +23,19 @@ internal static class PasswordDialog
     /// 弹出密码输入框。
     /// </summary>
     /// <param name="userName">将要使用的账户名，用于说明文案。</param>
+    /// <param name="confirmText">主按钮文字，默认「保存并验证」。</param>
     /// <returns>确认时返回密码，取消返回 null。</returns>
-    internal static string? Show(string userName)
+    internal static Task<string?> ShowAsync(string userName, string confirmText = "保存并验证")
     {
-        var dialog = new FluentWindow
-        {
-            Title = "自动登录分身",
-            Width = 440,
-            SizeToContent = SizeToContent.Height,
-            ResizeMode = ResizeMode.NoResize,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            ShowInTaskbar = false
-        };
+        var completion = new TaskCompletionSource<string?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        var dialog = Dialogs.CreateWindow("自动登录分身", 460);
 
         var passwordBox = new Wpf.Ui.Controls.PasswordBox
         {
             Margin = new Thickness(0, 8, 0, 0),
-            PlaceholderText = "Windows 登录密码"
+            PlaceholderText = "Windows 登录密码（不是 PIN）"
         };
 
         var errorText = new TextBlock
@@ -49,9 +48,9 @@ internal static class PasswordDialog
 
         var applyButton = new Wpf.Ui.Controls.Button
         {
-            Content = "保存",
+            Content = confirmText,
             Appearance = ControlAppearance.Primary,
-            MinWidth = 80,
+            MinWidth = 110,
             IsDefault = true
         };
 
@@ -92,8 +91,6 @@ internal static class PasswordDialog
         panel.Children.Add(buttons);
         dialog.Content = panel;
 
-        string? result = null;
-
         applyButton.Click += (_, _) =>
         {
             var password = passwordBox.Password;
@@ -104,14 +101,20 @@ internal static class PasswordDialog
                 return;
             }
 
-            result = password;
-            dialog.DialogResult = true;
+            completion.TrySetResult(password);
+            dialog.Close();
         };
 
-        cancelButton.Click += (_, _) => dialog.DialogResult = false;
+        cancelButton.Click += (_, _) =>
+        {
+            completion.TrySetResult(null);
+            dialog.Close();
+        };
 
+        dialog.Closed += (_, _) => completion.TrySetResult(null);
         dialog.Loaded += (_, _) => passwordBox.Focus();
 
-        return dialog.ShowDialog() == true ? result : null;
+        Dialogs.Show(dialog);
+        return completion.Task;
     }
 }

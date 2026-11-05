@@ -36,3 +36,6 @@ Desktop.ini
 *.tmp
 *.bak
 *.orig
+
+## WPF 增量编译留下的临时工程文件
+*_wpftmp.csproj

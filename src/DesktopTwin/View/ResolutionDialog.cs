@@ -1,5 +1,6 @@
 using System;
 using System.Globalization;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -14,8 +15,8 @@ namespace DesktopTwin.View;
 /// <summary>
 /// 自定义分辨率输入框。
 ///
-/// 用代码构建而不是 XAML：内容只有一个输入区，单独为它建一个 XAML + 后台文件不划算，
-/// 而且这样能保证它和 <see cref="Dialogs"/> 里的其他弹窗用同一套主题控件。
+/// 非模态：用 <c>Show()</c> 而不是 <c>ShowDialog()</c>，这样打开输入框时
+/// 分身画面仍然可以操作（见 <see cref="Dialogs"/> 的说明）。
 /// </summary>
 internal static class ResolutionDialog
 {
@@ -25,8 +26,11 @@ internal static class ResolutionDialog
     /// <param name="width">初始宽度。</param>
     /// <param name="height">初始高度。</param>
     /// <returns>用户确认且校验通过时返回新尺寸，取消或关闭返回 null。</returns>
-    internal static (int Width, int Height)? Show(int width, int height)
+    internal static Task<(int Width, int Height)?> ShowAsync(int width, int height)
     {
+        var completion = new TaskCompletionSource<(int Width, int Height)?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
         var widthBox = CreateSizeBox(width);
         var heightBox = CreateSizeBox(height);
         var errorText = new TextBlock
@@ -37,15 +41,7 @@ internal static class ResolutionDialog
             Margin = new Thickness(0, 8, 0, 0)
         };
 
-        var dialog = new FluentWindow
-        {
-            Title = "自定义分辨率",
-            Width = 400,
-            SizeToContent = SizeToContent.Height,
-            ResizeMode = ResizeMode.NoResize,
-            WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            ShowInTaskbar = false
-        };
+        var dialog = Dialogs.CreateWindow("自定义分辨率", 400);
 
         var applyButton = new Wpf.Ui.Controls.Button
         {
@@ -59,7 +55,8 @@ internal static class ResolutionDialog
         {
             Content = "取消",
             MinWidth = 80,
-            IsCancel = true
+            IsCancel = true,
+            Margin = new Thickness(0, 0, 8, 0)
         };
 
         var sizePanel = new StackPanel
@@ -84,8 +81,6 @@ internal static class ResolutionDialog
         };
         buttonPanel.Children.Add(cancelButton);
         buttonPanel.Children.Add(applyButton);
-        // 按钮之间留出间距，避免两个按钮贴在一起。
-        cancelButton.Margin = new Thickness(0, 0, 8, 0);
 
         var panel = new StackPanel { Margin = new Thickness(24, 16, 24, 20) };
         panel.Children.Add(new TextBlock
@@ -107,8 +102,6 @@ internal static class ResolutionDialog
 
         dialog.Content = panel;
 
-        (int Width, int Height)? result = null;
-
         applyButton.Click += (_, _) =>
         {
             if (!TryParseSize(widthBox.Text, out var newWidth)
@@ -128,11 +121,17 @@ internal static class ResolutionDialog
                 return;
             }
 
-            result = (newWidth, newHeight);
-            dialog.DialogResult = true;
+            completion.TrySetResult((newWidth, newHeight));
+            dialog.Close();
         };
 
-        cancelButton.Click += (_, _) => dialog.DialogResult = false;
+        cancelButton.Click += (_, _) =>
+        {
+            completion.TrySetResult(null);
+            dialog.Close();
+        };
+
+        dialog.Closed += (_, _) => completion.TrySetResult(null);
 
         // 打开后直接选中宽度，用户敲数字就能改，不用先点一下输入框。
         dialog.Loaded += (_, _) =>
@@ -141,7 +140,8 @@ internal static class ResolutionDialog
             widthBox.SelectAll();
         };
 
-        return dialog.ShowDialog() == true ? result : null;
+        Dialogs.Show(dialog);
+        return completion.Task;
     }
 
     private static Wpf.Ui.Controls.TextBox CreateSizeBox(int value) => new()

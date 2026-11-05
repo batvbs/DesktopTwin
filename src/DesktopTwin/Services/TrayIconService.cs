@@ -35,11 +35,13 @@ internal sealed class TrayIconService : IDisposable
 
         _showItem = new Forms.ToolStripMenuItem("显示主窗口", image: null, OnShowClicked);
         _hideItem = new Forms.ToolStripMenuItem("隐藏窗口", image: null, OnHideClicked);
+        var fullscreenItem = new Forms.ToolStripMenuItem("全屏显示", image: null, OnFullscreenClicked);
         var exitItem = new Forms.ToolStripMenuItem("退出", image: null, OnExitClicked);
 
         _menu = new Forms.ContextMenuStrip();
         _menu.Items.Add(_showItem);
         _menu.Items.Add(_hideItem);
+        _menu.Items.Add(fullscreenItem);
         _menu.Items.Add(new Forms.ToolStripSeparator());
         _menu.Items.Add(exitItem);
 
@@ -107,10 +109,25 @@ internal sealed class TrayIconService : IDisposable
         }
     }
 
+    private void OnFullscreenClicked(object? sender, EventArgs e)
+    {
+        try
+        {
+            _childSessionService.ShowWindow();
+            _childSessionService.Window?.EnterFullscreen();
+        }
+        catch (Exception exception) when (exception is ObjectDisposedException
+                                              or InvalidOperationException)
+        {
+            AppLog.Warn("从托盘进入全屏失败。", exception);
+        }
+    }
+
     private void OnExitClicked(object? sender, EventArgs e)
     {
-        // 走窗口的关闭流程：那里有「会注销分身会话」的二次确认，
-        // 托盘直接退出会绕过确认，把用户正在跑的程序一起关掉。
+        // 托盘里的「退出」按用户要求直接退出，不再弹确认框——
+        // 托盘是常驻入口，用户点它就是要走，反复确认反而碍事。
+        // 注意：这仍然会注销分身会话，里面的程序会被关闭。
         var window = _childSessionService.Window;
         if (window is null)
         {
@@ -118,12 +135,7 @@ internal sealed class TrayIconService : IDisposable
             return;
         }
 
-        if (!window.IsVisible)
-        {
-            window.Show();
-        }
-
-        window.Close();
+        _ = window.ExitImmediatelyAsync();
     }
 
     private void OnStateChanged(object? sender, EventArgs e)

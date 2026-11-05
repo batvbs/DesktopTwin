@@ -42,6 +42,9 @@ public sealed class SettingsServiceTests : IDisposable
         Assert.False(settings.Automation.AutoLoginEnabled);
         Assert.Equal("Ctrl+Alt+U", settings.Automation.UuViewSwitchHotkey);
         Assert.Null(settings.Automation.AutoLoginPassword);
+
+        // 全屏顶栏默认不固定：只在鼠标到顶端时出现
+        Assert.False(settings.Window.FullscreenBarPinned);
     }
 
     [Fact]
@@ -55,6 +58,7 @@ public sealed class SettingsServiceTests : IDisposable
             writer.Current.Launch.TargetPath = @"C:\Games\game.exe";
             writer.Current.Launch.RunAsAdministrator = true;
             writer.Current.ChildSessionNoticeAccepted = true;
+            writer.Current.Window.FullscreenBarPinned = true;
             writer.Flush();
         }
 
@@ -65,6 +69,9 @@ public sealed class SettingsServiceTests : IDisposable
         Assert.Equal(@"C:\Games\game.exe", reader.Current.Launch.TargetPath);
         Assert.True(reader.Current.Launch.RunAsAdministrator);
         Assert.True(reader.Current.ChildSessionNoticeAccepted);
+
+        // 全屏顶栏的固定状态要能记住，否则每次进全屏都要重新点一次图钉。
+        Assert.True(reader.Current.Window.FullscreenBarPinned);
     }
 
     [Fact]
