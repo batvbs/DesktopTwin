@@ -103,8 +103,16 @@ if (-not (Test-Path $readmeTemplate)) {
     throw "缺少说明文件模板：$readmeTemplate"
 }
 
+# 两个 exe 名字相近，只给压缩包的哈希没法分别校验，
+# 所以把每个文件的 SHA256 直接写进说明里。
+$standaloneHash = (Get-FileHash $standaloneExe -Algorithm SHA256).Hash
+$frameworkHash = (Get-FileHash $frameworkExe -Algorithm SHA256).Hash
+
 # 说明文件与 CI 共用同一份模板，避免两边写的版本号/文件名对不上。
-$readme = (Get-Content $readmeTemplate -Raw -Encoding UTF8).Replace("{{VERSION}}", $version)
+$readme = (Get-Content $readmeTemplate -Raw -Encoding UTF8).
+    Replace("{{VERSION}}", $version).
+    Replace("{{SHA256_STANDALONE}}", $standaloneHash).
+    Replace("{{SHA256_FRAMEWORK}}", $frameworkHash)
 
 # 用 UTF-8 带 BOM 写：记事本在旧版本 Windows 上靠 BOM 判断编码，
 # 没有 BOM 时中文会显示成乱码。
