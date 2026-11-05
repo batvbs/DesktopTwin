@@ -74,12 +74,14 @@ jobs:
     permissions:
       contents: write
     steps:
+      # 必须先 checkout 再下载产物：actions/checkout 默认 clean=true，
+      # 会把工作区里未跟踪的文件（包括刚下载的 artifact）一起清掉。
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: DesktopTwin-win-x64
           path: artifacts/publish
-
-      - uses: actions/checkout@v4
 
       # 文件名用中文并带版本号，和本地 build.ps1 产出的名字保持一致。
       # 三个文件直接作为 Release 附件，不再打 zip。
