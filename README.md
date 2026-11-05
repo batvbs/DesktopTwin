@@ -169,6 +169,43 @@ dotnet publish src/DesktopTwin -c Release -r win-x64 --self-contained false -o p
 
 ---
 
+## 与 RDP Wrapper / SuperRDP 的区别
+
+**本程序不修改、不替换、不破解任何系统文件。**
+
+RDP Wrapper、SuperRDP 这类工具的原理是：把 `TermService` 的 `ServiceDll` 指向自己投放的
+`rdpwrap.dll` / `superrdp.dll`，由这个 DLL 接管 `termsrv.dll` 的调用，从而解除「只允许一个
+远程会话」的限制。这套做法要**往系统目录放 DLL 并改写服务的加载项**，补丁与 Windows 内部版本
+强绑定（靠 `rdpwrap.ini` 里的偏移量），系统一更新就常失效，也容易被杀软判为劫持。
+
+本程序走的是另一条路：调用 Windows 自带的 `WTSEnableChildSessions` 打开「子会话」能力，
+再用系统自带的远程桌面控件（`MsRdpClient10`）连到本机的那个子会话。
+**全程只用微软公开的 API 和系统自带组件，没有任何二进制改动。**
+
+| | RDP Wrapper / SuperRDP | 本程序 |
+|---|---|---|
+| 替换 `termsrv.dll` / 投放第三方 DLL | 是 | **否** |
+| 改写 `ServiceDll` 加载项 | 是（指向补丁 DLL） | **否**（只在检测到已被补丁接管时，帮你**还原**成原生值） |
+| 内存补丁 / 进程注入 / hook | 是 | **否** |
+| 依赖 | 逆向出的偏移量 | 公开 API（`wtsapi32.dll` + 公开 COM 组件） |
+| 系统更新后失效 | 常见 | 不受影响 |
+| 杀软误报 | 风险较高（DLL 劫持特征明显） | 仍有（管理员权限 + 改 RDP 设置），但无劫持特征 |
+
+不过要说清楚：本程序**确实会改动系统状态**，只是改的都是设置项，不是文件。
+
+| 改动 | 时机 | 如何还原 |
+|---|---|---|
+| `WTSEnableChildSessions(true)` 打开子会话 | 首次启动分身 | 控制中心 → 诊断 → 关闭 Child Sessions（恢复系统原状） |
+| 临时计划任务（把进程送进子会话） | 每次在分身里启动程序 | 启动后立即删除；异常残留会在下次启动清扫 |
+| `fDenyTSConnections` 改为 0 | 你在诊断面板点「修复」并确认 | 改回 1，或在系统设置里关闭远程桌面 |
+| `DevicePasswordLessBuildVersion` 改为 0 | 同上 | 在「设置 → 账户 → 登录选项」重新打开 |
+| `ServiceDll` 还原为原生 `termsrv.dll` | 同上（仅当检测到被补丁接管） | 重装补丁工具 |
+
+后三项都在**诊断与修复**面板里，每次执行前都会弹确认框写明改什么、影响什么；
+程序不会在后台静默改这些值。源码里所有注册表写入都集中在 `EnvironmentFixer` 一处，可以直接核对。
+
+---
+
 ## 安全声明
 
 - 本程序**以管理员权限运行**，并会调用 `WTSEnableChildSessions(true)` 修改系统的子会话开关。
