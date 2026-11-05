@@ -83,11 +83,18 @@ public partial class MainWindow : FluentWindow
 
         // 点最大化按钮 → 进入全屏，而不是普通的「最大化到工作区」。
         StateChanged += OnWindowStateChanged;
+
+        // 全屏下窗口失焦（切到别的程序、弹出凭据框等）时把浮层收起；
+        // 固定状态下不动，那是用户明确要求常驻的。
+        Deactivated += OnWindowDeactivated;
     }
 
     /// <inheritdoc />
     protected override void OnClosing(CancelEventArgs e)
     {
+        // 关闭时先收浮层：它是独立窗口，不跟着主窗口一起消失。
+        HideFullscreenBar();
+
         if (AllowClose || Dispatcher.HasShutdownStarted)
         {
             base.OnClosing(e);
@@ -136,12 +143,24 @@ public partial class MainWindow : FluentWindow
     /// </summary>
     private void OnWindowStateChanged(object? sender, EventArgs e)
     {
-        if (_suppressStateChange || _isFullscreen)
+        if (_isFullscreen)
         {
+            // 全屏期间只关心最小化/还原。
+            // 最小化时必须收起浮层：Popup 是独立窗口且 StaysOpen=True，
+            // 不管它的话会一直飘在桌面上，看着像程序没关干净。
+            if (WindowState == WindowState.Minimized)
+            {
+                HideFullscreenBar();
+            }
+            else if (WindowState == WindowState.Normal && !FullscreenBarPopup.IsOpen)
+            {
+                ShowFullscreenBar();
+            }
+
             return;
         }
 
-        if (WindowState != WindowState.Maximized)
+        if (_suppressStateChange || WindowState != WindowState.Maximized)
         {
             return;
         }
@@ -158,6 +177,14 @@ public partial class MainWindow : FluentWindow
         }
 
         EnterFullscreen();
+    }
+
+    private void OnWindowDeactivated(object? sender, EventArgs e)
+    {
+        if (_isFullscreen && !_barPinned)
+        {
+            HideFullscreenBar();
+        }
     }
 
     /// <summary>
@@ -262,6 +289,8 @@ public partial class MainWindow : FluentWindow
 
     private void OnFullscreenMinimizeClicked(object sender, RoutedEventArgs e)
     {
+        // 先收浮层再最小化：Popup 不随窗口最小化一起隐藏。
+        HideFullscreenBar();
         WindowState = WindowState.Minimized;
     }
 
