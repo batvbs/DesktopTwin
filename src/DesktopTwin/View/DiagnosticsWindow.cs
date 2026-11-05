@@ -87,6 +87,17 @@ internal sealed class DiagnosticsWindow : FluentWindow
         _refreshTimer.Start();
 
         Loaded += (_, _) => Refresh();
+
+        // Esc 关闭：这是个非模态面板，用户随手按 Esc 走人才符合直觉。
+        PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Escape)
+            {
+                e.Handled = true;
+                Close();
+            }
+        };
+
         Closed += (_, _) =>
         {
             _closed = true;
@@ -164,6 +175,15 @@ internal sealed class DiagnosticsWindow : FluentWindow
             HorizontalAlignment = HorizontalAlignment.Right
         };
 
+        var closeButton = new Wpf.Ui.Controls.Button
+        {
+            Content = "关闭",
+            MinWidth = 84,
+            Margin = new Thickness(0, 0, 8, 0),
+            IsCancel = true
+        };
+        closeButton.Click += (_, _) => Close();
+
         var refreshButton = new Wpf.Ui.Controls.Button
         {
             Content = "重新检测",
@@ -180,6 +200,7 @@ internal sealed class DiagnosticsWindow : FluentWindow
         };
         restartButton.Click += async (_, _) => await RestartComputerAsync();
 
+        buttons.Children.Add(closeButton);
         buttons.Children.Add(refreshButton);
         buttons.Children.Add(restartButton);
 
