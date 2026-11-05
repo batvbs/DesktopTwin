@@ -76,6 +76,11 @@ public sealed class ChildSessionService : IDisposable
     public event EventHandler? AutoLaunchSkipped;
 
     /// <summary>
+    /// 分身分辨率被修改。全屏模式据此重新判断该用 1:1 还是自适应缩放。
+    /// </summary>
+    public event EventHandler? DesktopSizeChanged;
+
+    /// <summary>
     /// 分身窗口实例。窗口在首次显示或首次连接时创建，未创建时为 null。
     /// </summary>
     public MainWindow? Window => _desktopWindow;
@@ -144,6 +149,48 @@ public sealed class ChildSessionService : IDisposable
     public DrawingSize DesktopSize => new(
         _settings.Current.Session.DesktopWidth,
         _settings.Current.Session.DesktopHeight);
+
+    /// <summary>
+    /// 分身内部当前的实际桌面尺寸。未连接或读不到时为 null。
+    ///
+    /// 与 <see cref="DesktopSize"/> 的区别：后者是我们请求的尺寸，
+    /// 这个是从 RDP 控件读回来的实际尺寸——用户在分身内部改过分辨率时两者会不同。
+    /// </summary>
+    public DrawingSize? RemoteDesktopSize => _desktopWindow?.RdpHost.TryGetRemoteDesktopSize();
+
+    /// <summary>
+    /// 把「分身内部实际分辨率」同步回设置。
+    ///
+    /// 用户在分身里自己改了分辨率时，我们的连接参数不会跟着变，
+    /// 下次重连还会按旧尺寸重建。这里把实际值写回设置，让两边重新对齐。
+    /// </summary>
+    /// <param name="width">实际宽度。</param>
+    /// <param name="height">实际高度。</param>
+    /// <returns>值有变化并已更新时返回 true。</returns>
+    public bool SyncDesktopSizeFromRemote(int width, int height)
+    {
+        ThrowIfDisposed();
+
+        if (!SessionSettings.IsValidDesktopSize(width, height))
+        {
+            return false;
+        }
+
+        var session = _settings.Current.Session;
+        if (session.DesktopWidth == width && session.DesktopHeight == height)
+        {
+            return false;
+        }
+
+        session.DesktopWidth = width;
+        session.DesktopHeight = height;
+        _settings.SaveSoon();
+
+        // 让界面刷新分辨率菜单的勾选状态，并让全屏重新判断缩放模式。
+        DesktopSizeChanged?.Invoke(this, EventArgs.Empty);
+        RefreshState($"检测到分身内分辨率已变为 {width} × {height}");
+        return true;
+    }
 
     /// <summary>
     /// 普通窗口模式的记忆位置。
@@ -524,6 +571,9 @@ public sealed class ChildSessionService : IDisposable
         _settings.Current.Session.DesktopWidth = width;
         _settings.Current.Session.DesktopHeight = height;
         _settings.SaveSoon();
+
+        // 分辨率变了，全屏下「1:1 还是自适应」的判定前提也变了，通知界面重新算。
+        DesktopSizeChanged?.Invoke(this, EventArgs.Empty);
 
         var window = EnsureDesktopWindow();
         if (window.RdpHost.ConnectedState == 0 && ChildSessionId is null)

@@ -38,6 +38,8 @@ public partial class MainWindow : FluentWindow
     private bool _smartSizingBeforeFullscreen;
     private DispatcherTimer? _barAutoHideTimer;
     private DispatcherTimer? _cursorWatchTimer;
+    private DispatcherTimer? _remoteSizeWatchTimer;
+    private HwndSource? _windowSource;
 
     /// <summary>
     /// 承载 RDP ActiveX 的宿主控件。
@@ -87,6 +89,9 @@ public partial class MainWindow : FluentWindow
         // 全屏下窗口失焦（切到别的程序、弹出凭据框等）时把浮层收起；
         // 固定状态下不动，那是用户明确要求常驻的。
         Deactivated += OnWindowDeactivated;
+
+        // 分身分辨率被改时，全屏下的「1:1 / 自适应」判定前提也变了。
+        _childSessionService.DesktopSizeChanged += OnDesktopSizeChanged;
     }
 
     /// <inheritdoc />
@@ -121,6 +126,14 @@ public partial class MainWindow : FluentWindow
             viewModel.Detach();
         }
 
+        if (_windowSource is not null)
+        {
+            _windowSource.RemoveHook(OnWindowMessage);
+            _windowSource = null;
+        }
+
+        _childSessionService.DesktopSizeChanged -= OnDesktopSizeChanged;
+
         RdpFormsHost.Child = null;
         RdpHost.Dispose();
         base.OnClosed(e);
@@ -133,6 +146,14 @@ public partial class MainWindow : FluentWindow
         if (DataContext is MainWindowViewModel viewModel)
         {
             viewModel.AttachWindow(this);
+        }
+
+        // 监听 WM_DISPLAYCHANGE：全屏时用户改了分辨率或换了显示器，
+        // 窗口要重新贴合新尺寸，缩放模式也要重新判定。
+        if (_windowSource is null)
+        {
+            _windowSource = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);
+            _windowSource?.AddHook(OnWindowMessage);
         }
     }
 
@@ -212,16 +233,6 @@ public partial class MainWindow : FluentWindow
             ResizeMode = ResizeMode.NoResize;
             WindowState = WindowState.Normal;
 
-            // 铺满整个显示器（含任务栏区域），而不是工作区。
-            if (WindowNativeMethods.TryGetMonitorRect(new WindowInteropHelper(this).Handle, out var monitor))
-            {
-                var dpi = VisualTreeHelper.GetDpi(this);
-                Left = monitor.Left / dpi.DpiScaleX;
-                Top = monitor.Top / dpi.DpiScaleY;
-                Width = (monitor.Right - monitor.Left) / dpi.DpiScaleX;
-                Height = (monitor.Bottom - monitor.Top) / dpi.DpiScaleY;
-            }
-
             // 任务栏是 topmost 的，普通窗口压不住它，全屏期间必须临时置顶。
             // 用 SetCurrentValue 而不是直接赋值：直接赋值会清掉 XAML 的 OneWay 绑定。
             SetCurrentValue(TopmostProperty, true);
@@ -235,12 +246,22 @@ public partial class MainWindow : FluentWindow
         WindowTitleBar.Visibility = Visibility.Collapsed;
         TitleRow.Height = new GridLength(0);
 
-        // 全屏固定自适应缩放；不写设置，退出时还原用户原来的选择。
-        _childSessionService.SetSmartSizing(true, persist: false);
+        // 去掉 RDP 宿主的 3px 边距。
+        //
+        // 那 3px 是给窗口边缘拖拽留的命中区（样式里只在 Maximized 时才归零），
+        // 而全屏时窗口状态是 Normal，样式给的仍是 3,0,3,3——
+        // 于是画面比屏幕窄 6px、矮 3px。此时就算分辨率完全一致，
+        // 自适应缩放也会做一次非整数重采样（例如 2560 → 2554），画面必然发虚。
+        // 全屏下没有边框可拖，这个边距只会帮倒忙。
+        RdpFormsHost.ClearValue(FrameworkElement.MarginProperty);
+        RdpFormsHost.Margin = new Thickness(0);
+
+        ApplyFullscreenBounds();
 
         UpdatePinButtons();
         ShowFullscreenBar();
         StartCursorWatch();
+        StartRemoteSizeWatch();
         NotifyResolutionMismatch();
     }
 
@@ -256,6 +277,7 @@ public partial class MainWindow : FluentWindow
 
         _isFullscreen = false;
         StopCursorWatch();
+        StopRemoteSizeWatch();
         HideFullscreenBar();
 
         _suppressStateChange = true;
@@ -265,6 +287,9 @@ public partial class MainWindow : FluentWindow
             ResizeMode = _resizeBeforeFullscreen;
             WindowTitleBar.Visibility = Visibility.Visible;
             TitleRow.Height = GridLength.Auto;
+
+            // 还原样式里给 RDP 宿主留的 3px 命中区（全屏时被清成 0 了）。
+            RdpFormsHost.ClearValue(FrameworkElement.MarginProperty);
 
             SetCurrentValue(TopmostProperty, _settings.Current.Session.Topmost);
 
@@ -285,6 +310,139 @@ public partial class MainWindow : FluentWindow
         }
 
         _childSessionService.SetSmartSizing(_smartSizingBeforeFullscreen, persist: false);
+    }
+
+    /// <summary>
+    /// 把窗口贴合到当前显示器，并按最新屏幕尺寸决定缩放模式。
+    ///
+    /// 进入全屏、以及显示器分辨率变化时都会调用，所以不能依赖进入时的缓存值。
+    /// </summary>
+    private void ApplyFullscreenBounds()
+    {
+        if (!WindowNativeMethods.TryGetMonitorRect(new WindowInteropHelper(this).Handle, out var monitor))
+        {
+            return;
+        }
+
+        var monitorWidth = monitor.Right - monitor.Left;
+        var monitorHeight = monitor.Bottom - monitor.Top;
+        var dpi = VisualTreeHelper.GetDpi(this);
+
+        Left = monitor.Left / dpi.DpiScaleX;
+        Top = monitor.Top / dpi.DpiScaleY;
+        Width = monitorWidth / dpi.DpiScaleX;
+        Height = monitorHeight / dpi.DpiScaleY;
+
+        UpdateFullscreenScaling(monitorWidth, monitorHeight);
+    }
+
+    /// <summary>
+    /// 按「分身分辨率是否等于屏幕分辨率」决定全屏下的缩放模式。
+    ///
+    /// 一致 → 1:1：像素一一对应，不重采样，这是最清晰的一档；
+    /// 不一致 → 自适应：反正都要缩放，优先保证铺满。
+    /// 两者都只改运行时行为，不写设置，退出全屏时还原用户原本的选择。
+    /// </summary>
+    private void UpdateFullscreenScaling(int monitorWidth, int monitorHeight)
+    {
+        var session = _settings.Current.Session;
+        var matchesScreen = monitorWidth > 0
+            && monitorHeight > 0
+            && session.DesktopWidth == monitorWidth
+            && session.DesktopHeight == monitorHeight;
+
+        _childSessionService.SetSmartSizing(!matchesScreen, persist: false);
+    }
+
+    private IntPtr OnWindowMessage(
+        IntPtr hwnd,
+        int message,
+        IntPtr wParam,
+        IntPtr lParam,
+        ref bool handled)
+    {
+        const int WmDisplayChange = 0x007E;
+
+        if (message == WmDisplayChange && _isFullscreen)
+        {
+            // 等系统把新的显示信息落定再重新贴合：在消息处理里立刻读
+            // monitor rect，拿到的可能还是旧的尺寸。
+            _ = Dispatcher.BeginInvoke(
+                new Action(OnDisplaySettingsChanged),
+                DispatcherPriority.Background);
+        }
+
+        return IntPtr.Zero;
+    }
+
+    private void OnDisplaySettingsChanged()
+    {
+        if (!_isFullscreen || !IsLoaded)
+        {
+            return;
+        }
+
+        ApplyFullscreenBounds();
+        NotifyResolutionMismatch();
+    }
+
+    /// <summary>
+    /// 盯着「分身内部」的分辨率。
+    ///
+    /// 用户可能在分身里自己打开「显示设置」改分辨率——那不会经过我们的菜单，
+    /// 也没有任何事件通知。只能定期读一次 RDP 控件的实际尺寸，
+    /// 发现变了就同步回设置并重新判定缩放模式。
+    ///
+    /// 只在全屏期间轮询：非全屏时窗口布局与缩放都不由我们强制，没有实时响应的必要。
+    /// </summary>
+    private void StartRemoteSizeWatch()
+    {
+        _remoteSizeWatchTimer ??= new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromSeconds(2)
+        };
+
+        _remoteSizeWatchTimer.Tick -= OnRemoteSizeTick;
+        _remoteSizeWatchTimer.Tick += OnRemoteSizeTick;
+        _remoteSizeWatchTimer.Start();
+    }
+
+    private void StopRemoteSizeWatch()
+    {
+        _remoteSizeWatchTimer?.Stop();
+    }
+
+    private void OnRemoteSizeTick(object? sender, EventArgs e)
+    {
+        if (!_isFullscreen)
+        {
+            return;
+        }
+
+        if (_childSessionService.RemoteDesktopSize is not { } size)
+        {
+            return;
+        }
+
+        // 值没变就什么也不做；变了才写设置并触发重新判定
+        // （SyncDesktopSizeFromRemote 会发 DesktopSizeChanged，进而重新算缩放）。
+        _ = _childSessionService.SyncDesktopSizeFromRemote(size.Width, size.Height);
+    }
+
+    /// <summary>
+    /// 分身分辨率被修改（菜单里的「桌面分辨率」）。
+    /// 全屏下要立刻重新判断该用 1:1 还是自适应，否则画面会停在旧的缩放方式上。
+    /// </summary>
+    private void OnDesktopSizeChanged(object? sender, EventArgs e)
+    {
+        if (!_isFullscreen)
+        {
+            return;
+        }
+
+        _ = Dispatcher.BeginInvoke(
+            new Action(ApplyFullscreenBounds),
+            DispatcherPriority.Background);
     }
 
     private void OnFullscreenMinimizeClicked(object sender, RoutedEventArgs e)

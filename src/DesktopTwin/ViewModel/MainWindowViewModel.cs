@@ -181,6 +181,7 @@ public partial class MainWindowViewModel : ObservableObject
         _childSessionService.SystemShortcutsReconnectCompleted += OnSystemShortcutsReconnectCompleted;
         _childSessionService.AudioReconnectCompleted += OnAudioReconnectCompleted;
         _childSessionService.AutoLaunchSkipped += OnAutoLaunchSkipped;
+        _childSessionService.DesktopSizeChanged += OnDesktopSizeChanged;
         UpdateConnectionStatus();
     }
 
@@ -555,6 +556,7 @@ public partial class MainWindowViewModel : ObservableObject
     /// </summary>
     internal void Detach()
     {
+        _childSessionService.DesktopSizeChanged -= OnDesktopSizeChanged;
         _globalHotkey?.Dispose();
         _globalHotkey = null;
         _uuViewSwitchService.Dispose();
@@ -659,6 +661,15 @@ public partial class MainWindowViewModel : ObservableObject
             + $"建议在「控制中心 → 桌面分辨率」里改为 {screenWidth} × {screenHeight}。",
             InfoBarSeverity.Warning,
             TimeSpan.FromSeconds(12));
+    }
+
+    /// <summary>
+    /// 分身分辨率被改动（菜单里改的，或检测到分身内部自己改的）。
+    /// 刷新分辨率菜单的勾选状态与状态栏文本。
+    /// </summary>
+    private void OnDesktopSizeChanged(object? sender, EventArgs e)
+    {
+        NotifyResolutionChanged();
     }
 
     /// <summary>

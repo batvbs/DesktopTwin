@@ -65,6 +65,40 @@ internal sealed class RdpActiveXHost : AxHost
     }
 
     /// <summary>
+    /// 读取远端桌面当前的实际尺寸。
+    ///
+    /// 用途：用户在分身内部自己改了分辨率（Windows 设置 → 显示），
+    /// 我们发起的连接参数不会跟着变，但 OCX 的 DesktopWidth/DesktopHeight
+    /// 会反映当前会话的真实尺寸。读不到时返回 null（不抛异常）。
+    /// </summary>
+    internal DrawingSize? TryGetRemoteDesktopSize()
+    {
+        if (!IsHandleCreated)
+        {
+            return null;
+        }
+
+        try
+        {
+            var client = GetRequiredOcx();
+            var width = Convert.ToInt32(
+                GetComProperty(client, "DesktopWidth"),
+                CultureInfo.InvariantCulture);
+            var height = Convert.ToInt32(
+                GetComProperty(client, "DesktopHeight"),
+                CultureInfo.InvariantCulture);
+
+            return width > 0 && height > 0 ? new DrawingSize(width, height) : null;
+        }
+        catch (Exception exception) when (exception is COMException
+                                              or InvalidCastException
+                                              or InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
     /// 设置自动登录凭据的来源。每次发起连接时都会调用一次，取不到就退回交互式输入。
     ///
     /// 用回调而不是缓存值：设置类重连（改分辨率、切音频）也会走连接流程，
