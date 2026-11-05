@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using DesktopTwin.Models;
+using DesktopTwin.Services;
 using DrawingSize = System.Drawing.Size;
 
 namespace DesktopTwin.Interop;
@@ -33,6 +34,7 @@ internal sealed class RdpActiveXHost : AxHost
     private DrawingSize? _pendingReconnectDesktopSize;
     private bool _smartSizingEnabled = true;
     private bool _inputBlocked;
+    private Func<(string UserName, string Domain, string Password)?>? _credentialProvider;
 
     internal event EventHandler<ChildSessionConnectionFailedEventArgs>? ConnectionFailed;
 
@@ -62,9 +64,20 @@ internal sealed class RdpActiveXHost : AxHost
         }
     }
 
-    internal void ConnectToChildSession(DrawingSize desktopSize)
+    /// <summary>
+    /// 设置自动登录凭据的来源。每次发起连接时都会调用一次，取不到就退回交互式输入。
+    ///
+    /// 用回调而不是缓存值：设置类重连（改分辨率、切音频）也会走连接流程，
+    /// 回调能保证这些路径同样拿得到最新凭据。
+    /// </summary>
+    internal void SetCredentialProvider(
+        Func<(string UserName, string Domain, string Password)?>? provider)
     {
-        if (ConnectedState != 0)
+        _credentialProvider = provider;
+    }
+
+    internal void ConnectToChildSession(DrawingSize desktopSize)
+    {        if (ConnectedState != 0)
         {
             return;
         }
@@ -117,6 +130,8 @@ internal sealed class RdpActiveXHost : AxHost
             TrySetExtendedProperty(extendedSettings, "EnableZoom", true);
             extendedSettings.set_Property("ConnectToChildSession", ref connectToChildSession);
         });
+
+        ApplyCredentials(client);
 
         _connectionAttemptInProgress = true;
         _connectionFailureReported = false;
@@ -233,6 +248,13 @@ internal sealed class RdpActiveXHost : AxHost
         _pendingReconnectDesktopSize = null;
         _ = DisconnectCore();
     }
+
+    /// <summary>
+    /// 主动断开 RDP 连接，但保留远端会话（桌面上的程序继续运行）。
+    /// 走这条路径不会触发「连接意外断开」的失败提示。
+    /// </summary>
+    /// <returns>确实发起了断开返回 true。</returns>
+    internal bool Disconnect() => DisconnectCore();
 
     private bool DisconnectCore()
     {
@@ -644,6 +666,64 @@ internal sealed class RdpActiveXHost : AxHost
             // 旧版 MsTscAx 可能不支持该扩展属性，继续使用原有显示行为。
         }
     }
+
+    /// <summary>
+    /// 把自动登录凭据交给 RDP 客户端。
+    ///
+    /// 每一步都单独兜住异常：凭据设不上只是退回「让用户自己输」，
+    /// 不该因为一个可选属性不支持就让整次连接失败。
+    /// </summary>
+    private void ApplyCredentials(object client)
+    {
+        var credential = _credentialProvider?.Invoke();
+        if (credential is not { } value || string.IsNullOrWhiteSpace(value.UserName))
+        {
+            return;
+        }
+
+        try
+        {
+            SetComProperty(client, "UserName", value.UserName);
+        }
+        catch (Exception exception) when (IsCredentialStepException(exception))
+        {
+            AppLog.Warn("设置 RDP 登录用户名失败，将退回手动输入。", exception);
+        }
+
+        if (!string.IsNullOrWhiteSpace(value.Domain))
+        {
+            try
+            {
+                SetComProperty(client, "Domain", value.Domain);
+            }
+            catch (Exception exception) when (IsCredentialStepException(exception))
+            {
+                AppLog.Warn("设置 RDP 登录域失败，将退回手动输入。", exception);
+            }
+        }
+
+        if (string.IsNullOrEmpty(value.Password))
+        {
+            return;
+        }
+
+        try
+        {
+            // 密码只经过 RDP 的凭据通道，不写入任何持久化存储。
+            ((IMsRdpClientNonScriptable)client).put_ClearTextPassword(value.Password);
+        }
+        catch (Exception exception) when (IsCredentialStepException(exception))
+        {
+            AppLog.Warn("设置 RDP 登录密码失败，将退回手动输入。", exception);
+        }
+    }
+
+    private static bool IsCredentialStepException(Exception exception) =>
+        exception.GetBaseException() is COMException
+            or InvalidCastException
+            or TargetInvocationException
+            or MissingMemberException
+            or InvalidOperationException;
 
     private static object? InvokeComMethod(object target, string methodName, params object[]? args)
     {

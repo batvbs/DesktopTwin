@@ -54,6 +54,9 @@ public partial class MainWindow : FluentWindow
         // 这里绝不能再给 Topmost 赋值：对已有绑定的依赖属性调用 SetValue 会清掉绑定，
         // 置顶按钮从此失效（要保留绑定只能用 SetCurrentValue）。
         Background = new SolidColorBrush(Color.FromRgb(0x20, 0x20, 0x20));
+
+        // 全局热键需要窗口句柄，构造阶段还拿不到，等 Loaded 之后再注册。
+        Loaded += OnWindowLoaded;
     }
 
     /// <inheritdoc />
@@ -80,9 +83,24 @@ public partial class MainWindow : FluentWindow
     /// <inheritdoc />
     protected override void OnClosed(EventArgs e)
     {
+        if (DataContext is MainWindowViewModel viewModel)
+        {
+            viewModel.Detach();
+        }
+
         RdpFormsHost.Child = null;
         RdpHost.Dispose();
         base.OnClosed(e);
+    }
+
+    private void OnWindowLoaded(object sender, RoutedEventArgs e)
+    {
+        // 只需要句柄，重复触发（窗口重新显示）时重复调用也无副作用：
+        // 内部会先注销再按当前设置重新注册。
+        if (DataContext is MainWindowViewModel viewModel)
+        {
+            viewModel.AttachWindow(this);
+        }
     }
 
     private async Task ConfirmAndLogoffAsync()
@@ -124,8 +142,10 @@ public partial class MainWindow : FluentWindow
     /// <summary>
     /// 结束进程。
     ///
-    /// 这里必须是「退出」而不是「隐藏」。本程序没有托盘图标，窗口一旦隐藏就再没有入口叫回来，
-    /// 而单实例互斥体还在手上——用户再次双击只会看到「已经在运行了」，然后对着一个不存在的窗口发呆。
+    /// 这里必须是「退出」而不是「隐藏」：单实例互斥体还握在手上，
+    /// 只隐藏窗口的话用户再次双击只会看到「已经在运行了」，
+    /// 而任务栏里又没有这个窗口——只能靠托盘图标或再启动一次唤回。
+    /// 点 X 的语义就是退出，不该把进程留在后台。
     /// </summary>
     private void ExitApplication()
     {

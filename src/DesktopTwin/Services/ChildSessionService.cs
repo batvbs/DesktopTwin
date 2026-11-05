@@ -31,6 +31,7 @@ public sealed class ChildSessionService : IDisposable
     private const int ErrorTimeout = 1460;
 
     private readonly SettingsService _settings;
+    private readonly AutoLoginService? _autoLogin;
     private readonly DispatcherTimer _statusTimer;
     private readonly SemaphoreSlim _launchSemaphore = new(1, 1);
     private readonly CancellationTokenSource _disposeCancellationTokenSource = new();
@@ -78,6 +79,14 @@ public sealed class ChildSessionService : IDisposable
     /// 分身窗口实例。窗口在首次显示或首次连接时创建，未创建时为 null。
     /// </summary>
     public MainWindow? Window => _desktopWindow;
+
+    /// <summary>
+    /// 自动登录服务。未注入时为 null。
+    ///
+    /// 界面要读写「已保存的密码」，而凭据的实际使用发生在本服务内部，
+    /// 与其让两处各持一个实例，不如由本服务持有、界面借用。
+    /// </summary>
+    internal AutoLoginService? AutoLogin => _autoLogin;
 
     /// <summary>
     /// 状态栏文本。
@@ -191,8 +200,19 @@ public sealed class ChildSessionService : IDisposable
     /// 创建服务。构造时立即刷新一次状态，界面随后可以安全读取。
     /// </summary>
     public ChildSessionService(SettingsService settings)
+        : this(settings, autoLogin: null)
+    {
+    }
+
+    /// <summary>
+    /// 创建服务并注入自动登录。
+    /// </summary>
+    /// <param name="settings">设置来源。</param>
+    /// <param name="autoLogin">自动登录服务；为空表示不启用自动登录。</param>
+    internal ChildSessionService(SettingsService settings, AutoLoginService? autoLogin)
     {
         _settings = settings;
+        _autoLogin = autoLogin;
         SendSystemShortcutsToRemote = settings.Current.Session.SendSystemShortcutsToRemote;
         _statusTimer = new DispatcherTimer(DispatcherPriority.Background)
         {
@@ -293,6 +313,73 @@ public sealed class ChildSessionService : IDisposable
         ThrowIfDisposed();
         _desktopWindow?.Hide();
         RefreshState("已隐藏桌面分身窗口，RDP 连接保持不变");
+    }
+
+    /// <summary>
+    /// 断开分身桌面，但保留会话（桌面里的程序继续运行）。
+    ///
+    /// 供 UU 视角切换使用：UU 的被控端只会挑会话号最大的已登录桌面，
+    /// 把分身断开它就只能落到 Console。
+    /// </summary>
+    /// <returns>确实发起了断开返回 true。</returns>
+    public bool DisconnectDesktopForSwitch()
+    {
+        ThrowIfDisposed();
+        var window = _desktopWindow;
+        if (window is null || window.RdpHost.ConnectedState == 0)
+        {
+            return false;
+        }
+
+        // 走 RDP 客户端的正常断开：这是「有意的断开」，
+        // 不会触发「RDP 连接意外断开」的失败提示与重试。
+        var disconnected = window.RdpHost.Disconnect();
+        RefreshState(disconnected
+            ? "已断开分身桌面，会话与其中的程序保留"
+            : "断开分身桌面失败");
+        return disconnected;
+    }
+
+    /// <summary>
+    /// 确保分身桌面处于已连接状态。会话不存在时走完整启动流程。
+    /// </summary>
+    /// <param name="cancellationToken">取消标记。</param>
+    /// <returns>连接成功返回 true。</returns>
+    public async Task<bool> EnsureDesktopConnectedAsync(CancellationToken cancellationToken)
+    {
+        ThrowIfDisposed();
+
+        var window = EnsureDesktopWindow();
+        ShowDesktopWindow(window);
+
+        if (window.RdpHost.ConnectedState != 1)
+        {
+            if (ChildSessionNativeMethods.TryGetChildSessionId() is null)
+            {
+                // 会话被注销了：走完整启动流程，顺带补上环境预检。
+                await StartAsync().ConfigureAwait(true);
+            }
+            else
+            {
+                // 会话还在（只是断开）：重新连回去，桌面上的程序都还在。
+                window.RdpHost.ReconnectToChildSession(DesktopSize);
+                RefreshState("正在重新连接桌面分身");
+            }
+        }
+
+        var deadline = DateTime.UtcNow + ConnectionTimeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (window.RdpHost.ConnectedState == 1)
+            {
+                return true;
+            }
+
+            await Task.Delay(400, cancellationToken).ConfigureAwait(true);
+        }
+
+        return window.RdpHost.ConnectedState == 1;
     }
 
     /// <summary>
@@ -668,10 +755,26 @@ public sealed class ChildSessionService : IDisposable
         _desktopWindow.IsVisibleChanged += OnDesktopWindowVisibilityChanged;
         _desktopWindow.RdpHost.ConnectionFailed += OnRdpConnectionFailed;
         _desktopWindow.RdpHost.LoginCompleted += OnRdpLoginCompleted;
+        _desktopWindow.RdpHost.SetCredentialProvider(ProvideAutoLoginCredential);
         _desktopWindow.RdpHost.SetSmartSizing(_settings.Current.Session.SmartSizing);
         _desktopWindow.RdpHost.SetSendSystemShortcutsToRemote(SendSystemShortcutsToRemote);
         _desktopWindow.RdpHost.SetAudioMuted(AudioMuted);
         return _desktopWindow;
+    }
+
+    /// <summary>
+    /// 给 RDP 客户端提供自动登录凭据。关闭开关或没存密码时返回 null，退回交互式输入。
+    /// </summary>
+    private (string UserName, string Domain, string Password)? ProvideAutoLoginCredential()
+    {
+        if (_autoLogin is null)
+        {
+            return null;
+        }
+
+        return _autoLogin.TryGetCredential(out var credential)
+            ? (credential.UserName, credential.Domain, credential.Password)
+            : null;
     }
 
     private static void ShowDesktopWindow(Window window)
@@ -700,6 +803,13 @@ public sealed class ChildSessionService : IDisposable
         try
         {
             RefreshState();
+
+            // 连接中且开了自动登录：开始盯着可能出现的凭据弹窗。
+            // 放在状态轮询里而不是每个连接入口各写一遍，重连、重试、设置变更全覆盖。
+            if (ConnectedState == 2 && _autoLogin is { IsEnabled: true })
+            {
+                _autoLogin.StartWatching();
+            }
         }
         catch (Exception exception) when (IsExpectedChildSessionException(exception))
         {
@@ -800,6 +910,9 @@ public sealed class ChildSessionService : IDisposable
     {
         _lastConnectionFailure = e;
 
+        // 这一轮连接结束了，停止盯凭据弹窗；下一次连接会重新开始计数。
+        _autoLogin?.StopWatching();
+
         if (_pendingRdpSettingChanges != RdpSettingChange.None)
         {
             if (_rdpSettingsReconnectRetryInProgress)
@@ -835,6 +948,9 @@ public sealed class ChildSessionService : IDisposable
         _initialConnectionRetriesRemaining = 0;
         _connectionRetryInProgress = false;
         _connectionAttemptCompletionSource?.TrySetResult(true);
+
+        // 登录已经完成，再盯着凭据弹窗只会误填下一个（比如用户手动打开的安全对话框）。
+        _autoLogin?.StopWatching();
 
         // 输入窗口每次连接都会新建，观看模式需要重新施加到新窗口上。
         _desktopWindow?.RdpHost.SetInputBlocked(WatchModeEnabled);

@@ -11,9 +11,11 @@
 		<LangVersion>14.0</LangVersion>
 		<ImplicitUsings>disable</ImplicitUsings>
 		<ApplicationManifest>app.manifest</ApplicationManifest>
+		<!-- 图标取自系统远程桌面客户端，由 build/make-icon.ps1 原样重打包（多尺寸、零缩放） -->
+		<ApplicationIcon>Assets\DesktopTwin.ico</ApplicationIcon>
 		<!-- WPF 的 DPI 感知由 app.manifest 声明；WinForms 的 WFO0003 分析器不适用于本项目的混合场景 -->
 		<NoWarn>$(NoWarn);WFO0003</NoWarn>
-		<Version>0.1.1</Version>
+		<Version>0.1.2</Version>
 		<Product>DesktopTwin 桌面分身</Product>
 		<AssemblyTitle>DesktopTwin 桌面分身</AssemblyTitle>
 		<Description>把 Windows 自带的第二个桌面会话（RDP Child Session）变成桌面上的一个窗口。</Description>
@@ -27,6 +29,11 @@
 		<PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
 		<PackageReference Include="Microsoft.Xaml.Behaviors.Wpf" Version="1.1.135" />
 		<PackageReference Include="WPF-UI" Version="4.2.0" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<!-- 同时作为 WPF 资源嵌入：窗口图标与托盘图标从这里读，避免依赖 exe 的 Win32 图标资源 -->
+		<Resource Include="Assets\DesktopTwin.ico" />
 	</ItemGroup>
 
 	<ItemGroup>

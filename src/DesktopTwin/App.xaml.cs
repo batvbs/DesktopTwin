@@ -23,8 +23,10 @@ public partial class App : Application
     private const string ActivateEventName = @"Global\DesktopTwin.Activate";
 
     private SettingsService? _settings;
+    private AutoLoginService? _autoLogin;
     private ChildSessionService? _childSessionService;
     private MainWindow? _mainWindow;
+    private TrayIconService? _trayIcon;
     private Mutex? _singleInstanceMutex;
     private bool _ownsSingleInstanceMutex;
     private EventWaitHandle? _activateEvent;
@@ -84,13 +86,17 @@ public partial class App : Application
         _ = Task.Run(ChildSessionProcessLauncher.SweepOrphanTasks);
 
         _settings = new SettingsService();
-        _childSessionService = new ChildSessionService(_settings);
+        _autoLogin = new AutoLoginService(_settings);
+        _childSessionService = new ChildSessionService(_settings, _autoLogin);
 
         // 窗口由服务按需创建（首次显示或首次连接时），这里只负责触发显示，
         // 避免出现「服务持有一个窗口、App 又建了一个窗口」的重复实例。
         _childSessionService.ShowWindow();
         _mainWindow = _childSessionService.Window;
         MainWindow = _mainWindow;
+
+        // 托盘图标常驻：窗口被隐藏后，这是唯一能把它叫回来的入口。
+        _trayIcon = new TrayIconService(_childSessionService);
     }
 
     /// <inheritdoc />
@@ -98,7 +104,12 @@ public partial class App : Application
     {
         AppLog.Info("DesktopTwin 退出");
 
+        // 托盘先释放：它会订阅服务的状态事件，服务释放后回调会打到已失效的对象上。
+        _trayIcon?.Dispose();
+        _trayIcon = null;
+
         _childSessionService?.Dispose();
+        _autoLogin?.Dispose();
         _settings?.Dispose();
 
         // ReleaseMutex 只能由持有者线程调用，未持有（第二个实例）时调用会抛 ApplicationException。

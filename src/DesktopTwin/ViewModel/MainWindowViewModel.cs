@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Media;
@@ -27,7 +28,11 @@ public partial class MainWindowViewModel : ObservableObject
     private readonly ChildSessionService _childSessionService;
     private readonly SettingsService _settings;
     private readonly DispatcherTimer _notificationTimer;
+    private readonly UuViewSwitchService _uuViewSwitchService;
+    private GlobalHotkeyService? _globalHotkey;
+    private Window? _hotkeyWindow;
     private bool _startRequested;
+    private bool _uuSwitchInProgress;
 
     [ObservableProperty]
     private Brush _connectionStatusBrush = Brushes.Red;
@@ -126,6 +131,17 @@ public partial class MainWindowViewModel : ObservableObject
     [NotifyCanExecuteChangedFor(nameof(ToggleAudioMutedCommand))]
     private bool _isAudioReconnectPending;
 
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(UuViewSwitchMenuHeader))]
+    private bool _uuViewSwitchEnabled;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(AutoLoginMenuHeader))]
+    private bool _autoLoginEnabled;
+
+    [ObservableProperty]
+    private bool _hasAutoLoginPassword;
+
     /// <summary>
     /// 创建 ViewModel 并订阅服务事件。
     /// </summary>
@@ -147,6 +163,11 @@ public partial class MainWindowViewModel : ObservableObject
         _runAsAdministrator = settings.Current.Launch.RunAsAdministrator;
         _targetProgramText = BuildTargetProgramText(settings.Current.Launch.TargetPath);
         _isSmallWindowMode = settings.Current.Window.SmallWindowMode;
+
+        _uuViewSwitchService = new UuViewSwitchService(childSessionService);
+        _uuViewSwitchEnabled = settings.Current.Automation.UuViewSwitchEnabled;
+        _autoLoginEnabled = settings.Current.Automation.AutoLoginEnabled;
+        _hasAutoLoginPassword = childSessionService.AutoLogin?.HasStoredPassword == true;
 
         _notificationTimer = new DispatcherTimer(DispatcherPriority.Background)
         {
@@ -501,6 +522,343 @@ public partial class MainWindowViewModel : ObservableObject
     {
         RunAsAdministrator = !RunAsAdministrator;
     }
+
+    /// <summary>
+    /// UU 视角切换菜单文本。
+    /// </summary>
+    public string UuViewSwitchMenuHeader => UuViewSwitchEnabled ? "UU 视角切换（已启用）" : "UU 视角切换";
+
+    /// <summary>
+    /// 自动登录菜单文本。
+    /// </summary>
+    public string AutoLoginMenuHeader => AutoLoginEnabled ? "自动登录分身（已启用）" : "自动登录分身";
+
+    /// <summary>
+    /// 当前 UU 切换热键的可读文本。
+    /// </summary>
+    public string UuHotkeyText =>
+        GlobalHotkeyService.Format(_settings.Current.Automation.UuViewSwitchHotkey);
+
+    /// <summary>
+    /// 把窗口交给 ViewModel，用于注册全局热键。窗口创建后调用一次。
+    /// </summary>
+    /// <param name="window">主窗口。</param>
+    internal void AttachWindow(Window window)
+    {
+        _hotkeyWindow = window;
+        ApplyUuHotkey(notifySuccess: false);
+    }
+
+    /// <summary>
+    /// 窗口关闭时释放热键与后台服务。
+    /// </summary>
+    internal void Detach()
+    {
+        _globalHotkey?.Dispose();
+        _globalHotkey = null;
+        _uuViewSwitchService.Dispose();
+    }
+
+    /// <summary>
+    /// 立即执行一次视角切换。菜单项和热键走同一条路径。
+    /// </summary>
+    [RelayCommand]
+    private async Task TriggerUuViewSwitchAsync()
+    {
+        if (_uuSwitchInProgress)
+        {
+            return;
+        }
+
+        _uuSwitchInProgress = true;
+        try
+        {
+            ShowNotification(
+                "正在切换视角",
+                "正在调整会话落点，请稍候…",
+                InfoBarSeverity.Informational,
+                TimeSpan.FromSeconds(3));
+
+            var result = await _uuViewSwitchService.ToggleAsync(CancellationToken.None);
+            ShowNotification(
+                result.Success ? "视角切换完成" : "视角切换失败",
+                result.Message,
+                result.Success ? InfoBarSeverity.Success : InfoBarSeverity.Warning,
+                TimeSpan.FromSeconds(6));
+        }
+        finally
+        {
+            _uuSwitchInProgress = false;
+        }
+    }
+
+    /// <summary>
+    /// 启用 / 关闭 UU 视角切换热键。
+    /// </summary>
+    [RelayCommand]
+    private void ToggleUuViewSwitch()
+    {
+        UuViewSwitchEnabled = !UuViewSwitchEnabled;
+        _settings.Current.Automation.UuViewSwitchEnabled = UuViewSwitchEnabled;
+        _settings.SaveSoon();
+
+        if (UuViewSwitchEnabled)
+        {
+            ApplyUuHotkey(notifySuccess: true);
+            return;
+        }
+
+        _globalHotkey?.Unregister();
+        ShowNotification(
+            "已关闭 UU 视角切换",
+            "热键已注销，不会影响其他程序。",
+            InfoBarSeverity.Informational);
+    }
+
+    /// <summary>
+    /// 录制新的切换热键。
+    /// </summary>
+    [RelayCommand]
+    private void ConfigureUuHotkey()
+    {
+        var current = _settings.Current.Automation.UuViewSwitchHotkey;
+        if (HotkeyDialog.Show(current) is not { } combination)
+        {
+            return;
+        }
+
+        _settings.Current.Automation.UuViewSwitchHotkey = combination;
+        _settings.SaveSoon();
+        OnPropertyChanged(nameof(UuHotkeyText));
+
+        // 录了热键就是要用它：顺手把开关打开，省得用户再找一次菜单。
+        UuViewSwitchEnabled = true;
+        _settings.Current.Automation.UuViewSwitchEnabled = true;
+        _settings.SaveSoon();
+        ApplyUuHotkey(notifySuccess: true);
+    }
+
+    /// <summary>
+    /// 打开「自动登录方式」对话框：让用户在本程序自动登录与 Windows 系统自动登录之间自己选。
+    /// </summary>
+    [RelayCommand]
+    private void ShowAutoLoginOptions()
+    {
+        var autoLogin = _childSessionService.AutoLogin;
+        if (autoLogin is null)
+        {
+            ShowNotification("自动登录不可用", "当前运行环境没有初始化自动登录服务。", InfoBarSeverity.Warning);
+            return;
+        }
+
+        var systemEnabled = autoLogin.IsSystemAutoLoginEnabled(out var systemUser);
+        var choice = AutoLoginDialog.Show(
+            AutoLoginEnabled,
+            HasAutoLoginPassword,
+            autoLogin.UserName,
+            systemEnabled,
+            systemUser);
+
+        switch (choice)
+        {
+            case AutoLoginDialog.Choice.EnableAppAutoLogin:
+                if (!HasAutoLoginPassword && !TrySaveAutoLoginPassword())
+                {
+                    return;
+                }
+
+                EnableAppAutoLogin();
+                break;
+
+            case AutoLoginDialog.Choice.OpenSystemAutoLogin:
+                OpenSystemAutoLoginSettings();
+                break;
+        }
+    }
+
+    /// <summary>
+    /// 直接打开 Windows 的 netplwiz，配置系统级自动登录。
+    /// </summary>
+    [RelayCommand]
+    private void OpenSystemAutoLoginSettings()
+    {
+        var autoLogin = _childSessionService.AutoLogin;
+        if (autoLogin is null)
+        {
+            return;
+        }
+
+        if (!autoLogin.TryOpenSystemAutoLoginSettings(out var error))
+        {
+            ShowNotification("打开失败", error, InfoBarSeverity.Warning, TimeSpan.FromSeconds(7));
+            return;
+        }
+
+        ShowNotification(
+            "已打开系统设置",
+            "取消勾选「要使用本计算机，用户必须输入用户名和密码」，点「应用」后输入账户密码（不是 PIN），重启电脑生效。",
+            InfoBarSeverity.Informational,
+            TimeSpan.FromSeconds(12));
+    }
+
+    /// <summary>
+    /// 启用本程序自带的自动登录（调用方负责先确保密码已保存）。
+    /// </summary>
+    private void EnableAppAutoLogin()
+    {
+        var autoLogin = _childSessionService.AutoLogin;
+        AutoLoginEnabled = true;
+        _settings.Current.Automation.AutoLoginEnabled = true;
+        _settings.SaveSoon();
+        ShowNotification(
+            "已启用自动登录",
+            $"将使用账户「{autoLogin?.UserName}」的登录密码。若凭据框仍然出现，程序会尝试自动填写，最多两次。",
+            InfoBarSeverity.Success,
+            TimeSpan.FromSeconds(7));
+    }
+
+    /// <summary>
+    /// 启用 / 关闭分身自动登录。
+    /// </summary>
+    [RelayCommand]
+    private void ToggleAutoLogin()
+    {
+        var autoLogin = _childSessionService.AutoLogin;
+        if (autoLogin is null)
+        {
+            ShowNotification("自动登录不可用", "当前运行环境没有初始化自动登录服务。", InfoBarSeverity.Warning);
+            return;
+        }
+
+        if (AutoLoginEnabled)
+        {
+            AutoLoginEnabled = false;
+            _settings.Current.Automation.AutoLoginEnabled = false;
+            _settings.SaveSoon();
+            ShowNotification(
+                "已关闭自动登录",
+                "重连分身时会重新要求手动输入密码。",
+                InfoBarSeverity.Informational);
+            return;
+        }
+
+        // 没有密码就先要一个：只开开关不存密码，等于开了个没用的开关。
+        if (!autoLogin.HasStoredPassword && !TrySaveAutoLoginPassword())
+        {
+            return;
+        }
+
+        EnableAppAutoLogin();
+    }
+
+    /// <summary>
+    /// 设置（或更新）自动登录密码。
+    /// </summary>
+    [RelayCommand]
+    private void SetAutoLoginPassword()
+    {
+        if (TrySaveAutoLoginPassword())
+        {
+            ShowNotification(
+                "密码已保存",
+                "密码已用 DPAPI 加密保存在本机，只有当前 Windows 账户能解开。",
+                InfoBarSeverity.Success);
+        }
+    }
+
+    /// <summary>
+    /// 清除已保存的自动登录密码，并关闭自动登录。
+    /// </summary>
+    [RelayCommand]
+    private void ClearAutoLoginPassword()
+    {
+        _childSessionService.AutoLogin?.ClearPassword();
+        HasAutoLoginPassword = false;
+        AutoLoginEnabled = false;
+        _settings.Current.Automation.AutoLoginEnabled = false;
+        _settings.SaveSoon();
+        ShowNotification(
+            "已清除密码",
+            "自动登录已关闭，重连分身时需要手动输入密码。",
+            InfoBarSeverity.Informational);
+    }
+
+    /// <summary>
+    /// 弹出密码框并保存。用户取消或加密失败返回 false。
+    /// </summary>
+    private bool TrySaveAutoLoginPassword()
+    {
+        var autoLogin = _childSessionService.AutoLogin;
+        if (autoLogin is null)
+        {
+            return false;
+        }
+
+        if (PasswordDialog.Show(autoLogin.UserName) is not { } password)
+        {
+            return false;
+        }
+
+        if (!autoLogin.SavePassword(password))
+        {
+            ShowNotification(
+                "保存失败",
+                "无法加密保存密码，请查看日志。自动登录不会启用。",
+                InfoBarSeverity.Error);
+            return false;
+        }
+
+        HasAutoLoginPassword = true;
+        return true;
+    }
+
+    /// <summary>
+    /// 注册或注销 UU 切换热键。
+    /// </summary>
+    /// <param name="notifySuccess">注册成功时是否提示用户。</param>
+    private void ApplyUuHotkey(bool notifySuccess)
+    {
+        if (_hotkeyWindow is null)
+        {
+            return;
+        }
+
+        _globalHotkey ??= new GlobalHotkeyService();
+        _globalHotkey.Pressed -= OnUuHotkeyPressed;
+        _globalHotkey.Pressed += OnUuHotkeyPressed;
+        _globalHotkey.Unregister();
+
+        if (!UuViewSwitchEnabled)
+        {
+            return;
+        }
+
+        var combination = _settings.Current.Automation.UuViewSwitchHotkey;
+        if (_globalHotkey.TryRegister(_hotkeyWindow, combination, out var error))
+        {
+            if (notifySuccess)
+            {
+                ShowNotification(
+                    "UU 视角切换已启用",
+                    $"按 {GlobalHotkeyService.Format(combination)} 可在「整台电脑」与「桌面分身」之间切换。",
+                    InfoBarSeverity.Success);
+            }
+
+            return;
+        }
+
+        // 注册失败就把开关退回去，避免界面显示「已启用」但按键没反应。
+        UuViewSwitchEnabled = false;
+        _settings.Current.Automation.UuViewSwitchEnabled = false;
+        _settings.SaveSoon();
+        ShowNotification("快捷键注册失败", error, InfoBarSeverity.Warning, TimeSpan.FromSeconds(7));
+    }
+
+    private void OnUuHotkeyPressed(object? sender, EventArgs e)
+    {
+        _ = TriggerUuViewSwitchAsync();
+    }
+
 
     /// <summary>
     /// 切换分辨率。参数形如 <c>1920x1080</c>。

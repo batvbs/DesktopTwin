@@ -9,6 +9,7 @@
                  xmlns:viewModel="clr-namespace:DesktopTwin.ViewModel"
                  xmlns:wfi="clr-namespace:System.Windows.Forms.Integration;assembly=WindowsFormsIntegration"
                  Title="桌面分身"
+                 Icon="pack://application:,,,/Assets/DesktopTwin.ico"
                  Width="1280"
                  Height="752"
                  MinWidth="415"
@@ -35,7 +36,10 @@
                      Background="#FF1F1F1F"
                      VerticalContentAlignment="Top">
             <ui:TitleBar.Header>
-                <StackPanel VerticalAlignment="Center"
+                <!-- 左侧留出与窗口边框的距离：ExtendsContentIntoTitleBar 下标题栏内容从 x=0 开始，
+                     不留边距时状态灯会贴着窗口左边缘。12 与系统标题栏图标的缩进量一致。 -->
+                <StackPanel Margin="12,0,0,0"
+                            VerticalAlignment="Center"
                             Orientation="Horizontal">
                     <b:Interaction.Behaviors>
                         <behaviors:WindowDragBehavior />
@@ -207,6 +211,37 @@
                                                  Header="发送 Win+D 显示桌面" />
                                     <ui:MenuItem Command="{Binding ShowTaskViewCommand}"
                                                  Header="发送 Win+Tab 切换窗口" />
+                                    <Separator />
+                                    <ui:MenuItem Command="{Binding ToggleUuViewSwitchCommand}"
+                                                 Header="{Binding UuViewSwitchMenuHeader}"
+                                                 IsCheckable="True"
+                                                 IsChecked="{Binding UuViewSwitchEnabled, Mode=OneWay}"
+                                                 ToolTip="启用后可用全局热键在「UU 控制整台电脑」与「UU 控制桌面分身」之间切换。切换时会结束 UU 的串流端进程，让 UU 服务重新挑选会话；分身只是断开，不会注销。" />
+                                    <ui:MenuItem Command="{Binding ConfigureUuHotkeyCommand}"
+                                                 Header="{Binding UuHotkeyText, StringFormat=切换快捷键：{0}}" />
+                                    <ui:MenuItem Command="{Binding TriggerUuViewSwitchCommand}"
+                                                 Header="立即切换一次" />
+                                </ui:MenuItem>
+                                <ui:MenuItem Header="{Binding AutoLoginMenuHeader}">
+                                    <ui:MenuItem Command="{Binding ShowAutoLoginOptionsCommand}"
+                                                 Header="自动登录设置…"
+                                                 Icon="{ui:SymbolIcon Settings24}"
+                                                 ToolTip="在「本程序自动登录」与「Windows 系统自动登录」之间选择，并查看各自的步骤与影响范围。" />
+                                    <Separator />
+                                    <ui:MenuItem Command="{Binding ToggleAutoLoginCommand}"
+                                                 Header="启用自动登录（本程序）"
+                                                 IsCheckable="True"
+                                                 IsChecked="{Binding AutoLoginEnabled, Mode=OneWay}"
+                                                 ToolTip="连接分身时自动填入 Windows 登录凭据。密码用 DPAPI 加密保存在本机，只有当前账户能解开；若凭据框仍出现，程序最多尝试自动填写两次，之后交回手动输入。" />
+                                    <ui:MenuItem Command="{Binding SetAutoLoginPasswordCommand}"
+                                                 Header="设置登录密码…" />
+                                    <ui:MenuItem Command="{Binding ClearAutoLoginPasswordCommand}"
+                                                 Header="清除已保存的密码"
+                                                 IsEnabled="{Binding HasAutoLoginPassword}" />
+                                    <Separator />
+                                    <ui:MenuItem Command="{Binding OpenSystemAutoLoginSettingsCommand}"
+                                                 Header="打开系统自动登录设置…"
+                                                 ToolTip="等同于 Win+R 输入 netplwiz。取消勾选「要使用本计算机，用户必须输入用户名和密码」，点应用后输入账户密码（不是 PIN），重启生效。注意这会让本机开机即进桌面。" />
                                 </ui:MenuItem>
                                 <Separator />
                                 <ui:MenuItem Header="诊断">

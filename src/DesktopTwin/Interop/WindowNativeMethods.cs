@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace DesktopTwin.Interop;
 
@@ -57,9 +58,56 @@ internal static class WindowNativeMethods
             SwpNoSize | SwpNoZOrder | SwpNoActivate | SwpNoOwnerZOrder);
     }
 
+    /// <summary>
+    /// 按窗口类名查找顶层窗口，找不到返回 <see cref="IntPtr.Zero"/>。
+    /// </summary>
+    internal static IntPtr FindWindowByClassName(string className)
+    {
+        if (string.IsNullOrEmpty(className))
+        {
+            return IntPtr.Zero;
+        }
+
+        var found = IntPtr.Zero;
+        _ = EnumWindows(
+            (window, _) =>
+            {
+                if (!IsWindowVisible(window))
+                {
+                    return true;
+                }
+
+                var buffer = new StringBuilder(256);
+                _ = GetClassName(window, buffer, buffer.Capacity);
+                if (!string.Equals(buffer.ToString(), className, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+
+                found = window;
+                return false;
+            },
+            IntPtr.Zero);
+
+        return found;
+    }
+
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetWindowRect(IntPtr window, out NativeRect rect);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(IntPtr window);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr window, StringBuilder className, int maximumLength);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnumWindows(EnumWindowsCallback callback, IntPtr parameter);
+
+    private delegate bool EnumWindowsCallback(IntPtr window, IntPtr parameter);
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

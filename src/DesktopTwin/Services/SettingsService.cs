@@ -165,13 +165,26 @@ public sealed class SettingsService : IDisposable
     /// <returns>有改动时返回 true，调用方据此立刻写回。</returns>
     private static bool Migrate(AppSettings settings)
     {
-        if (settings.SettingsVersion >= AppSettings.CurrentVersion)
+        var changed = false;
+
+        // 反序列化后可能为 null（JSON 里显式写了 "Session": null），先补齐再谈迁移。
+        // 这一步不能放在版本判断之后：已是当前版本的文件照样可能带着 null。
+        if (settings.Session is null)
         {
-            return false;
+            settings.Session = new SessionSettings();
+            changed = true;
         }
 
-        // JSON 里显式写了 "Session": null 时反序列化结果是 null，后面取值会炸。
-        settings.Session ??= new SessionSettings();
+        if (settings.Automation is null)
+        {
+            settings.Automation = new AutomationSettings();
+            changed = true;
+        }
+
+        if (settings.SettingsVersion >= AppSettings.CurrentVersion)
+        {
+            return changed;
+        }
 
         // v1：画面显示比例默认值由「自适应缩放」改为 1:1。
         if (settings.SettingsVersion < 1)

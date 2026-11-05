@@ -34,6 +34,12 @@
 - **Remote Desktop ActiveX Control**（`MsRdpClient10`，CLSID `A0C63C30-F08D-4AB4-907C-34905D770C7D`）：
   Windows 自带组件，本项目通过 COM 调用，**不随包分发任何 mstscax.dll 文件**。
 - **wtsapi32.dll / user32.dll**：Windows 系统库，通过 P/Invoke 调用。
+- **程序图标**（`src/DesktopTwin/Assets/DesktopTwin.ico`）：取自 Windows 自带的
+  「远程桌面连接」客户端 `%SystemRoot%\System32\mstsc.exe` 的图标资源，
+  由 `build/make-icon.ps1` 读取原始 `RT_GROUP_ICON` / `RT_ICON` 数据后重新打包
+  （9 档尺寸、未做缩放）。**该图标版权归 Microsoft 所有**，此处仅用于让本程序的视觉
+  与它所封装的系统组件保持一致。若你需要将本项目用于商业再分发，请自行替换为自有图标
+  并确认授权，或重新运行 `build/make-icon.ps1` 指定其他来源。
 
 ## 商标
 

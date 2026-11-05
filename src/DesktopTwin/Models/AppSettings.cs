@@ -34,6 +34,11 @@ public sealed class AppSettings
     public WindowSettings Window { get; set; } = new();
 
     /// <summary>
+    /// 与外部工具联动、以及自动登录相关的可选设置。
+    /// </summary>
+    public AutomationSettings Automation { get; set; } = new();
+
+    /// <summary>
     /// 用户是否已确认过「本程序会修改系统级 Child Sessions 开关」的首次运行提示。
     /// 未确认前不会真正启动分身，避免用户在不了解后果的情况下改动系统设置。
     /// </summary>
@@ -169,6 +174,40 @@ public sealed class WindowSettings
     /// 上次退出时是否处于小窗模式。
     /// </summary>
     public bool SmallWindowMode { get; set; }
+}
+
+/// <summary>
+/// 与外部工具联动、以及自动登录相关的可选设置。
+///
+/// 这里的每一项都默认关闭：它们要么会结束本机别的进程（UU 视角切换），
+/// 要么会保存登录凭据（自动登录），必须由用户主动打开。
+/// </summary>
+public sealed class AutomationSettings
+{
+    /// <summary>
+    /// 是否启用 UU 视角切换热键。
+    /// </summary>
+    public bool UuViewSwitchEnabled { get; set; }
+
+    /// <summary>
+    /// UU 视角切换的全局热键，形如 <c>Ctrl+Alt+U</c>。
+    /// </summary>
+    public string UuViewSwitchHotkey { get; set; } = "Ctrl+Alt+U";
+
+    /// <summary>
+    /// 是否启用分身自动登录。
+    /// </summary>
+    public bool AutoLoginEnabled { get; set; }
+
+    /// <summary>
+    /// 自动登录使用的用户名。留空表示使用当前 Windows 账户。
+    /// </summary>
+    public string? AutoLoginUserName { get; set; }
+
+    /// <summary>
+    /// 自动登录密码，DPAPI 加密后的 Base64。只能被同一个 Windows 账户解开。
+    /// </summary>
+    public string? AutoLoginPassword { get; set; }
 }
 
 /// <summary>

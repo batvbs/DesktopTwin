@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -39,6 +40,34 @@ internal static class ChildSessionNativeMethods
     [DllImport("wtsapi32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool WTSLogoffSession(
+        IntPtr serverHandle,
+        uint sessionId,
+        [MarshalAs(UnmanagedType.Bool)] bool wait);
+
+    [DllImport("wtsapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool WTSEnumerateSessionsW(
+        IntPtr serverHandle,
+        int reserved,
+        int version,
+        out IntPtr sessionInfo,
+        out int count);
+
+    [DllImport("wtsapi32.dll")]
+    private static extern void WTSFreeMemory(IntPtr memory);
+
+    [DllImport("wtsapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool WTSQuerySessionInformationW(
+        IntPtr serverHandle,
+        uint sessionId,
+        int infoClass,
+        out IntPtr buffer,
+        out int bytesReturned);
+
+    [DllImport("wtsapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool WTSDisconnectSession(
         IntPtr serverHandle,
         uint sessionId,
         [MarshalAs(UnmanagedType.Bool)] bool wait);
@@ -157,6 +186,131 @@ internal static class ChildSessionNativeMethods
         return WTSGetChildSessionId(out var sessionId) && sessionId != NoChildSessionId
             ? sessionId
             : null;
+    }
+
+    /// <summary>
+    /// 枚举本机全部会话。
+    ///
+    /// 失败时返回空数组而不是抛异常：调用方（UU 视角切换）在切换过程中会被别的进程
+    /// 反复改变会话状态，查询失败是常态，不该让一次查询失败打断整个切换流程。
+    /// </summary>
+    internal static IReadOnlyList<SessionInfo> EnumerateSessions()
+    {
+        if (!WTSEnumerateSessionsW(CurrentServerHandle, 0, 1, out var buffer, out var count)
+            || buffer == IntPtr.Zero)
+        {
+            return [];
+        }
+
+        var sessions = new List<SessionInfo>(count);
+        try
+        {
+            var size = Marshal.SizeOf<WtsSessionInfo>();
+            for (var index = 0; index < count; index++)
+            {
+                var item = Marshal.PtrToStructure<WtsSessionInfo>(
+                    buffer + (index * size));
+
+                // 会话号大于 65535 的是伪会话（例如 Services），不参与判断。
+                if (item.SessionId > ushort.MaxValue)
+                {
+                    continue;
+                }
+
+                sessions.Add(new SessionInfo(
+                    (uint)item.SessionId,
+                    item.WinStationName == IntPtr.Zero
+                        ? string.Empty
+                        : Marshal.PtrToStringUni(item.WinStationName) ?? string.Empty,
+                    item.State,
+                    QuerySessionUserName((uint)item.SessionId)));
+            }
+        }
+        finally
+        {
+            WTSFreeMemory(buffer);
+        }
+
+        return sessions;
+    }
+
+    /// <summary>
+    /// 取「真正接着显示器」的那个会话。
+    ///
+    /// 先按 WinStation 名找 Console：<c>WTSGetActiveConsoleSessionId</c> 在会话切换的瞬间
+    /// 会短暂返回别的值（甚至 0xFFFFFFFF），只靠它会认错会话。
+    /// </summary>
+    internal static uint? TryGetConsoleSessionId()
+    {
+        foreach (var session in EnumerateSessions())
+        {
+            if (string.Equals(session.WinStationName, "Console", StringComparison.OrdinalIgnoreCase))
+            {
+                return session.SessionId;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 查询会话的连接状态。会话不存在时返回 -1。
+    /// </summary>
+    internal static int GetSessionState(uint sessionId)
+    {
+        foreach (var session in EnumerateSessions())
+        {
+            if (session.SessionId == sessionId)
+            {
+                return session.State;
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>
+    /// 断开一个会话但不注销它：桌面上的程序继续运行，会话进入 Disconnected 状态。
+    ///
+    /// 这是 UU 视角切换「去整台电脑」的关键一步——UU 的被控端由 SYSTEM 服务拉起，
+    /// 只会挑会话号最大的已登录桌面，把分身断掉它就只能落到 Console。
+    /// </summary>
+    internal static bool DisconnectSession(uint sessionId, bool wait = false)
+    {
+        return WTSDisconnectSession(CurrentServerHandle, sessionId, wait);
+    }
+
+    /// <summary>
+    /// 会话状态码是否为「已连接（Active）」，即桌面上真的有人。
+    /// </summary>
+    internal static bool IsSessionActive(uint sessionId) => GetSessionState(sessionId) == 0;
+
+    /// <summary>
+    /// 读会话的登录用户名。取不到时返回空串。
+    /// </summary>
+    private static string QuerySessionUserName(uint sessionId)
+    {
+        const int userNameInfoClass = 5;
+
+        if (!WTSQuerySessionInformationW(
+                CurrentServerHandle,
+                sessionId,
+                userNameInfoClass,
+                out var buffer,
+                out _)
+            || buffer == IntPtr.Zero)
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            return Marshal.PtrToStringUni(buffer) ?? string.Empty;
+        }
+        finally
+        {
+            WTSFreeMemory(buffer);
+        }
     }
 
     internal static uint? TerminateChildSession()
@@ -314,4 +468,28 @@ internal static class ChildSessionNativeMethods
     }
 
     private delegate bool EnumChildWindowCallback(IntPtr window, IntPtr parameter);
+
+    /// <summary>
+    /// <c>WTS_SESSION_INFO</c> 的托管映射。
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WtsSessionInfo
+    {
+        internal int SessionId;
+        internal IntPtr WinStationName;
+        internal int State;
+    }
 }
+
+/// <summary>
+/// 一个 Windows 会话的快照。
+/// </summary>
+/// <param name="SessionId">会话号。</param>
+/// <param name="WinStationName">WinStation 名，Console 表示接显示器的那个会话。</param>
+/// <param name="State">连接状态码，0 表示 Active。</param>
+/// <param name="UserName">登录用户名，未登录时为空串。</param>
+internal readonly record struct SessionInfo(
+    uint SessionId,
+    string WinStationName,
+    int State,
+    string UserName);

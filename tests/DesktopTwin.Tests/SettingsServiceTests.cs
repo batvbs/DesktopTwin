@@ -25,7 +25,9 @@ public sealed class SettingsServiceTests : IDisposable
 
         Assert.Equal(1920, settings.Session.DesktopWidth);
         Assert.Equal(1080, settings.Session.DesktopHeight);
-        Assert.True(settings.Session.SmartSizing);
+
+        // 显示比例默认 1:1（文字最清晰的一档）；自适应缩放需要用户主动选
+        Assert.False(settings.Session.SmartSizing);
         Assert.True(settings.Session.KeepAspectRatio);
         Assert.True(settings.Launch.AutoLaunchOnConnect);
 
@@ -34,6 +36,12 @@ public sealed class SettingsServiceTests : IDisposable
 
         // 首次运行提示默认未确认
         Assert.False(settings.ChildSessionNoticeAccepted);
+
+        // 自动化相关能力默认全关：它们会结束别的进程或保存凭据，必须由用户主动开启
+        Assert.False(settings.Automation.UuViewSwitchEnabled);
+        Assert.False(settings.Automation.AutoLoginEnabled);
+        Assert.Equal("Ctrl+Alt+U", settings.Automation.UuViewSwitchHotkey);
+        Assert.Null(settings.Automation.AutoLoginPassword);
     }
 
     [Fact]
