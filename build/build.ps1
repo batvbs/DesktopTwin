@@ -3,9 +3,9 @@
 # 用法：
 #   powershell -NoProfile -ExecutionPolicy Bypass -File build/build.ps1
 #
-# 一次产出**两个版本**，放在同一个 zip 里：
-#   v<版本> 自带运行时/      自带 .NET 运行时，开箱即用，体积大
-#   v<版本> 需要 .NET 运行时/ 框架依赖，体积小，但目标机要先装 .NET 10 桌面运行时
+# 一次产出**两个版本**，平铺在同一个 zip 里（不套文件夹）：
+#   桌面分身-<版本>.exe        自带 .NET 运行时，开箱即用
+#   桌面分身-<版本>-NET10.exe  框架依赖，需先装 .NET 10 桌面运行时
 #
 # 产物：artifacts/DesktopTwin-<版本>-win-x64.zip
 
@@ -19,6 +19,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $project = Join-Path $repoRoot "src/DesktopTwin/DesktopTwin.csproj"
 $artifactsDir = Join-Path $repoRoot "artifacts"
+$publishRoot = Join-Path $artifactsDir "publish"
 $stageDir = Join-Path $artifactsDir "stage"
 
 Write-Host "仓库根目录：$repoRoot"
@@ -28,16 +29,19 @@ if (-not $version) {
     $version = "0.0.0"
 }
 
-# 目录名带版本号：用户解压后能一眼看出手上是哪一版，
-# 也避免同一台机器上放了两个版本时分不清哪个是新的。
-$standaloneDir = Join-Path $stageDir "v$version 自带运行时"
-$frameworkDir = Join-Path $stageDir "v$version 需要 .NET 运行时"
+# 文件名直接用中文：用户在下载文件夹里看到的就是「桌面分身-0.2.2.exe」，
+# 不用先解压到文件夹再猜哪个是哪个。程序内部不依赖自身文件名，
+# 改名不影响单实例互斥体、设置路径和图标（都按程序集名走）。
+$standaloneName = "桌面分身-$version.exe"
+$frameworkName = "桌面分身-$version-NET10.exe"
 
-if (Test-Path $stageDir) {
-    Remove-Item $stageDir -Recurse -Force
+foreach ($dir in @($publishRoot, $stageDir)) {
+    if (Test-Path $dir) {
+        Remove-Item $dir -Recurse -Force
+    }
 }
 
-# ── 公共发布参数 ─────────────────────────────────────────
+# ── 发布 ────────────────────────────────────────────────
 # 单文件发布：WPF 的 XAML 资源需要 IncludeNativeLibrariesForSelfExtract 才能打进单文件
 function Publish-Variant {
     param(
@@ -76,22 +80,30 @@ function Publish-Variant {
 
 Write-Host ""
 Write-Host "=== 1/3 发布：自带运行时 ==="
-Publish-Variant -OutputDir $standaloneDir -SelfContained $true
+Publish-Variant -OutputDir (Join-Path $publishRoot "standalone") -SelfContained $true
 
 Write-Host ""
 Write-Host "=== 2/3 发布：框架依赖 ==="
-Publish-Variant -OutputDir $frameworkDir -SelfContained $false
+Publish-Variant -OutputDir (Join-Path $publishRoot "framework") -SelfContained $false
 
-# ── 说明文件 ─────────────────────────────────────────────
+# ── 组装 ────────────────────────────────────────────────
 Write-Host ""
 Write-Host "=== 3/3 打包 ==="
+
+New-Item -ItemType Directory -Path $stageDir -Force | Out-Null
+
+$standaloneExe = Join-Path $stageDir $standaloneName
+$frameworkExe = Join-Path $stageDir $frameworkName
+
+Copy-Item (Join-Path $publishRoot "standalone/DesktopTwin.exe") $standaloneExe
+Copy-Item (Join-Path $publishRoot "framework/DesktopTwin.exe") $frameworkExe
 
 $readmeTemplate = Join-Path $PSScriptRoot "使用说明.txt"
 if (-not (Test-Path $readmeTemplate)) {
     throw "缺少说明文件模板：$readmeTemplate"
 }
 
-# 说明文件与 CI 共用同一份模板，避免两边写的版本号/目录名对不上。
+# 说明文件与 CI 共用同一份模板，避免两边写的版本号/文件名对不上。
 $readme = (Get-Content $readmeTemplate -Raw -Encoding UTF8).Replace("{{VERSION}}", $version)
 
 # 用 UTF-8 带 BOM 写：记事本在旧版本 Windows 上靠 BOM 判断编码，
@@ -111,12 +123,10 @@ Compress-Archive -Path (Join-Path $stageDir "*") -DestinationPath $zipPath
 
 $hash = (Get-FileHash $zipPath -Algorithm SHA256).Hash
 $zipSizeMb = [math]::Round((Get-Item $zipPath).Length / 1MB, 2)
-$standaloneExe = Join-Path $standaloneDir "DesktopTwin.exe"
-$frameworkExe = Join-Path $frameworkDir "DesktopTwin.exe"
 
 Write-Host ""
 Write-Host "完成：$zipPath"
-Write-Host ("  自带运行时 DesktopTwin.exe：{0:N1} MB" -f ((Get-Item $standaloneExe).Length / 1MB))
-Write-Host ("  框架依赖   DesktopTwin.exe：{0:N1} MB" -f ((Get-Item $frameworkExe).Length / 1MB))
+Write-Host ("  {0}：{1:N1} MB" -f $standaloneName, ((Get-Item $standaloneExe).Length / 1MB))
+Write-Host ("  {0}：{1:N1} MB" -f $frameworkName, ((Get-Item $frameworkExe).Length / 1MB))
 Write-Host "  压缩包：$zipSizeMb MB"
 Write-Host "  SHA256：$hash"

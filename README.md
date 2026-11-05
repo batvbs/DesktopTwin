@@ -52,15 +52,17 @@ DesktopTwin 做的事情就是：
    （**不要放在 `Downloads` 这类多人可写的目录里**，本程序以管理员权限运行）；
 2. 压缩包里有两个版本，**功能完全一样**，选一个即可：
 
-   | 目录 | 说明 | 适用 |
+   | 文件 | 说明 | 适用 |
    | --- | --- | --- |
-   | `v<版本> 自带运行时` | 自带 .NET 运行时，双击就能跑，解压后约 150 MB | **不确定就选这个** |
-   | `v<版本> 需要 .NET 运行时` | 体积小（约 7 MB），需要先装 [.NET 10 桌面运行时](https://dotnet.microsoft.com/download/dotnet/10.0) | 已经装了 .NET 10，或想省空间 |
+   | `桌面分身-<版本>.exe` | 自带 .NET 运行时，双击就能跑，约 70 MB | **不确定就选这个** |
+   | `桌面分身-<版本>-NET10.exe` | 约 7 MB，需先装 [.NET 10 桌面运行时](https://dotnet.microsoft.com/download/dotnet/10.0) | 已经装了 .NET 10，或想省空间 |
 
    > 装运行时请选「.NET Desktop Runtime」，不是「ASP.NET Core Runtime」。
    > 装错了程序会提示缺少 `Microsoft.WindowsDesktop.App`。
+   >
+   > 文件名可以随便改，放在带中文或空格的路径下也不影响运行。
 
-3. 以管理员权限运行 `DesktopTwin.exe`；
+3. 以管理员权限运行它；
 4. 点标题栏的 **启动**；
 5. 首次会显示 Windows 登录界面，输入**当前账户的用户名和密码**
    （用户名以 `C:\Users` 下属于你的那个文件夹名为准）；

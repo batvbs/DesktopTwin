@@ -81,15 +81,15 @@ jobs:
 
       - uses: actions/checkout@v4
 
-      # 目录名带版本号并改成中文：用户解压后一眼能看出手上是哪一版、该用哪个。
-      - name: 整理为双版本目录
+      # 文件名用中文并带版本号，平铺在压缩包根目录，不套文件夹。
+      # 去掉 tag 前缀的 v，和本地 build.ps1 产出的名字保持一致。
+      - name: 整理为两个版本
         run: |
-          $version = "${{ github.ref_name }}"
+          $version = "${{ github.ref_name }}".TrimStart('v')
           $stage = "stage"
-          New-Item -ItemType Directory -Path "$stage/$version 自带运行时" -Force | Out-Null
-          New-Item -ItemType Directory -Path "$stage/$version 需要 .NET 运行时" -Force | Out-Null
-          Copy-Item "artifacts/publish/standalone/DesktopTwin.exe" "$stage/$version 自带运行时/"
-          Copy-Item "artifacts/publish/framework/DesktopTwin.exe" "$stage/$version 需要 .NET 运行时/"
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          Copy-Item "artifacts/publish/standalone/DesktopTwin.exe" "$stage/桌面分身-$version.exe"
+          Copy-Item "artifacts/publish/framework/DesktopTwin.exe" "$stage/桌面分身-$version-NET10.exe"
 
           $readme = (Get-Content "build/使用说明.txt" -Raw -Encoding UTF8).Replace("{{VERSION}}", $version)
           [System.IO.File]::WriteAllText(
