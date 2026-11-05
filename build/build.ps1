@@ -3,11 +3,12 @@
 # 用法：
 #   powershell -NoProfile -ExecutionPolicy Bypass -File build/build.ps1
 #
-# 一次产出**两个版本**，平铺在同一个 zip 里（不套文件夹）：
+# 产出三个文件（不压缩）：
 #   桌面分身-<版本>.exe        自带 .NET 运行时，开箱即用
 #   桌面分身-<版本>-NET10.exe  框架依赖，需先装 .NET 10 桌面运行时
+#   使用说明.txt               两个版本的说明与各自的 SHA256
 #
-# 产物：artifacts/DesktopTwin-<版本>-win-x64.zip
+# 输出目录：artifacts/dist/
 
 [CmdletBinding()]
 param(
@@ -20,7 +21,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $project = Join-Path $repoRoot "src/DesktopTwin/DesktopTwin.csproj"
 $artifactsDir = Join-Path $repoRoot "artifacts"
 $publishRoot = Join-Path $artifactsDir "publish"
-$stageDir = Join-Path $artifactsDir "stage"
+$distDir = Join-Path $artifactsDir "dist"
 
 Write-Host "仓库根目录：$repoRoot"
 
@@ -29,13 +30,13 @@ if (-not $version) {
     $version = "0.0.0"
 }
 
-# 文件名直接用中文：用户在下载文件夹里看到的就是「桌面分身-0.2.2.exe」，
-# 不用先解压到文件夹再猜哪个是哪个。程序内部不依赖自身文件名，
+# 文件名直接用中文：用户在下载列表里看到的就是「桌面分身-0.2.2.exe」，
+# 不用先解压再猜哪个是哪个。程序内部不依赖自身文件名，
 # 改名不影响单实例互斥体、设置路径和图标（都按程序集名走）。
 $standaloneName = "桌面分身-$version.exe"
 $frameworkName = "桌面分身-$version-NET10.exe"
 
-foreach ($dir in @($publishRoot, $stageDir)) {
+foreach ($dir in @($publishRoot, $distDir)) {
     if (Test-Path $dir) {
         Remove-Item $dir -Recurse -Force
     }
@@ -88,12 +89,12 @@ Publish-Variant -OutputDir (Join-Path $publishRoot "framework") -SelfContained $
 
 # ── 组装 ────────────────────────────────────────────────
 Write-Host ""
-Write-Host "=== 3/3 打包 ==="
+Write-Host "=== 3/3 输出到 artifacts/dist ==="
 
-New-Item -ItemType Directory -Path $stageDir -Force | Out-Null
+New-Item -ItemType Directory -Path $distDir -Force | Out-Null
 
-$standaloneExe = Join-Path $stageDir $standaloneName
-$frameworkExe = Join-Path $stageDir $frameworkName
+$standaloneExe = Join-Path $distDir $standaloneName
+$frameworkExe = Join-Path $distDir $frameworkName
 
 Copy-Item (Join-Path $publishRoot "standalone/DesktopTwin.exe") $standaloneExe
 Copy-Item (Join-Path $publishRoot "framework/DesktopTwin.exe") $frameworkExe
@@ -116,25 +117,14 @@ $readme = (Get-Content $readmeTemplate -Raw -Encoding UTF8).
 
 # 用 UTF-8 带 BOM 写：记事本在旧版本 Windows 上靠 BOM 判断编码，
 # 没有 BOM 时中文会显示成乱码。
-$readmePath = Join-Path $stageDir "使用说明.txt"
+$readmePath = Join-Path $distDir "使用说明.txt"
 [System.IO.File]::WriteAllText($readmePath, $readme, (New-Object System.Text.UTF8Encoding($true)))
 
-$zipPath = Join-Path $artifactsDir "DesktopTwin-$version-win-x64.zip"
-if (Test-Path $zipPath) {
-    Remove-Item $zipPath -Force
-}
-
-# 条目名是中文，这里依赖 Compress-Archive 写出正确的 UTF-8 标志位。
-# 已实测：生成后每个条目的通用标志位含 0x800（UTF-8），解压工具能正确显示中文。
-# 如果将来换到别的环境发现乱码，改用 ZipFile.CreateFromDirectory 显式传 Encoding.UTF8。
-Compress-Archive -Path (Join-Path $stageDir "*") -DestinationPath $zipPath
-
-$hash = (Get-FileHash $zipPath -Algorithm SHA256).Hash
-$zipSizeMb = [math]::Round((Get-Item $zipPath).Length / 1MB, 2)
-
 Write-Host ""
-Write-Host "完成：$zipPath"
-Write-Host ("  {0}：{1:N1} MB" -f $standaloneName, ((Get-Item $standaloneExe).Length / 1MB))
-Write-Host ("  {0}：{1:N1} MB" -f $frameworkName, ((Get-Item $frameworkExe).Length / 1MB))
-Write-Host "  压缩包：$zipSizeMb MB"
-Write-Host "  SHA256：$hash"
+Write-Host "完成：$distDir"
+Write-Host ("  {0}" -f $standaloneName)
+Write-Host ("    {0,7:N1} MB   {1}" -f ((Get-Item $standaloneExe).Length / 1MB), $standaloneHash)
+Write-Host ("  {0}" -f $frameworkName)
+Write-Host ("    {0,7:N1} MB   {1}" -f ((Get-Item $frameworkExe).Length / 1MB), $frameworkHash)
+Write-Host ("  使用说明.txt")
+Write-Host ("    {0,7:N1} KB   {1}" -f ((Get-Item $readmePath).Length / 1KB), (Get-FileHash $readmePath -Algorithm SHA256).Hash)

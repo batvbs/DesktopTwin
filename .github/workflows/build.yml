@@ -81,9 +81,9 @@ jobs:
 
       - uses: actions/checkout@v4
 
-      # 文件名用中文并带版本号，平铺在压缩包根目录，不套文件夹。
-      # 去掉 tag 前缀的 v，和本地 build.ps1 产出的名字保持一致。
-      - name: 整理为两个版本
+      # 文件名用中文并带版本号，和本地 build.ps1 产出的名字保持一致。
+      # 三个文件直接作为 Release 附件，不再打 zip。
+      - name: 准备三个文件
         run: |
           $version = "${{ github.ref_name }}".TrimStart('v')
           $stage = "stage"
@@ -93,8 +93,7 @@ jobs:
           Copy-Item "artifacts/publish/standalone/DesktopTwin.exe" $standaloneExe
           Copy-Item "artifacts/publish/framework/DesktopTwin.exe" $frameworkExe
 
-          # 两个 exe 名字相近，只给压缩包的哈希没法分别校验，
-          # 所以把每个文件的 SHA256 也写进说明里。
+          # 两个 exe 名字相近，哈希要分别给出，所以写进说明文件里。
           $standaloneHash = (Get-FileHash $standaloneExe -Algorithm SHA256).Hash
           $frameworkHash = (Get-FileHash $frameworkExe -Algorithm SHA256).Hash
 
@@ -107,20 +106,13 @@ jobs:
             $readme,
             (New-Object System.Text.UTF8Encoding($true)))
 
-      - name: 打包
-        run: Compress-Archive -Path stage/* -DestinationPath DesktopTwin-${{ github.ref_name }}-win-x64.zip
-
-      # 用户下载后可以自行核对，避免中途被替换。
-      - name: 生成校验和
-        run: |
-          $zip = "DesktopTwin-${{ github.ref_name }}-win-x64.zip"
-          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash
-          "$hash  $zip" | Out-File -FilePath SHA256SUMS.txt -Encoding utf8
-
+          Get-ChildItem $stage | ForEach-Object {
+            "$($_.Name)  $((Get-FileHash $_.FullName -Algorithm SHA256).Hash)"
+          }
+      # 三个文件直接作为附件，不打 zip：用户点开就能下到要用的那一个。
+      # 校验值写在 使用说明.txt 里，不再单独出 SHA256SUMS.txt。
       - name: 创建 Release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            DesktopTwin-${{ github.ref_name }}-win-x64.zip
-            SHA256SUMS.txt
+          files: stage/*
           generate_release_notes: true
