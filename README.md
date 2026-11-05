@@ -92,7 +92,7 @@ DesktopTwin 做的事情就是：
 需要 .NET SDK 10.0 或更高版本。
 
 ```powershell
-git clone <this-repo>
+git clone https://github.com/batvbs/Desktop-New.git desktop-twin
 cd desktop-twin
 dotnet build -c Release
 dotnet publish src/DesktopTwin -c Release -r win-x64 --self-contained false -o publish
