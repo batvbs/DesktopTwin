@@ -36,12 +36,25 @@ jobs:
       - name: 单元测试
         run: dotnet test DesktopTwin.sln -c Release --no-build --logger "console;verbosity=normal"
 
+      # 一次产出两个版本：自带运行时的给普通用户，框架依赖的给已装 .NET 10 的机器。
+      - name: 发布（自带运行时）
+        run: >
+          dotnet publish src/DesktopTwin/DesktopTwin.csproj
+          -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true
+          -p:DebugType=none
+          -o artifacts/publish/standalone
+
       - name: 发布（框架依赖）
         run: >
           dotnet publish src/DesktopTwin/DesktopTwin.csproj
           -c Release -r win-x64 --self-contained false
           -p:PublishSingleFile=true
-          -o artifacts/publish
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:DebugType=none
+          -o artifacts/publish/framework
 
       # 发布包只给最终用户看，调试符号既没用又占体积，还会暴露源码路径。
       - name: 剔除调试符号
@@ -66,8 +79,26 @@ jobs:
           name: DesktopTwin-win-x64
           path: artifacts/publish
 
+      - uses: actions/checkout@v4
+
+      # 目录名带版本号并改成中文：用户解压后一眼能看出手上是哪一版、该用哪个。
+      - name: 整理为双版本目录
+        run: |
+          $version = "${{ github.ref_name }}"
+          $stage = "stage"
+          New-Item -ItemType Directory -Path "$stage/$version 自带运行时" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$stage/$version 需要 .NET 运行时" -Force | Out-Null
+          Copy-Item "artifacts/publish/standalone/DesktopTwin.exe" "$stage/$version 自带运行时/"
+          Copy-Item "artifacts/publish/framework/DesktopTwin.exe" "$stage/$version 需要 .NET 运行时/"
+
+          $readme = (Get-Content "build/使用说明.txt" -Raw -Encoding UTF8).Replace("{{VERSION}}", $version)
+          [System.IO.File]::WriteAllText(
+            (Join-Path $stage "使用说明.txt"),
+            $readme,
+            (New-Object System.Text.UTF8Encoding($true)))
+
       - name: 打包
-        run: Compress-Archive -Path artifacts/publish/* -DestinationPath DesktopTwin-${{ github.ref_name }}-win-x64.zip
+        run: Compress-Archive -Path stage/* -DestinationPath DesktopTwin-${{ github.ref_name }}-win-x64.zip
 
       # 用户下载后可以自行核对，避免中途被替换。
       - name: 生成校验和
