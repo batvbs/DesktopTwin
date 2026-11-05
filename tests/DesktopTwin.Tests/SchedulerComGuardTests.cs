@@ -61,10 +61,28 @@ public sealed class SchedulerComGuardTests
     [Fact]
     public void UserClassesPrefix_PointsAtExistingUserHiveLocation()
     {
-        using var key = Registry.CurrentUser.OpenSubKey(
+        // 前缀本身必须能打开：写成 Software\Class 这类错字时这里就是 null，
+        // 守卫会因此永远查不到覆盖——这正是这条测试要拦的情况。
+        using var prefix = Registry.CurrentUser.OpenSubKey(
+            ChildSessionProcessLauncher.UserClassesPrefix);
+
+        Assert.NotNull(prefix);
+
+        // 再往下探一层 CLSID，但只作为「存在时顺带校验」。
+        // 全新的用户配置（例如 CI 的干净 runner）里这个容器可能还没被创建过，
+        // 把它设成必要条件会让测试在健康机器上误红。
+        using var clsid = Registry.CurrentUser.OpenSubKey(
             ChildSessionProcessLauncher.UserClassesPrefix + @"\CLSID");
 
-        Assert.NotNull(key);
+        if (clsid is not null)
+        {
+            // RegistryKey.Name 返回完整路径（HKEY_CURRENT_USER\Software\Classes\CLSID），
+            // 所以比对后缀而不是整串。
+            Assert.EndsWith(
+                @"\" + ChildSessionProcessLauncher.UserClassesPrefix + @"\CLSID",
+                clsid.Name,
+                StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     [Fact]
