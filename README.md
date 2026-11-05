@@ -53,10 +53,10 @@ DesktopTwin 做的事情就是：
 
    | 文件 | 说明 | 适用 |
    | --- | --- | --- |
-   | `桌面分身-<版本>.exe` | 自带 .NET 运行时，双击就能跑，约 70 MB | **不确定就选这个** |
-   | `桌面分身-<版本>-NET10.exe` | 约 7 MB，需先装 [.NET 10 桌面运行时](https://dotnet.microsoft.com/download/dotnet/10.0) | 已经装了 .NET 10，或想省空间 |
+   | `DesktopTwin-<版本>.exe` | 自带 .NET 运行时，双击就能跑，约 70 MB | **不确定就选这个** |
+   | `DesktopTwin-<版本>-NET10.exe` | 约 7 MB，需先装 [.NET 10 桌面运行时](https://dotnet.microsoft.com/download/dotnet/10.0) | 已经装了 .NET 10，或想省空间 |
 
-   两个版本**功能完全一样**，不用都下。Release 页还有一份 `使用说明.txt`，
+   两个版本**功能完全一样**，不用都下。Release 页还有一份 `README.txt`，
    内容和下面这几条一致。
 
    > 装运行时请选「.NET Desktop Runtime」，不是「ASP.NET Core Runtime」。
@@ -75,10 +75,10 @@ DesktopTwin 做的事情就是：
 
 > **下载后先校验，再运行**
 >
-> `使用说明.txt` 的末尾列了两个 exe 各自的 SHA256，核对方法：
+> `README.txt` 的末尾列了两个 exe 各自的 SHA256，核对方法：
 >
 > ```powershell
-> Get-FileHash ".\桌面分身-<版本>.exe" -Algorithm SHA256
+> Get-FileHash ".\DesktopTwin-<版本>.exe" -Algorithm SHA256
 > ```
 >
 > 本项目**没有代码签名证书**，所以双击 exe 时 Windows 会拦一道：

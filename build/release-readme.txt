@@ -3,12 +3,12 @@
 
 这里有两个版本，功能完全一样，选一个用就行。
 
-桌面分身-{{VERSION}}.exe
+DesktopTwin-{{VERSION}}.exe
   自带 .NET 运行时，双击就能跑，不需要装任何东西。
   体积大（约 70 MB），第一次启动会稍微慢一点。
   >>> 不确定选哪个就选这个。
 
-桌面分身-{{VERSION}}-NET10.exe
+DesktopTwin-{{VERSION}}-NET10.exe
   体积小（约 7 MB），但需要先安装 .NET 10 桌面运行时，否则会提示缺少运行时。
   下载地址：https://dotnet.microsoft.com/download/dotnet/10.0
   选「.NET Desktop Runtime」，不是「ASP.NET Core Runtime」。
@@ -30,15 +30,15 @@
 校验值（SHA256）
 ----------------------------------------
 
-桌面分身-{{VERSION}}.exe
+DesktopTwin-{{VERSION}}.exe
   {{SHA256_STANDALONE}}
 
-桌面分身-{{VERSION}}-NET10.exe
+DesktopTwin-{{VERSION}}-NET10.exe
   {{SHA256_FRAMEWORK}}
 
 校验方法：在文件所在目录打开 PowerShell，执行
 
-  Get-FileHash ".\桌面分身-{{VERSION}}.exe" -Algorithm SHA256
+  Get-FileHash ".\DesktopTwin-{{VERSION}}.exe" -Algorithm SHA256
 
 把输出的 Hash 和上面那串逐字符比对。一致说明文件在下载过程中没被动过；
 不一致就别运行，重新下载一次。

@@ -36,8 +36,8 @@
 **判断该不该放行，看哈希而不是看提示**：
 
 ```powershell
-Get-FileHash ".\桌面分身-<版本>.exe" -Algorithm SHA256
-# 与 Release 里 使用说明.txt 末尾的校验值逐字符比对
+Get-FileHash ".\DesktopTwin-<版本>.exe" -Algorithm SHA256
+# 与 Release 里 README.txt 末尾的校验值逐字符比对
 ```
 
 一致 → 文件没被动过，可以放行；不一致 → 不要运行，重新下载。
@@ -45,7 +45,7 @@ Get-FileHash ".\桌面分身-<版本>.exe" -Algorithm SHA256
 放行的正确做法是**在运行之前解除这个文件的锁定**：
 
 ```powershell
-Unblock-File ".\桌面分身-<版本>.exe"
+Unblock-File ".\DesktopTwin-<版本>.exe"
 ```
 
 或者右键 exe → 属性 → 勾选底部的「解除锁定」→ 确定。之后每次启动都不再弹。

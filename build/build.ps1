@@ -30,11 +30,12 @@ if (-not $version) {
     $version = "0.0.0"
 }
 
-# 文件名直接用中文：用户在下载列表里看到的就是「桌面分身-0.2.2.exe」，
-# 不用先解压再猜哪个是哪个。程序内部不依赖自身文件名，
-# 改名不影响单实例互斥体、设置路径和图标（都按程序集名走）。
-$standaloneName = "桌面分身-$version.exe"
-$frameworkName = "桌面分身-$version-NET10.exe"
+# 文件名用英文：GitHub Release 在保存附件名时会把中文截断
+# （桌面分身-0.2.2.exe 变成 -0.2.2.exe），英文名没有这个问题。
+# 程序内部不依赖自身文件名，改名不影响单实例互斥体、设置路径和图标
+# （都按程序集名走），中文文件名照样能跑。
+$standaloneName = "DesktopTwin-$version.exe"
+$frameworkName = "DesktopTwin-$version-NET10.exe"
 
 foreach ($dir in @($publishRoot, $distDir)) {
     if (Test-Path $dir) {
@@ -99,7 +100,7 @@ $frameworkExe = Join-Path $distDir $frameworkName
 Copy-Item (Join-Path $publishRoot "standalone/DesktopTwin.exe") $standaloneExe
 Copy-Item (Join-Path $publishRoot "framework/DesktopTwin.exe") $frameworkExe
 
-$readmeTemplate = Join-Path $PSScriptRoot "使用说明.txt"
+$readmeTemplate = Join-Path $PSScriptRoot "release-readme.txt"
 if (-not (Test-Path $readmeTemplate)) {
     throw "缺少说明文件模板：$readmeTemplate"
 }
@@ -117,7 +118,7 @@ $readme = (Get-Content $readmeTemplate -Raw -Encoding UTF8).
 
 # 用 UTF-8 带 BOM 写：记事本在旧版本 Windows 上靠 BOM 判断编码，
 # 没有 BOM 时中文会显示成乱码。
-$readmePath = Join-Path $distDir "使用说明.txt"
+$readmePath = Join-Path $distDir "README.txt"
 [System.IO.File]::WriteAllText($readmePath, $readme, (New-Object System.Text.UTF8Encoding($true)))
 
 Write-Host ""
@@ -126,5 +127,5 @@ Write-Host ("  {0}" -f $standaloneName)
 Write-Host ("    {0,7:N1} MB   {1}" -f ((Get-Item $standaloneExe).Length / 1MB), $standaloneHash)
 Write-Host ("  {0}" -f $frameworkName)
 Write-Host ("    {0,7:N1} MB   {1}" -f ((Get-Item $frameworkExe).Length / 1MB), $frameworkHash)
-Write-Host ("  使用说明.txt")
+Write-Host ("  README.txt")
 Write-Host ("    {0,7:N1} KB   {1}" -f ((Get-Item $readmePath).Length / 1KB), (Get-FileHash $readmePath -Algorithm SHA256).Hash)
