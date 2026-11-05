@@ -113,8 +113,14 @@ jobs:
           }
       # 三个文件直接作为附件，不打 zip：用户点开就能下到要用的那一个。
       # 校验值写在 使用说明.txt 里，不再单独出 SHA256SUMS.txt。
+      #
+      # 用 gh CLI 而不是 action-gh-release：后者在 Windows runner 上会把
+      # 附件名里的中文截掉（桌面分身-0.2.2.exe 变成 -0.2.2.exe，
+      # 使用说明.txt 变成 default.txt），gh 处理 UTF-8 文件名正常。
       - name: 创建 Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: stage/*
-          generate_release_notes: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ github.ref_name }}" --title "${{ github.ref_name }}" --generate-notes --verify-tag
+          $files = Get-ChildItem "stage" | Select-Object -ExpandProperty FullName
+          gh release upload "${{ github.ref_name }}" $files --clobber
