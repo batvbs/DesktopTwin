@@ -528,7 +528,9 @@ public partial class MainWindowViewModel : ObservableObject
     /// <summary>
     /// UU 视角切换菜单文本。
     /// </summary>
-    public string UuViewSwitchMenuHeader => UuViewSwitchEnabled ? "UU 视角切换（已启用）" : "UU 视角切换";
+    public string UuViewSwitchMenuHeader => UuViewSwitchEnabled
+        ? $"UU 视角切换（已启用 · {UuHotkeyText}）"
+        : "UU 视角切换";
 
     /// <summary>
     /// 自动登录菜单文本。
@@ -633,6 +635,7 @@ public partial class MainWindowViewModel : ObservableObject
         _settings.Current.Automation.UuViewSwitchHotkey = combination;
         _settings.SaveSoon();
         OnPropertyChanged(nameof(UuHotkeyText));
+        OnPropertyChanged(nameof(UuViewSwitchMenuHeader));
 
         // 录了热键就是要用它：顺手把开关打开，省得用户再找一次菜单。
         UuViewSwitchEnabled = true;
@@ -1002,7 +1005,10 @@ public partial class MainWindowViewModel : ObservableObject
             {
                 ShowNotification(
                     "UU 视角切换已启用",
-                    $"按 {GlobalHotkeyService.Format(combination)} 可在「整台电脑」与「桌面分身」之间切换。",
+                    $"按 {GlobalHotkeyService.Format(combination)} 可在「整台电脑」与「桌面分身」之间切换。"
+                    + (_globalHotkey.IsRawInputActive
+                        ? "已在分身画面内也能接收按键。"
+                        : string.Empty),
                     InfoBarSeverity.Success);
             }
 
@@ -1010,6 +1016,7 @@ public partial class MainWindowViewModel : ObservableObject
         }
 
         // 注册失败就把开关退回去，避免界面显示「已启用」但按键没反应。
+        AppLog.Warn($"UU 视角切换热键注册失败：{error}");
         UuViewSwitchEnabled = false;
         _settings.Current.Automation.UuViewSwitchEnabled = false;
         _settings.SaveSoon();

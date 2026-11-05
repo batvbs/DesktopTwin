@@ -8,14 +8,22 @@ using System.Windows.Interop;
 namespace DesktopTwin.Services;
 
 /// <summary>
-/// 全局热键。用 <c>RegisterHotKey</c> 注册到主窗口的 HWND 上。
+/// 全局热键。同时用两条通道接收按键：
 ///
-/// 挂在主窗口而不是自己建消息窗口：窗口被隐藏时 HWND 依然存在，
-/// 热键照常生效，不需要额外的生命周期管理。
+/// 1. <c>RegisterHotKey</c>——系统热键，正常情况下够用；
+/// 2. <c>Raw Input</c>（<c>RIDEV_INPUTSINK</c>）——兜底。
+///
+/// 为什么需要第二条：焦点落在分身画面里时，RDP 控件会安装键盘钩子，把组合键
+/// 转发进远程会话（「发送系统快捷键到分身」开启时尤其如此）。钩子一旦吞掉按键，
+/// 系统热键就收不到 <c>WM_HOTKEY</c>——表现就是「在分身里按了没反应」。
+/// Raw Input 在系统输入线程里分发，早于键盘钩子，因此还能拿到这次按键。
+///
+/// 两条通道会对同一次按键各送一次，用时间窗去重。
 /// </summary>
 internal sealed class GlobalHotkeyService : IDisposable
 {
     private const int WmHotkey = 0x0312;
+    private const int WmInput = 0x00FF;
     private const int HotkeyId = 0x4454;
 
     private const uint ModAlt = 0x0001;
@@ -27,6 +35,25 @@ internal sealed class GlobalHotkeyService : IDisposable
     /// 长按不重复触发。没有它，按住热键会连续触发几十次切换。
     /// </summary>
     private const uint ModNoRepeat = 0x4000;
+
+    private const uint RidInput = 0x10000003;
+    private const uint RimTypeKeyboard = 1;
+    private const uint RidevRemove = 0x00000001;
+    private const uint RidevInputSink = 0x00000100;
+    private const ushort RiKeyBreak = 0x0001;
+    private const ushort HidUsagePageGeneric = 0x01;
+    private const ushort HidUsageKeyboard = 0x06;
+
+    private const int VkShift = 0x10;
+    private const int VkControl = 0x11;
+    private const int VkMenu = 0x12;
+    private const int VkLWin = 0x5B;
+    private const int VkRWin = 0x5C;
+
+    /// <summary>
+    /// 两条通道对同一次按键的间隔通常只有几毫秒，250ms 足够去重又不会误伤连按。
+    /// </summary>
+    private const long DedupeWindowMilliseconds = 250;
 
     private static readonly Dictionary<string, uint> NamedKeys = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -85,8 +112,14 @@ internal sealed class GlobalHotkeyService : IDisposable
         ["down"] = "Down"
     };
 
-    private HwndSource? _source;    private bool _registered;
+    private HwndSource? _source;
+    private bool _registered;
+    private bool _rawInputRegistered;
     private bool _disposed;
+
+    private uint _modifiers;
+    private uint _virtualKey;
+    private long _lastTriggerTicks;
 
     /// <summary>
     /// 热键被按下。
@@ -94,9 +127,14 @@ internal sealed class GlobalHotkeyService : IDisposable
     public event EventHandler? Pressed;
 
     /// <summary>
-    /// 当前是否注册成功。
+    /// 当前是否注册成功。任意一条通道可用即为 true。
     /// </summary>
     public bool IsRegistered => _registered;
+
+    /// <summary>
+    /// 是否启用了 Raw Input 兜底通道。
+    /// </summary>
+    public bool IsRawInputActive => _rawInputRegistered;
 
     /// <summary>
     /// 注册热键。已注册的会先注销。
@@ -138,19 +176,46 @@ internal sealed class GlobalHotkeyService : IDisposable
             return false;
         }
 
+        // 先摘再挂，避免异常路径下重复挂钩子导致一次按键触发两遍。
+        _source.RemoveHook(WndProc);
         _source.AddHook(WndProc);
 
-        if (!RegisterHotKey(handle, HotkeyId, modifiers.Value | ModNoRepeat, virtualKey))
+        var hotkeyRegistered = RegisterHotKey(handle, HotkeyId, modifiers.Value | ModNoRepeat, virtualKey);
+        var hotkeyError = hotkeyRegistered ? 0 : Marshal.GetLastPInvokeError();
+
+        if (!hotkeyRegistered && hotkeyError == 1409)
         {
-            var code = Marshal.GetLastPInvokeError();
+            // 被别的程序占了。这时不该偷偷用 Raw Input 去抢——
+            // 那会变成两个程序同时响应同一个组合键，用户更难判断。
             _source.RemoveHook(WndProc);
-            error = code == 1409
-                ? $"组合键 {Format(combination)} 已被其他程序占用，换一个试试。"
-                : $"注册热键失败（Win32 错误 {code}）。";
+            error = $"组合键 {Format(combination)} 已被其他程序占用，换一个试试。";
             return false;
         }
 
+        if (!hotkeyRegistered)
+        {
+            AppLog.Warn(
+                $"RegisterHotKey 失败（Win32 错误 {hotkeyError}），改由 Raw Input 通道接收按键。");
+        }
+
+        _rawInputRegistered = TryRegisterRawInput(handle);
+
+        if (!hotkeyRegistered && !_rawInputRegistered)
+        {
+            _source.RemoveHook(WndProc);
+            error = $"注册热键失败（Win32 错误 {hotkeyError}）。";
+            return false;
+        }
+
+        _modifiers = modifiers.Value;
+        _virtualKey = virtualKey;
         _registered = true;
+
+        AppLog.Info(
+            $"全局热键已注册：{Format(combination)}"
+            + $"（系统热键={(hotkeyRegistered ? "成功" : "失败")}，"
+            + $"Raw Input 兜底={(_rawInputRegistered ? "已启用" : "不可用")}）");
+
         return true;
     }
 
@@ -159,18 +224,22 @@ internal sealed class GlobalHotkeyService : IDisposable
     /// </summary>
     public void Unregister()
     {
-        if (!_registered)
+        if (!_registered && !_rawInputRegistered)
         {
             return;
         }
 
         _registered = false;
+        _virtualKey = 0;
+        _modifiers = 0;
+
         var handle = _source?.Handle ?? IntPtr.Zero;
         if (handle != IntPtr.Zero)
         {
             _ = UnregisterHotKey(handle, HotkeyId);
         }
 
+        UnregisterRawInput();
         _source?.RemoveHook(WndProc);
     }
 
@@ -364,10 +433,141 @@ internal sealed class GlobalHotkeyService : IDisposable
         if (message == WmHotkey && wParam.ToInt32() == HotkeyId)
         {
             handled = true;
-            Pressed?.Invoke(this, EventArgs.Empty);
+            RaisePressed();
+            return IntPtr.Zero;
+        }
+
+        if (message == WmInput
+            && _rawInputRegistered
+            && _virtualKey != 0
+            && TryReadRawKeyboard(lParam, out var virtualKey, out var isKeyUp)
+            && virtualKey == _virtualKey
+            && !isKeyUp
+            && ModifiersMatch())
+        {
+            RaisePressed();
         }
 
         return IntPtr.Zero;
+    }
+
+    private void RaisePressed()
+    {
+        // 两条通道对同一次按键会各送一次，这里只认第一次。
+        var now = Environment.TickCount64;
+        if (now - _lastTriggerTicks < DedupeWindowMilliseconds)
+        {
+            return;
+        }
+
+        _lastTriggerTicks = now;
+        Pressed?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// 用当前键盘状态核对修饰键，而不是自己维护一套按下/抬起的记账。
+    ///
+    /// Raw Input 只送「哪个键被按了」，不带修饰键状态；自己记账要处理左右 Shift/Ctrl、
+    /// 键盘切换、焦点丢失等一堆边界，还容易漏键卡在「按下」状态。直接读实时状态更稳。
+    /// </summary>
+    private bool ModifiersMatch()
+    {
+        var control = IsKeyDown(VkControl);
+        var alt = IsKeyDown(VkMenu);
+        var shift = IsKeyDown(VkShift);
+        var win = IsKeyDown(VkLWin) || IsKeyDown(VkRWin);
+
+        return ((_modifiers & ModControl) != 0) == control
+            && ((_modifiers & ModAlt) != 0) == alt
+            && ((_modifiers & ModShift) != 0) == shift
+            && ((_modifiers & ModWin) != 0) == win;
+    }
+
+    private static bool IsKeyDown(int virtualKey) => (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
+
+    private static bool TryReadRawKeyboard(IntPtr rawInputHandle, out ushort virtualKey, out bool isKeyUp)
+    {
+        virtualKey = 0;
+        isKeyUp = false;
+
+        var headerSize = (uint)Marshal.SizeOf<RawInputHeader>();
+        var size = 0u;
+        if (GetRawInputData(rawInputHandle, RidInput, IntPtr.Zero, ref size, headerSize) != 0 || size == 0)
+        {
+            return false;
+        }
+
+        var buffer = Marshal.AllocHGlobal((int)size);
+        try
+        {
+            if (GetRawInputData(rawInputHandle, RidInput, buffer, ref size, headerSize) != size)
+            {
+                return false;
+            }
+
+            var header = Marshal.PtrToStructure<RawInputHeader>(buffer);
+            if (header.Type != RimTypeKeyboard)
+            {
+                return false;
+            }
+
+            var keyboard = Marshal.PtrToStructure<RawKeyboard>(IntPtr.Add(buffer, (int)headerSize));
+
+            // VKey 为 0 或 0xFF 时是伪键（部分键盘的扩展键），拿不到可靠虚拟码，忽略。
+            if (keyboard.VKey is 0 or 0xFF)
+            {
+                return false;
+            }
+
+            virtualKey = keyboard.VKey;
+            isKeyUp = (keyboard.Flags & RiKeyBreak) != 0;
+            return true;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+    }
+
+    private static bool TryRegisterRawInput(IntPtr handle)
+    {
+        var device = new RawInputDevice
+        {
+            UsagePage = HidUsagePageGeneric,
+            Usage = HidUsageKeyboard,
+            Flags = RidevInputSink,
+            Target = handle
+        };
+
+        if (RegisterRawInputDevices([device], 1, (uint)Marshal.SizeOf<RawInputDevice>()))
+        {
+            return true;
+        }
+
+        AppLog.Warn(
+            $"注册 Raw Input 失败（Win32 错误 {Marshal.GetLastPInvokeError()}），"
+            + "热键在分身画面内可能不生效。");
+        return false;
+    }
+
+    private void UnregisterRawInput()
+    {
+        if (!_rawInputRegistered)
+        {
+            return;
+        }
+
+        _rawInputRegistered = false;
+
+        var device = new RawInputDevice
+        {
+            UsagePage = HidUsagePageGeneric,
+            Usage = HidUsageKeyboard,
+            Flags = RidevRemove,
+            Target = IntPtr.Zero
+        };
+
+        _ = RegisterRawInputDevices([device], 1, (uint)Marshal.SizeOf<RawInputDevice>());
     }
 
     private void ThrowIfDisposed()
@@ -378,6 +578,35 @@ internal sealed class GlobalHotkeyService : IDisposable
         }
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RawInputDevice
+    {
+        public ushort UsagePage;
+        public ushort Usage;
+        public uint Flags;
+        public IntPtr Target;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RawInputHeader
+    {
+        public uint Type;
+        public uint Size;
+        public IntPtr Device;
+        public IntPtr WParam;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RawKeyboard
+    {
+        public ushort MakeCode;
+        public ushort Flags;
+        public ushort Reserved;
+        public ushort VKey;
+        public uint Message;
+        public uint ExtraInformation;
+    }
+
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool RegisterHotKey(IntPtr window, int id, uint modifiers, uint virtualKey);
@@ -385,4 +614,22 @@ internal sealed class GlobalHotkeyService : IDisposable
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool UnregisterHotKey(IntPtr window, int id);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool RegisterRawInputDevices(
+        [In] RawInputDevice[] devices,
+        uint numberOfDevices,
+        uint size);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint GetRawInputData(
+        IntPtr rawInput,
+        uint command,
+        IntPtr data,
+        ref uint size,
+        uint headerSize);
+
+    [DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int virtualKey);
 }
