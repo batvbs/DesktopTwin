@@ -114,13 +114,37 @@ jobs:
       # 三个文件直接作为附件，不打 zip：用户点开就能下到要用的那一个。
       # 校验值写在 使用说明.txt 里，不再单独出 SHA256SUMS.txt。
       #
-      # 用 gh CLI 而不是 action-gh-release：后者在 Windows runner 上会把
-      # 附件名里的中文截掉（桌面分身-0.2.2.exe 变成 -0.2.2.exe，
-      # 使用说明.txt 变成 default.txt），gh 处理 UTF-8 文件名正常。
+      # 走 REST API 而不是 gh release upload / action-gh-release：
+      # 这两者在 Windows runner 上都会把中文附件名截断
+      # （桌面分身-0.2.2.exe -> -0.2.2.exe，使用说明.txt -> default.txt），
+      # 因为文件名要经过命令行参数编码。这里把名字放进 URL 的 name 参数
+      # （percent-encoded UTF-8），完全绕开参数编码这一层。
       - name: 创建 Release
+        shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ github.ref_name }}" --title "${{ github.ref_name }}" --generate-notes --verify-tag
-          $files = Get-ChildItem "stage" | Select-Object -ExpandProperty FullName
-          gh release upload "${{ github.ref_name }}" $files --clobber
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          gh release create "${{ github.ref_name }}" --title "v$version" --generate-notes --verify-tag
+
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept        = "application/vnd.github+json"
+          }
+
+          $release = Invoke-RestMethod -Headers $headers `
+            -Uri "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ github.ref_name }}"
+
+          $uploads = @(
+            @{ File = "stage/桌面分身-$version.exe";       Name = "桌面分身-$version.exe" },
+            @{ File = "stage/桌面分身-$version-NET10.exe"; Name = "桌面分身-$version-NET10.exe" },
+            @{ File = "stage/使用说明.txt";                Name = "使用说明.txt" }
+          )
+
+          foreach ($item in $uploads) {
+            $encoded = [Uri]::EscapeDataString($item.Name)
+            $uri = "https://uploads.github.com/repos/${{ github.repository }}/releases/$($release.id)/assets?name=$encoded"
+            $uploaded = Invoke-RestMethod -Method Post -Headers $headers `
+              -ContentType "application/octet-stream" -InFile $item.File -Uri $uri
+            Write-Host ("已上传：{0}  {1:N1} MB" -f $uploaded.name, ($uploaded.size / 1MB))
+          }
