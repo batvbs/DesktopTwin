@@ -182,7 +182,8 @@ internal static class Locale
                 continue;
             }
 
-            var value = Unescape(line.Substring(separator + 1).Trim());
+            // 只裁前导空白：值末尾的空格是有意义的（例如英文的列表分隔符「, 」）。
+            var value = Unescape(line.Substring(separator + 1).TrimStart());
             if (value.Length == 0)
             {
                 // 空值当作「没翻译」：直接删掉，回退到内置中文。
