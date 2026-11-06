@@ -41,6 +41,7 @@ public partial class MainWindow : FluentWindow
     private bool _isFullscreen;
     private bool _suppressStateChange;
     private bool _barPinned;
+    private bool _wasMinimized;
     private WindowState _stateBeforeFullscreen = WindowState.Normal;
     private Rect _boundsBeforeFullscreen;
     private WindowStyle _styleBeforeFullscreen = WindowStyle.SingleBorderWindow;
@@ -98,6 +99,9 @@ public partial class MainWindow : FluentWindow
         // 全屏下窗口失焦（切到别的程序、弹出凭据框等）时把浮层收起；
         // 固定状态下不动，那是用户明确要求常驻的。
         Deactivated += OnWindowDeactivated;
+
+        // 窗口从「隐藏」恢复显示（托盘唤回）时，Popup 的定位同样会失效。
+        IsVisibleChanged += OnWindowVisibilityChanged;
 
         // 分身分辨率被改时，全屏下的「1:1 / 自适应」判定前提也变了。
         _childSessionService.DesktopSizeChanged += OnDesktopSizeChanged;
@@ -173,6 +177,16 @@ public partial class MainWindow : FluentWindow
     /// </summary>
     private void OnWindowStateChanged(object? sender, EventArgs e)
     {
+        if (WindowState == WindowState.Minimized)
+        {
+            _wasMinimized = true;
+        }
+        else if (WindowState == WindowState.Normal && _wasMinimized)
+        {
+            _wasMinimized = false;
+            ReopenPopupsAfterRestore();
+        }
+
         if (_isFullscreen)
         {
             // 全屏期间只关心最小化/还原。
@@ -180,10 +194,12 @@ public partial class MainWindow : FluentWindow
             // 不管它的话会一直飘在桌面上，看着像程序没关干净。
             if (WindowState == WindowState.Minimized)
             {
+                AppLog.Info("全屏窗口被最小化（视角切换挂后台的收尾）。");
                 HideFullscreenBar();
             }
-            else if (WindowState == WindowState.Normal && !FullscreenBarPopup.IsOpen)
+            else if (WindowState == WindowState.Normal)
             {
+                AppLog.Info("全屏窗口从最小化还原。");
                 ShowFullscreenBar();
             }
 
@@ -214,6 +230,14 @@ public partial class MainWindow : FluentWindow
         if (_isFullscreen && !_barPinned)
         {
             HideFullscreenBar();
+        }
+    }
+
+    private void OnWindowVisibilityChanged(object? sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (IsVisible)
+        {
+            ReopenPopupsAfterRestore();
         }
     }
 
@@ -466,6 +490,49 @@ public partial class MainWindow : FluentWindow
     }
 
     /// <summary>
+    /// 窗口从最小化还原后，把还开着的 Popup 关掉重开。
+    ///
+    /// Popup 在 WPF 里是独立 HWND，按 PlacementTarget 计算一次坐标后就不再跟随宿主。
+    /// 视角切换的收尾会把窗口最小化（挂后台），此时「正在切换视角」的通知条
+    /// 可能已经打开——它记下的是最小化窗口在屏幕外（约 -32000）的位置，
+    /// 窗口还原后它不会自己回来，用户看到的就是「切回时没有任何提示」。
+    /// 同理，全屏工具栏在最小化期间被收起/打开的坐标也会失效，
+    /// 表现成「鼠标移到顶部也唤不出按钮」。关掉再在布局完成后重开即可重新定位。
+    /// </summary>
+    private void ReopenPopupsAfterRestore()
+    {
+        if (!NotificationPopup.IsOpen && !FullscreenBarPopup.IsOpen && !_isFullscreen)
+        {
+            // 什么都没开着，也没有全屏工具栏要恢复：不用折腾。
+            return;
+        }
+
+        var notificationWasOpen = NotificationPopup.IsOpen;
+        var barWasOpen = FullscreenBarPopup.IsOpen;
+
+        NotificationPopup.IsOpen = false;
+        FullscreenBarPopup.IsOpen = false;
+
+        AppLog.Info(
+            $"窗口还原：通知条原状态={notificationWasOpen}，全屏工具栏原状态={barWasOpen}，重新定位。");
+
+        _ = Dispatcher.BeginInvoke(
+            new Action(() =>
+            {
+                if (barWasOpen || _isFullscreen)
+                {
+                    ShowFullscreenBar();
+                }
+
+                if (notificationWasOpen)
+                {
+                    NotificationPopup.IsOpen = true;
+                }
+            }),
+            DispatcherPriority.Loaded);
+    }
+
+    /// <summary>
     /// 显示顶栏。固定状态下不会自动收起。
     /// </summary>
     private void ShowFullscreenBar(bool keepOpen = false)
@@ -475,14 +542,30 @@ public partial class MainWindow : FluentWindow
             return;
         }
 
+        // 只在「关→开」的边沿记日志：光标停留在顶部热区时这里每 180ms 都会进来，
+        // 不加边沿判断日志会被刷爆。
+        if (!FullscreenBarPopup.IsOpen)
+        {
+            AppLog.Info($"全屏工具栏显示（固定={_barPinned}，来源：{(keepOpen ? "手动" : "自动/热区")}）。");
+        }
+
         FullscreenBarPopup.IsOpen = true;
 
         // Popup 是独立窗口，位置要自己算：水平居中，距顶部 10。
+        // 首次打开时 ActualWidth 可能还是 0，退回 DesiredSize；
+        // 两个都拿不到就按固定宽度估——以前这里一旦取不到宽度就完全不定位，
+        // 结果工具栏停在最小化时的陈旧坐标上，看着像「没显示」。
         Dispatcher.BeginInvoke(new Action(() =>
         {
-            if (FullscreenBarPopup.Child is FrameworkElement bar && bar.ActualWidth > 0)
+            if (FullscreenBarPopup.Child is FrameworkElement bar)
             {
-                FullscreenBarPopup.HorizontalOffset = Math.Max(0, (ActualWidth - bar.ActualWidth) / 2);
+                var barWidth = bar.ActualWidth > 0 ? bar.ActualWidth : bar.DesiredSize.Width;
+                if (barWidth <= 0)
+                {
+                    barWidth = 300;
+                }
+
+                FullscreenBarPopup.HorizontalOffset = Math.Max(0, (ActualWidth - barWidth) / 2);
                 FullscreenBarPopup.VerticalOffset = 10;
             }
         }), DispatcherPriority.Loaded);
@@ -514,6 +597,11 @@ public partial class MainWindow : FluentWindow
     private void HideFullscreenBar()
     {
         _barAutoHideTimer?.Stop();
+        if (FullscreenBarPopup.IsOpen)
+        {
+            AppLog.Info("全屏工具栏收起。");
+        }
+
         FullscreenBarPopup.IsOpen = false;
     }
 

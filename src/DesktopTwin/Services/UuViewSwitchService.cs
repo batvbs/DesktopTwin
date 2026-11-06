@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using DesktopTwin.Interop;
@@ -24,6 +25,11 @@ namespace DesktopTwin.Services;
 internal sealed class UuViewSwitchService : IDisposable
 {
     private const string StreamerProcessName = "GameViewerServer";
+
+    /// <summary>
+    /// UU 的系统服务名。切换后手机显示离线时，重启它可以恢复。
+    /// </summary>
+    private const string StreamerServiceName = "GameViewerService";
 
     private static readonly TimeSpan DisconnectWait = TimeSpan.FromSeconds(8);
     private static readonly TimeSpan ReconnectWait = TimeSpan.FromSeconds(45);
@@ -129,6 +135,94 @@ internal sealed class UuViewSwitchService : IDisposable
     }
 
     /// <summary>
+    /// 重启 UU 的串流服务，用于「切换后手机显示设备离线」时的人工恢复。
+    ///
+    /// 背景：切换的杠杆就是结束 GameViewerServer，让服务重新挑会话。短时间内连续切换
+    /// （实测两分钟内四次）会让服务把它当成「连续崩溃」而进入重启退避，之后就不再拉起
+    /// 串流端——手机上看到的就是「设备离线」。重启服务可以清掉这个状态。
+    /// </summary>
+    /// <param name="cancellationToken">取消标记。</param>
+    public async Task<Result> RestartStreamerServiceAsync(CancellationToken cancellationToken)
+    {
+        ThrowIfDisposed();
+
+        try
+        {
+            AppLog.Info("正在重启 UU 服务 GameViewerService…");
+
+            var stop = await RunServiceCommandAsync("stop", cancellationToken).ConfigureAwait(false);
+            await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken).ConfigureAwait(false);
+            var start = await RunServiceCommandAsync("start", cancellationToken).ConfigureAwait(false);
+
+            if (!start)
+            {
+                return new Result(false, $"重启 UU 服务失败（停止{(stop ? "成功" : "失败")}、启动失败）。请在服务管理器里手动重启 GameViewerService。");
+            }
+
+            // 服务起来后，串流端要等客户端连入才会拉起；这里只确认服务状态。
+            var settled = await WaitUntilAsync(
+                () => GetStreamerSessionIds().Count > 0,
+                TimeSpan.FromSeconds(15),
+                cancellationToken).ConfigureAwait(false);
+
+            return new Result(
+                true,
+                settled
+                    ? "UU 服务已重启，串流端已重新拉起。"
+                    : "UU 服务已重启。请在手机上重新连接一次 UU（设备应该已经回到在线）。");
+        }
+        catch (OperationCanceledException)
+        {
+            return new Result(false, "已取消。");
+        }
+        catch (Exception exception) when (exception is InvalidOperationException
+                                              or Win32Exception
+                                              or ObjectDisposedException)
+        {
+            AppLog.Warn("重启 UU 服务失败。", exception);
+            return new Result(false, $"重启 UU 服务失败：{exception.GetBaseException().Message}");
+        }
+    }
+
+    private static async Task<bool> RunServiceCommandAsync(
+        string command,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var startInfo = new ProcessStartInfo(
+                Path.Combine(Environment.SystemDirectory, "sc.exe"),
+                $"\"{command}\" \"{StreamerServiceName}\"")
+            {
+                CreateNoWindow = true,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+
+            using var process = Process.Start(startInfo);
+            if (process is null)
+            {
+                return false;
+            }
+
+            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+
+            // sc.exe 的退出码不可全信（「服务已在运行」等也算失败位），
+            // 真正的判据是服务状态，交给调用方看。
+            AppLog.Info($"sc {command} {StreamerServiceName} 退出码 {process.ExitCode}。");
+            return true;
+        }
+        catch (Exception exception) when (exception is Win32Exception
+                                              or InvalidOperationException
+                                              or IOException)
+        {
+            AppLog.Warn($"执行 sc {command} 失败。", exception);
+            return false;
+        }
+    }
+
+    /// <summary>
     /// 切到「整台电脑」：断开分身，逼 UU 落到 Console。
     /// </summary>
     private async Task<Result> SwitchToMainAsync(CancellationToken cancellationToken)
@@ -176,31 +270,83 @@ internal sealed class UuViewSwitchService : IDisposable
                 StreamerSettleWait,
                 cancellationToken).ConfigureAwait(false);
 
-        return settled
-            ? new Result(true, "已切到「整台电脑」，重新连一下 UU 就进主桌面。")
-            : new Result(false, "UU 串流端没能落到主桌面，再按一次热键重试。");
+        if (!settled)
+        {
+            return new Result(false, "UU 串流端没能落到主桌面，再按一次热键重试。");
+        }
+
+        // 串流端已经在主桌面上了，这时候把分身挂回后台不会影响 UU 的选择；
+        // 而下次切回分身就是秒切，不用重新走一遍连接握手。
+        // 对应原版脚本的 keep_child_connected。
+        var restored = await _childSessionService
+            .ConnectDesktopInBackgroundAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return new Result(
+            true,
+            restored
+                ? "已切到「整台电脑」，分身已挂回后台，下次切回是秒切。"
+                : "已切到「整台电脑」，但分身没能挂回后台，切回时会重新连接。");
     }
 
     /// <summary>
     /// 切回「桌面分身」：把分身连回来，逼 UU 落到分身。
+    ///
+    /// 步骤对齐社区脚本：先查**会话状态**，再决定要不要重建，最后才弹串流端。
+    /// 不能因为「后台还挂着连接」就跳过检查——RDP 的 Connected 属性和会话状态
+    /// 都可能滞后，后台挂着一条断掉的连接时，看起来一切正常，实际画面是黑的。
     /// </summary>
     private async Task<Result> SwitchToChildAsync(CancellationToken cancellationToken)
     {
+        // 1) 先看分身到底在不在：可能被关掉、断开、甚至整个注销了。
+        var existing = ChildSessionNativeMethods.TryGetChildSessionId();
+        var sessionAlive = existing is { } existingId
+            && ChildSessionNativeMethods.IsSessionActive(existingId);
+
+        if (!sessionAlive)
+        {
+            AppLog.Info(existing is null
+                ? "切回分身：会话不存在（被关闭或注销），走完整启动流程。"
+                : $"切回分身：会话 {existing} 不是 Active，重新连接。");
+            await _childSessionService.StartAsync().ConfigureAwait(true);
+        }
+
+        // 2) 确保 RDP 连上。
+        //    先清掉「正在断开」的排队状态：Disconnect() 之后要等 OnDisconnected 复位，
+        //    回调丢了就会一直卡住，重连只排队不执行——用户看到的就是画面一直黑着。
+        _childSessionService.ResetDisconnectState();
+
         var connected = await _childSessionService
             .EnsureDesktopConnectedAsync(cancellationToken)
             .ConfigureAwait(false);
 
         if (!connected)
         {
+            // 重连没成功，最常见的原因是断开事件没回来：RdpActiveXHost 里
+            // Disconnect() 会置 _disconnectRequested，要等 OnDisconnected 回调复位
+            // 才会真正发起下一次连接。回调丢了就卡在「正在断开」的状态里。
+            // 这里改走一次完整启动流程兜底，而不是让用户自己去点「启动并连接」。
+            AppLog.Warn("切回分身：直接重连未成功，改走完整启动流程。");
+            await _childSessionService.StartAsync().ConfigureAwait(true);
+            connected = await _childSessionService
+                .EnsureDesktopConnectedAsync(cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        if (!connected)
+        {
             return new Result(false, "分身没能连上。请在窗口里手动点「启动并连接」。");
         }
 
+        // 3) 会话号重新取一次：上面可能刚重建过，旧的号已经失效。
         var childSession = ChildSessionNativeMethods.TryGetChildSessionId();
         if (childSession is not { } sessionId)
         {
             return new Result(false, "分身会话不存在，请在窗口里手动点「启动并连接」。");
         }
 
+        // 4) 弹掉串流端，让服务落到分身。这一步不能因为「已连接」而跳过：
+        //    连接只代表本机能看到画面，UU 那边还挂在 Console 上。
         var killed = KillStreamers();
         if (killed == 0)
         {

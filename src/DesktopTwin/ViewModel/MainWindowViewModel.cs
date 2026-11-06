@@ -29,6 +29,8 @@ public partial class MainWindowViewModel : ObservableObject
     private readonly SettingsService _settings;
     private readonly DispatcherTimer _notificationTimer;
     private readonly UuViewSwitchService _uuViewSwitchService;
+    private readonly SessionAgentService _sessionAgent;
+    private long _lastAgentStartTicks;
     private GlobalHotkeyService? _globalHotkey;
     private Window? _hotkeyWindow;
     private DiagnosticsWindow? _diagnosticsWindow;
@@ -169,6 +171,11 @@ public partial class MainWindowViewModel : ObservableObject
         _uuViewSwitchEnabled = settings.Current.Automation.UuViewSwitchEnabled;
         _autoLoginEnabled = settings.Current.Automation.AutoLoginEnabled;
         _hasAutoLoginPassword = childSessionService.AutoLogin?.HasStoredPassword == true;
+
+        // 分身内的热键代理：Console 侧的热键在焦点进分身画面后会失效，
+        // 必须由分身会话里的这个代理接住，再回头通知主端执行切换。
+        _sessionAgent = new SessionAgentService(Dispatcher.CurrentDispatcher);
+        _sessionAgent.SwitchRequested += OnSessionAgentSwitchRequested;
 
         _notificationTimer = new DispatcherTimer(DispatcherPriority.Background)
         {
@@ -561,7 +568,47 @@ public partial class MainWindowViewModel : ObservableObject
         _childSessionService.DesktopSizeChanged -= OnDesktopSizeChanged;
         _globalHotkey?.Dispose();
         _globalHotkey = null;
+        _sessionAgent.SwitchRequested -= OnSessionAgentSwitchRequested;
+        _sessionAgent.Dispose();
         _uuViewSwitchService.Dispose();
+    }
+
+    /// <summary>
+    /// 重启 UU 的串流服务。
+    ///
+    /// 用于「快速连续切换之后，手机上的 UU 显示设备离线」的情况：
+    /// 切换要靠结束串流端来实现，短时间内连续结束会被 UU 服务当成连续崩溃而进入
+    /// 重启退避，之后它不再拉起串流端。重启服务可以清掉这个状态。
+    /// </summary>
+    [RelayCommand]
+    private async Task RepairUuStreamingAsync()
+    {
+        if (_uuSwitchInProgress)
+        {
+            return;
+        }
+
+        _uuSwitchInProgress = true;
+        try
+        {
+            ShowNotification(
+                "正在修复 UU 串流",
+                "正在重启 UU 服务…",
+                InfoBarSeverity.Informational,
+                TimeSpan.FromSeconds(30));
+
+            var result = await _uuViewSwitchService.RestartStreamerServiceAsync(CancellationToken.None);
+            AppLog.Info($"UU 串流修复：{(result.Success ? "成功" : "失败")} —— {result.Message}");
+            ShowNotification(
+                result.Success ? "UU 串流已修复" : "UU 串流修复失败",
+                result.Message,
+                result.Success ? InfoBarSeverity.Success : InfoBarSeverity.Warning,
+                TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            _uuSwitchInProgress = false;
+        }
     }
 
     /// <summary>
@@ -578,18 +625,37 @@ public partial class MainWindowViewModel : ObservableObject
         _uuSwitchInProgress = true;
         try
         {
+            // 「正在切换」要贯穿整个切换过程（断开、杀串流端、等 UU 重新挑会话，
+            // 可能长达 30 秒）。之前只显示 3 秒，窗口还原进全屏时提示早就没了，
+            // 用户看到的是「无任何提示直接进全屏」。
             ShowNotification(
                 "正在切换视角",
                 "正在调整会话落点，请稍候…",
                 InfoBarSeverity.Informational,
-                TimeSpan.FromSeconds(3));
+                TimeSpan.FromSeconds(35));
 
             var result = await _uuViewSwitchService.ToggleAsync(CancellationToken.None);
+
+            // 结果必须落日志：这次实测里切换的成败只出现在界面上，
+            // 排障时只能从「有没有杀串流端」间接猜，代价太高。
+            AppLog.Info(
+                $"视角切换结束：{(result.Success ? "成功" : "失败")} —— {result.Message}");
+
             ShowNotification(
                 result.Success ? "视角切换完成" : "视角切换失败",
                 result.Message,
                 result.Success ? InfoBarSeverity.Success : InfoBarSeverity.Warning,
-                TimeSpan.FromSeconds(6));
+                TimeSpan.FromSeconds(8));
+
+            // 切到「整台电脑」的收尾会把窗口最小化（分身挂后台），
+            // InfoBar 在最小化的窗口里根本看不见——托盘气泡是唯一的可见通道。
+            // 切回分身时窗口会还原，InfoBar 可见，气泡只是顺手多一层保险。
+            if (!_childSessionService.IsDesktopVisible)
+            {
+                App.ShowTrayBalloon(
+                    result.Success ? "视角切换完成" : "视角切换失败",
+                    result.Message);
+            }
         }
         finally
         {
@@ -995,21 +1061,33 @@ public partial class MainWindowViewModel : ObservableObject
 
         if (!UuViewSwitchEnabled)
         {
+            _sessionAgent.Uninstall();
             return;
         }
 
         var combination = _settings.Current.Automation.UuViewSwitchHotkey;
         if (_globalHotkey.TryRegister(_hotkeyWindow, combination, out var error))
         {
+            // 分身端：Console 侧热键在焦点进分身画面后会失效，必须由分身会话里的代理接住。
+            var agentReady = _sessionAgent.EnsureInstalled(combination, out var agentError);
+            if (!agentReady)
+            {
+                AppLog.Warn($"分身端安装失败，热键在分身画面内可能不生效：{agentError}");
+            }
+            else
+            {
+                // 自启项只在下次登录时生效，用户当前就开着分身，所以立刻拉一份。
+                _ = _sessionAgent.TryStartInChildSession();
+            }
+
             if (notifySuccess)
             {
                 ShowNotification(
                     "UU 视角切换已启用",
                     $"按 {GlobalHotkeyService.Format(combination)} 可在「整台电脑」与「桌面分身」之间切换。"
-                    + (_globalHotkey.IsRawInputActive
-                        ? "已在分身画面内也能接收按键。"
-                        : string.Empty),
-                    InfoBarSeverity.Success);
+                    + (agentReady ? "分身画面内由分身端接管，同样有效。" : string.Empty),
+                    InfoBarSeverity.Success,
+                    TimeSpan.FromSeconds(7));
             }
 
             return;
@@ -1020,7 +1098,16 @@ public partial class MainWindowViewModel : ObservableObject
         UuViewSwitchEnabled = false;
         _settings.Current.Automation.UuViewSwitchEnabled = false;
         _settings.SaveSoon();
+        _sessionAgent.Uninstall();
         ShowNotification("快捷键注册失败", error, InfoBarSeverity.Warning, TimeSpan.FromSeconds(7));
+    }
+
+    /// <summary>
+    /// 分身端命中热键。和主窗口内的热键走同一条切换路径。
+    /// </summary>
+    private void OnSessionAgentSwitchRequested(object? sender, EventArgs e)
+    {
+        _ = TriggerUuViewSwitchAsync();
     }
 
     private void OnUuHotkeyPressed(object? sender, EventArgs e)
@@ -1377,10 +1464,49 @@ public partial class MainWindowViewModel : ObservableObject
         if (Application.Current.Dispatcher.CheckAccess())
         {
             UpdateConnectionStatus();
+            EnsureSessionAgentRunning();
             return;
         }
 
-        _ = Application.Current.Dispatcher.BeginInvoke(UpdateConnectionStatus);
+        _ = Application.Current.Dispatcher.BeginInvoke(() =>
+        {
+            UpdateConnectionStatus();
+            EnsureSessionAgentRunning();
+        });
+    }
+
+    /// <summary>
+    /// 分身连上时确保热键代理在跑。
+    ///
+    /// 代理是否在线由 <see cref="SessionAgentService.IsAgentOnline"/> 判定，
+    /// 那里面已经含「刚拉起的 60 秒启动宽限」：分身端冷启动到第一条心跳要
+    /// 7～12 秒，没有宽限就会把正在启动的代理误判成「不在线」再拉一个新的，
+    /// 新代理又会杀掉旧的（自噬循环）。
+    /// </summary>
+    private void EnsureSessionAgentRunning()
+    {
+        if (!UuViewSwitchEnabled || _childSessionService.ConnectedState != 1)
+        {
+            return;
+        }
+
+        if (!_sessionAgent.NeedsRestart && _sessionAgent.IsAgentOnline())
+        {
+            return;
+        }
+
+        // 状态事件来自 500ms 轮询，不加节流会反复下发启动任务。
+        var now = Environment.TickCount64;
+        if (now - _lastAgentStartTicks < 10_000)
+        {
+            return;
+        }
+
+        _lastAgentStartTicks = now;
+        AppLog.Info(_sessionAgent.NeedsRestart
+            ? "分身端脚本已更新，拉起新代理替换旧的。"
+            : "分身端心跳超时（代理已掉线），重新拉起。");
+        _ = _sessionAgent.TryStartInChildSession();
     }
 
     private void OnChildSessionConnectionFailed(

@@ -41,4 +41,33 @@
 		<InternalsVisibleTo Include="DesktopTwin.Tests" />
 	</ItemGroup>
 
+	<!-- ===== 分身端代理 =====
+	     用 Windows 自带的 .NET Framework csc（任何 Windows 10/11 都自带）把
+	     src/SessionAgent 编译成 WinExe：GUI 子系统进程不分配控制台，从根上消除
+	     「分身里常驻一个 PowerShell 窗口」；启动也是毫秒级，不会因为冷启动慢
+	     被主程序误判成掉线。产物作为嵌入资源打进主程序，发布仍是单文件。
+
+	     所有属性都在 Target 内部求值：IntermediateOutputPath 在项目求值阶段还是空的，
+	     写在 Target 外面的 PropertyGroup 里会得到相对路径，产物会落到项目目录里，
+	     再被 **/*.cs 通配进来，导致「MainWindow 重复定义」这类莫名其妙的编译错误。 -->
+	<Target Name="BuildSessionAgent" BeforeTargets="PrepareForBuild">
+		<PropertyGroup>
+			<SessionAgentSource>$(MSBuildThisFileDirectory)..\SessionAgent\SessionAgentProgram.cs</SessionAgentSource>
+			<SessionAgentManifest>$(MSBuildThisFileDirectory)..\SessionAgent\app.manifest</SessionAgentManifest>
+			<SessionAgentIcon>$(MSBuildProjectDirectory)\Assets\DesktopTwin.ico</SessionAgentIcon>
+			<SessionAgentOutput>$(IntermediateOutputPath)DesktopTwin.Agent.exe</SessionAgentOutput>
+			<SessionAgentCompiler>$(WINDIR)\Microsoft.NET\Framework64\v4.0.30319\csc.exe</SessionAgentCompiler>
+			<SessionAgentCompiler Condition="!Exists('$(SessionAgentCompiler)')">$(WINDIR)\Microsoft.NET\Framework\v4.0.30319\csc.exe</SessionAgentCompiler>
+		</PropertyGroup>
+
+		<Error Condition="!Exists('$(SessionAgentCompiler)')"
+		       Text="找不到 .NET Framework 的编译器，无法构建分身端代理。" />
+		<MakeDir Directories="$(IntermediateOutputPath)" />
+		<Exec Command="&quot;$(SessionAgentCompiler)&quot; /nologo /target:winexe /optimize+ /win32manifest:&quot;$(SessionAgentManifest)&quot; /win32icon:&quot;$(SessionAgentIcon)&quot; /out:&quot;$(SessionAgentOutput)&quot; /reference:System.dll /reference:System.Core.dll /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Management.dll &quot;$(SessionAgentSource)&quot;" />
+
+		<ItemGroup>
+			<EmbeddedResource Include="$(SessionAgentOutput)" LogicalName="DesktopTwin.Agent.exe" />
+		</ItemGroup>
+	</Target>
+
 </Project>

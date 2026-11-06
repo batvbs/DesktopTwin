@@ -36,6 +36,25 @@ public sealed class ChildSessionService : IDisposable
     private readonly SemaphoreSlim _launchSemaphore = new(1, 1);
     private readonly CancellationTokenSource _disposeCancellationTokenSource = new();
 
+    /// <summary>
+    /// 窗口是不是用户主动隐藏的。
+    ///
+    /// 视角切换里凡是要「确保窗口显示」的地方都要先看这个：用户点「隐藏」
+    /// 就是不想看见它，切回分身时突然弹出来会打断他正在做的事。
+    /// 反过来，切换过程中为了挂后台而最小化的窗口，不受这个标志约束。
+    /// </summary>
+    private bool _windowHiddenByUser;
+
+    /// <summary>
+    /// 创建服务时所在的 UI 线程调度器。
+    ///
+    /// 视角切换里多处 await 用了 ConfigureAwait(false)，等到需要操作 RDP 控件时
+    /// 已经在线程池上了；WPF 对象只认创建它的线程，直接碰就是
+    /// 「调用线程无法访问此对象，因为另一个线程拥有该对象」。
+    /// 涉及 UI 的入口统一用它切回去。
+    /// </summary>
+    private readonly Dispatcher _dispatcher = Dispatcher.CurrentDispatcher;
+
     private MainWindow? _desktopWindow;
     private bool _autoLaunchPending;
     private TaskCompletionSource<bool>? _connectionAttemptCompletionSource;
@@ -306,6 +325,7 @@ public sealed class ChildSessionService : IDisposable
     public void ShowWindow()
     {
         ThrowIfDisposed();
+        _windowHiddenByUser = false;
         ShowDesktopWindow(EnsureDesktopWindow());
         RefreshState();
     }
@@ -316,6 +336,7 @@ public sealed class ChildSessionService : IDisposable
     public void HideWindow()
     {
         ThrowIfDisposed();
+        _windowHiddenByUser = true;
         _desktopWindow?.Hide();
         RefreshState("已隐藏桌面分身窗口，RDP 连接保持不变");
     }
@@ -350,12 +371,17 @@ public sealed class ChildSessionService : IDisposable
     /// </summary>
     /// <param name="cancellationToken">取消标记。</param>
     /// <returns>连接成功返回 true。</returns>
-    public async Task<bool> EnsureDesktopConnectedAsync(CancellationToken cancellationToken)
+    public async Task<bool> EnsureDesktopConnectedAsync(
+        CancellationToken cancellationToken,
+        bool showWindow = true)
     {
         ThrowIfDisposed();
 
         var window = EnsureDesktopWindow();
-        ShowDesktopWindow(window);
+        if (showWindow && !_windowHiddenByUser)
+        {
+            ShowDesktopWindow(window);
+        }
 
         if (window.RdpHost.ConnectedState != 1)
         {
@@ -388,11 +414,140 @@ public sealed class ChildSessionService : IDisposable
     }
 
     /// <summary>
+    /// 把分身重新连上但不显示窗口，并最小化到任务栏。
+    ///
+    /// 用途是「切到整台电脑」之后的收尾：UU 的串流端已经落到主桌面了，
+    /// 这时把分身挂回后台不会影响它的选择，而下次切回分身就能秒切——
+    /// 不用重新走一遍连接握手。原版社区脚本把这个行为叫 keep_child_connected。
+    /// </summary>
+    public Task<bool> ConnectDesktopInBackgroundAsync(CancellationToken cancellationToken)
+    {
+        ThrowIfDisposed();
+
+        // 调用方多半在线程池上（切换流程里到处是 ConfigureAwait(false)），
+        // 而下面要碰 RDP 控件和窗口——WPF 对象只认创建它的线程，
+        // 必须先切回 UI 线程，否则直接抛 InvalidOperationException。
+        if (_dispatcher.CheckAccess())
+        {
+            return ConnectDesktopInBackgroundCoreAsync(cancellationToken);
+        }
+
+        return _dispatcher
+            .InvokeAsync(() => ConnectDesktopInBackgroundCoreAsync(cancellationToken))
+            .Task
+            .Unwrap();
+    }
+
+    private async Task<bool> ConnectDesktopInBackgroundCoreAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var host = EnsureDesktopWindow().RdpHost;
+
+            // 等 RDP 控件真正回到「已断开」。
+            //
+            // ConnectToChildSession 开头有 `if (ConnectedState != 0) return;`：
+            // 刚断开时控件还停在连接/断开中的状态，这次重连会被静默跳过。
+            for (var attempt = 0; attempt < 25 && host.ConnectedState != 0; attempt++)
+            {
+                await Task.Delay(200, cancellationToken).ConfigureAwait(true);
+            }
+
+            // 断开是「有意」的，靠 OnDisconnected 回调复位标志；回调丢了就会一直卡在
+            // 「正在断开」，后续连接只排队不执行。
+            host.ResetDisconnectState();
+
+            // 直接走完整启动流程，而不是 ReconnectToChildSession。
+            //
+            // 后者在控件刚断开时会抛 InvalidCastException：
+            //   Unable to cast COM object to interface type 'IMsRdpExtendedSettings'
+            //   不支持此接口 (0x80004002 E_NOINTERFACE)
+            // 异常发生在 ConnectToChildSession 的「设置 ConnectToChildSession」那一步，
+            // 一个连接都发不起来。而 StartAsync 这条路（用户再按一次热键走的正是它）
+            // 实测是能连上的，所以后台重连直接复用它。
+            // 最多试两次。第一次失败最常见的原因是控件状态还没稳定，
+            // 隔 3 秒重来一次基本都能成——比让用户自己再按一次热键强。
+            var connected = false;
+            for (var attempt = 1; attempt <= 2; attempt++)
+            {
+                host.ResetDisconnectState();
+                await StartAsync().ConfigureAwait(true);
+
+                // Connected 属性和会话状态会脱节：断开后属性可能还是 1，
+                // 于是看起来「已连上」，而实际会话停在 Disconnected。两个都要查。
+                connected = host.ConnectedState == 1
+                    && ChildSessionNativeMethods.TryGetChildSessionId() is { } sessionId
+                    && ChildSessionNativeMethods.IsSessionActive(sessionId);
+
+                if (connected)
+                {
+                    break;
+                }
+
+                if (attempt < 2)
+                {
+                    // 控件可能停在「属性说已连接、会话其实是断的」这种假象上，
+                    // 不先断掉，下一次 StartAsync 会被开头的 ConnectedState 判断直接跳过。
+                    if (host.ConnectedState == 1)
+                    {
+                        try
+                        {
+                            _ = host.Disconnect();
+                        }
+                        catch (Exception exception) when (IsExpectedChildSessionException(exception))
+                        {
+                            AppLog.Warn("后台重连：重试前断开失败，忽略。", exception);
+                        }
+
+                        await Task.Delay(600, cancellationToken).ConfigureAwait(true);
+                    }
+
+                    AppLog.Warn($"后台重连分身：第 {attempt} 次未成功，3 秒后重试。");
+                    await Task.Delay(3000, cancellationToken).ConfigureAwait(true);
+                }
+            }
+
+            AppLog.Info(connected
+                ? "后台重连分身：成功，已挂回后台。"
+                : "后台重连分身：失败，切回时需要重新连接。");
+
+            var window = _desktopWindow;
+            if (window is not null && window.IsVisible)
+            {
+                window.WindowState = WindowState.Minimized;
+            }
+
+            return connected;
+        }
+        catch (Exception exception) when (IsExpectedChildSessionException(exception))
+        {
+            // 之前这里不捕获：异常沿着 fire-and-forget 的 Task 传上去被吞掉，
+            // 日志里只留下一条「KeyboardHookMode」就断了。
+            AppLog.Warn("后台重连分身时出错。", exception);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 清掉 RDP 的「正在断开」排队状态。
+    ///
+    /// 视角切换在重连前必须调用：<c>Disconnect()</c> 之后要等 <c>OnDisconnected</c>
+    /// 回调复位标志，回调丢了就永远卡在「正在断开」，重连只排队不执行。
+    /// </summary>
+    public void ResetDisconnectState()
+    {
+        ThrowIfDisposed();
+        _desktopWindow?.RdpHost.ResetDisconnectState();
+    }
+
+    /// <summary>
     /// 向分身发送 Win+D 显示桌面。
     /// </summary>
     public void ShowChildSessionDesktop()
     {
         ThrowIfDisposed();
+        // 用户主动点了这个菜单，等于要把窗口叫回来。
+        _windowHiddenByUser = false;
         var window = EnsureDesktopWindow();
         ShowDesktopWindow(window);
         window.RdpHost.SendShowDesktopShortcut();
@@ -405,6 +560,8 @@ public sealed class ChildSessionService : IDisposable
     public void ShowChildSessionTaskView()
     {
         ThrowIfDisposed();
+        // 同上：主动点了菜单，等于要把窗口叫回来。
+        _windowHiddenByUser = false;
         var window = EnsureDesktopWindow();
         ShowDesktopWindow(window);
         window.RdpHost.SendTaskViewShortcut();
@@ -742,7 +899,13 @@ public sealed class ChildSessionService : IDisposable
     {
         var existingSessionId = ChildSessionNativeMethods.TryGetChildSessionId();
         var window = EnsureDesktopWindow();
-        ShowDesktopWindow(window);
+
+        // 用户主动隐藏过窗口就别弹出来：连接本身不需要窗口可见，
+        // 切回分身时突然弹窗会打断他正在做的事。
+        if (!_windowHiddenByUser)
+        {
+            ShowDesktopWindow(window);
+        }
 
         if (window.RdpHost.ConnectedState == 0)
         {

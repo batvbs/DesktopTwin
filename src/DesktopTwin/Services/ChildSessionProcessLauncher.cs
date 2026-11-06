@@ -25,6 +25,20 @@ public static class ChildSessionProcessLauncher
     private const string TaskNamePrefix = "DesktopTwin-SessionLaunch-";
 
     /// <summary>
+    /// 清扫时要认的任务名前缀。
+    ///
+    /// 除了本类创建的 <see cref="TaskNamePrefix"/>，分身端代理用的
+    /// <c>DesktopTwin-SessionAgent-</c> 也是同一种一次性任务——
+    /// 不清扫的话，程序异常退出会让它们一直躺在任务计划程序里。
+    /// </summary>
+    private const string CommonTaskNamePrefix = "DesktopTwin-";
+
+    /// <summary>
+    /// 临时任务的延迟清理时间：要留够「任务真正拉起进程」的余量。
+    /// </summary>
+    private static readonly TimeSpan TaskCleanupDelay = TimeSpan.FromSeconds(45);
+
+    /// <summary>
     /// 用户级 COM 注册所在的根路径。
     ///
     /// 与 <see cref="TaskSchedulerClsid"/> 同理，只写一次。守卫要拼它去查 HKCU，
@@ -158,7 +172,7 @@ public static class ChildSessionProcessLauncher
 
             foreach (var taskName in EnumerateTaskNames(rootFolder))
             {
-                if (!taskName.StartsWith(TaskNamePrefix, StringComparison.Ordinal))
+                if (!taskName.StartsWith(CommonTaskNamePrefix, StringComparison.Ordinal))
                 {
                     continue;
                 }
@@ -391,12 +405,49 @@ public static class ChildSessionProcessLauncher
         }
     }
 
+    /// <summary>
+    /// 在指定会话里运行一条命令。
+    ///
+    /// 与 <see cref="LaunchProgram"/> 的区别：不校验可执行文件路径——
+    /// 调用方传的是系统自带的 <c>powershell.exe</c>，不是用户选的目标程序。
+    /// 用途是拉起分身端的脚本代理。
+    /// </summary>
+    /// <returns>是否已成功下发启动任务。</returns>
+    internal static bool RunInSession(
+        uint sessionId,
+        string executablePath,
+        string arguments,
+        string taskNamePrefix)
+    {
+        try
+        {
+            LaunchWithTemporaryTask(
+                sessionId,
+                executablePath,
+                arguments,
+                Path.GetDirectoryName(executablePath) ?? string.Empty,
+                runAsAdministrator: false,
+                taskNamePrefix: taskNamePrefix);
+            return true;
+        }
+        catch (Exception exception) when (exception is InvalidOperationException
+                                              or COMException
+                                              or UnauthorizedAccessException
+                                              or System.Security.SecurityException
+                                              or IOException)
+        {
+            AppLog.Warn("在分身会话里启动命令失败。", exception);
+            return false;
+        }
+    }
+
     private static void LaunchWithTemporaryTask(
         uint childSessionId,
         string executablePath,
         string arguments,
         string workingDirectory,
-        bool runAsAdministrator)
+        bool runAsAdministrator,
+        string? taskNamePrefix = null)
     {
         // 会话可能在用户点击后被重建，启动前必须确认目标会话号仍然有效，
         // 否则会把程序启动到一个已经注销的会话里（表现为「点了没反应」）。
@@ -414,7 +465,7 @@ public static class ChildSessionProcessLauncher
         var schedulerType = Type.GetTypeFromProgID("Schedule.Service")
             ?? throw new InvalidOperationException("当前 Windows 未提供任务计划程序 COM 服务。");
 
-        var taskName = TaskNamePrefix + Guid.NewGuid().ToString("N");
+        var taskName = (taskNamePrefix ?? TaskNamePrefix) + Guid.NewGuid().ToString("N");
         string accountName;
         using (var currentIdentity = WindowsIdentity.GetCurrent())
         {
@@ -492,19 +543,15 @@ public static class ChildSessionProcessLauncher
         }
         finally
         {
-            if (taskRegistered && rootFolderObject is not null)
+            if (taskRegistered)
             {
-                try
-                {
-                    dynamic rootFolder = rootFolderObject;
-                    rootFolder.DeleteTask(taskName, 0);
-                }
-                catch (COMException exception)
-                {
-                    // 临时任务启动成功后，清理失败不应中断已经启动的目标程序，
-                    // 但必须留痕：残留任务会在下次启动时由 SweepOrphanTasks 清理。
-                    AppLog.Warn($"删除临时计划任务 {taskName} 失败。", exception);
-                }
+                // 不能在这里立刻删任务。
+                //
+                // RunEx 只是「登记运行」，进程真正起来有几秒延迟；任务计划程序在删除
+                // 任务定义时会连带终止它的运行实例——删得太快，刚拉起的进程会被掐掉。
+                // 实测表现：「已在会话 X 中启动」的日志有，但会话里根本没有进程，
+                // 三次拉起只有一次碰巧活下来。所以改成延迟清理，异常退出时留给下次启动清扫。
+                ScheduleTaskCleanup(taskName);
             }
 
             ReleaseComObject(runningTaskObject);
@@ -514,6 +561,60 @@ public static class ChildSessionProcessLauncher
             ReleaseComObject(rootFolderObject);
             ReleaseComObject(schedulerObject);
         }
+    }
+
+    /// <summary>
+    /// 在后台延迟删除临时计划任务。
+    ///
+    /// 延迟期间目标进程已经稳定运行，此时删除任务不会影响它。
+    /// </summary>
+    /// <param name="taskName">要删除的任务名。</param>
+    private static void ScheduleTaskCleanup(string taskName)
+    {
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(TaskCleanupDelay).ConfigureAwait(false);
+
+                var schedulerType = Type.GetTypeFromProgID("Schedule.Service");
+                if (schedulerType is null)
+                {
+                    return;
+                }
+
+                object? schedulerObject = null;
+                object? rootFolderObject = null;
+                try
+                {
+                    schedulerObject = Activator.CreateInstance(schedulerType);
+                    if (schedulerObject is null)
+                    {
+                        return;
+                    }
+
+                    dynamic scheduler = schedulerObject;
+                    scheduler.Connect();
+                    rootFolderObject = scheduler.GetFolder("\\");
+                    dynamic rootFolder = rootFolderObject;
+                    rootFolder.DeleteTask(taskName, 0);
+                }
+                finally
+                {
+                    ReleaseComObject(rootFolderObject);
+                    ReleaseComObject(schedulerObject);
+                }
+            }
+            catch (Exception exception) when (exception is COMException
+                                                  or InvalidOperationException
+                                                  or UnauthorizedAccessException
+                                                  or Microsoft.CSharp.RuntimeBinder.RuntimeBinderException
+                                                  or InvalidCastException)
+            {
+                // 删不掉不算错：下次启动 SweepOrphanTasks 会清掉。
+                AppLog.Warn($"延迟删除临时计划任务 {taskName} 失败，留给下次启动清扫。", exception);
+            }
+        });
     }
 
     private static void ReleaseComObject(object? value)

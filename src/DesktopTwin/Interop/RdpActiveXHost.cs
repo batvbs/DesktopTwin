@@ -99,10 +99,25 @@ internal sealed class RdpActiveXHost : AxHost
         var securedSettings = GetComProperty(client, "SecuredSettings2")
             ?? throw new COMException("RDP ActiveX 未返回 SecuredSettings2。");
         RunComStep("设置系统组合键发送位置", () =>
-            SetComProperty(
-                securedSettings,
-                "KeyboardHookMode",
-                _sendSystemShortcutsToRemote ? 1 : 0));
+        {
+            var hookMode = _sendSystemShortcutsToRemote ? 1 : 0;
+            SetComProperty(securedSettings, "KeyboardHookMode", hookMode);
+
+            // 读回来确认：这个属性决定 RDP 是否装键盘钩子。
+            // 装了就表示组合键会被转发进远程会话，本地全局热键随之失效——
+            // 用户报「在分身里按热键没反应」时，这一行是第一个要看的地方。
+            try
+            {
+                var actual = GetComProperty(securedSettings, "KeyboardHookMode");
+                AppLog.Info($"KeyboardHookMode 已写入 {hookMode}，读回 {actual ?? "(空)"}。");
+            }
+            catch (Exception exception) when (exception is COMException
+                                                  or MissingMemberException
+                                                  or InvalidCastException)
+            {
+                AppLog.Warn("KeyboardHookMode 读回失败，无法确认是否生效。", exception);
+            }
+        });
         RunComStep("设置远程音频重定向", () =>
             SetComProperty(
                 securedSettings,
@@ -211,6 +226,22 @@ internal sealed class RdpActiveXHost : AxHost
         }
 
         ChildSessionNativeMethods.SetRdpInputWindowEnabled(Handle, !blocked);
+    }
+
+    /// <summary>
+    /// 清掉「正在断开」的排队状态。
+    ///
+    /// <see cref="Disconnect"/> 会置 <c>_disconnectRequested</c>，要等 <c>OnDisconnected</c>
+    /// 回调回来才复位。回调一旦丢失，就会永远卡在「正在断开」：
+    /// <see cref="ReconnectToChildSession"/> 走的是「只排队、不重连」那条分支，
+    /// 表现为切回分身时画面一直黑着，用户只能自己去点「启动并连接」。
+    ///
+    /// 调用方必须已经确认过会话状态，否则可能打断一次真正的断开。
+    /// </summary>
+    internal void ResetDisconnectState()
+    {
+        _disconnectRequested = false;
+        _pendingReconnectDesktopSize = null;
     }
 
     internal void ReconnectToChildSession(DrawingSize desktopSize)
@@ -678,8 +709,16 @@ internal sealed class RdpActiveXHost : AxHost
         var credential = _credentialProvider?.Invoke();
         if (credential is not { } value || string.IsNullOrWhiteSpace(value.UserName))
         {
+            // 这里以前是静默返回的：连不上时完全看不出是「没提供凭据」还是
+            // 「提供了但认证失败」，两种情况的修法完全不同。
+            AppLog.Info("自动登录：本次连接没有可用凭据，将走交互式输入。");
             return;
         }
+
+        AppLog.Info(
+            $"自动登录：已提供凭据（用户 {value.UserName}，"
+            + $"域 {(string.IsNullOrEmpty(value.Domain) ? "空" : value.Domain)}，"
+            + $"密码长度 {value.Password?.Length ?? 0}）。");
 
         try
         {

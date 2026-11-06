@@ -221,6 +221,9 @@
                                                  Header="{Binding UuHotkeyText, StringFormat=切换快捷键：{0}}" />
                                     <ui:MenuItem Command="{Binding TriggerUuViewSwitchCommand}"
                                                  Header="立即切换一次" />
+                                    <ui:MenuItem Command="{Binding RepairUuStreamingCommand}"
+                                                 Header="修复 UU 串流（重启 UU 服务）"
+                                                 ToolTip="快速连续切换后，手机上的 UU 可能显示设备离线：切换需要结束串流端，短时间内连续结束会被 UU 服务当成连续崩溃而暂停重拉。点这里重启 UU 服务恢复，然后在手机上重新连接一次。" />
                                 </ui:MenuItem>
                                 <ui:MenuItem Header="{Binding AutoLoginMenuHeader}">
                                     <ui:MenuItem Command="{Binding ShowAutoLoginOptionsCommand}"

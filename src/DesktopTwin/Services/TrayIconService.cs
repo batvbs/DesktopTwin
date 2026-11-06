@@ -78,6 +78,36 @@ internal sealed class TrayIconService : IDisposable
         _menu.Dispose();
     }
 
+    /// <summary>
+    /// 弹一条托盘气泡通知。
+    ///
+    /// 用途：视角切换的收尾会把分身窗口最小化（分身挂后台），
+    /// 此时窗口里的 InfoBar 用户看不见，托盘气泡是唯一还可见的提示通道。
+    /// </summary>
+    /// <param name="title">标题。</param>
+    /// <param name="message">正文。</param>
+    public void ShowBalloon(string title, string message)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        try
+        {
+            _notifyIcon.BalloonTipTitle = title;
+            _notifyIcon.BalloonTipText = message;
+            _notifyIcon.BalloonTipIcon = Forms.ToolTipIcon.Info;
+            _notifyIcon.ShowBalloonTip(4000);
+        }
+        catch (Exception exception) when (exception is ObjectDisposedException
+                                              or InvalidOperationException)
+        {
+            // 焦点助手/系统策略可能吞掉气泡；提示失败不影响功能本身。
+            AppLog.Warn("托盘气泡显示失败。", exception);
+        }
+    }
+
     private void OnIconMouseClick(object? sender, Forms.MouseEventArgs e)
     {
         if (e.Button == Forms.MouseButtons.Left)

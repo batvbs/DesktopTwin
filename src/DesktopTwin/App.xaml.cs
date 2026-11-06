@@ -40,6 +40,12 @@ public partial class App : Application
         DispatcherUnhandledException += OnDispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += OnDomainUnhandledException;
 
+        // 面包屑：正常退出（含 Environment.Exit）会走 ProcessExit 并留下这一行；
+        // 进程被外部强杀则不会。排查「程序突然消失」时，看日志有没有这一行就能分清是
+        // 「自己退了」还是「被别人杀了」——这一条是拿这次实测的教训换来的。
+        AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+            AppLog.Info("进程退出（ProcessExit 回调触发：正常退出路径）");
+
         // 只允许一个实例：两个实例同时操作子会话会互相把对方的会话注销掉。
         // 创建失败（例如另一个用户已用 Global\ 建过同名互斥体）时按「已在运行」处理，
         // 不要让启动过程直接抛异常。
@@ -97,6 +103,29 @@ public partial class App : Application
 
         // 托盘图标常驻：窗口被隐藏后，这是唯一能把它叫回来的入口。
         _trayIcon = new TrayIconService(_childSessionService);
+    }
+
+    /// <summary>
+    /// 弹一条托盘气泡。窗口最小化/隐藏时（例如视角切换的收尾），
+    /// 窗口内的通知条用户看不见，这是唯一可见的提示通道。
+    /// </summary>
+    /// <param name="title">标题。</param>
+    /// <param name="message">正文。</param>
+    public static void ShowTrayBalloon(string title, string message)
+    {
+        if (Current is not App { _trayIcon: { } tray })
+        {
+            return;
+        }
+
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is null || dispatcher.CheckAccess())
+        {
+            tray.ShowBalloon(title, message);
+            return;
+        }
+
+        _ = dispatcher.BeginInvoke(new Action(() => tray.ShowBalloon(title, message)));
     }
 
     /// <inheritdoc />
