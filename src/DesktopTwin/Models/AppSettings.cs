@@ -235,6 +235,14 @@ public sealed class AutomationSettings
     /// </summary>
     public Dictionary<string, string> AutoLoginPasswords { get; set; } =
         new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 仅用于把 0.2.3 测试版的「单账户密码」搬到 <see cref="AutoLoginPasswords"/>。
+    ///
+    /// 读出来就立刻迁移并清空，之后不再写。测试版用户升级时不必重新输入一次密码。
+    /// </summary>
+    [System.Text.Json.Serialization.JsonPropertyName("AutoLoginPassword")]
+    public string? LegacyAutoLoginPassword { get; set; }
 }
 
 /// <summary>

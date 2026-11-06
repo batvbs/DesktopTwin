@@ -399,23 +399,35 @@ internal sealed class SessionAgentService : IDisposable
             }
         }
 
-        // 先写临时文件再替换：代理正在运行时旧文件的句柄可能还在，直接覆盖会失败。
+        // 先写临时文件，再把旧文件「改名让位」，最后把新文件搬到正式名字上。
+        //
+        // 不能直接覆盖或删除旧文件：正在运行的代理把自己的 exe 映射住了，
+        // 删除/覆盖都会失败（Device or resource busy）。但 Windows 允许**重命名**
+        // 正在运行的可执行文件——旧进程继续用改名后的文件跑，新文件占回原名字。
         var tempPath = AgentPath + ".new";
+        var retiredPath = AgentPath + ".old";
         File.WriteAllBytes(tempPath, buffer);
 
         if (File.Exists(AgentPath))
         {
+            TryDelete(retiredPath);
             try
             {
-                File.Delete(AgentPath);
+                File.Move(AgentPath, retiredPath);
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
             {
-                AppLog.Warn("删除旧分身端失败，改用覆盖写入。", exception);
+                // 连改名都不行（极少见）：留着旧代理继续跑，下次启动再换。
+                AppLog.Warn("旧分身端无法改名让位，本次沿用旧版本。", exception);
+                TryDelete(tempPath);
+                return false;
             }
         }
 
         File.Move(tempPath, AgentPath);
+
+        // 旧文件此刻可能还被旧进程占着，删不掉也无所谓：下次启动还会再试一次。
+        TryDelete(retiredPath);
 
         AppLog.Info($"分身端已释放：{AgentPath}");
         return true;

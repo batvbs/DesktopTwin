@@ -133,6 +133,46 @@ public sealed class SettingsService : IDisposable
     }
 
     /// <summary>
+    /// 把 0.2.3 测试版留下的「单账户密码」搬进多账户密码表。
+    ///
+    /// 只做一次：搬完就把旧字段清空。这样从测试版升级过来的用户不用重新输一遍密码，
+    /// 之后这份数据就只剩新结构。
+    /// </summary>
+    /// <returns>有改动时返回 true。</returns>
+    private static bool MigrateLegacyPassword(AppSettings settings)
+    {
+        var automation = settings.Automation;
+        if (automation is null || string.IsNullOrWhiteSpace(automation.LegacyAutoLoginPassword))
+        {
+            return false;
+        }
+
+        var account = string.IsNullOrWhiteSpace(automation.AutoLoginUserName)
+            ? Environment.UserName
+            : automation.AutoLoginUserName.Trim();
+
+        // 已经有这个账户的记录了就以新的为准，不覆盖用户后来设置过的密码。
+        var hasEntry = false;
+        foreach (var key in automation.AutoLoginPasswords.Keys)
+        {
+            if (string.Equals(key, account, StringComparison.OrdinalIgnoreCase))
+            {
+                hasEntry = true;
+                break;
+            }
+        }
+
+        if (!hasEntry)
+        {
+            automation.AutoLoginPasswords[account] = automation.LegacyAutoLoginPassword!;
+            AppLog.Info($"已把旧版保存的密码迁移到账户「{account}」名下。");
+        }
+
+        automation.LegacyAutoLoginPassword = null;
+        return true;
+    }
+
+    /// <summary>
     /// 反序列化出来的密码表换成「不区分大小写」的字典。
     ///
     /// System.Text.Json 重建 Dictionary 时用的是默认比较器，属性上声明的
@@ -179,7 +219,7 @@ public sealed class SettingsService : IDisposable
                 ?? new AppSettings { SettingsVersion = AppSettings.CurrentVersion };
 
             NormalizePasswordTable(settings);
-            _migrated = Migrate(settings);
+            _migrated = Migrate(settings) | MigrateLegacyPassword(settings);
             return settings;
         }
         catch (Exception exception) when (exception is IOException

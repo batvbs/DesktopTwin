@@ -144,6 +144,38 @@ public sealed class SettingsServiceTests : IDisposable
         Assert.False(ElevatedLaunchConsent.IsValid(null, path, "--windowed"));
     }
 
+    [Fact]
+    public void 旧版单账户密码会迁移到多账户表()
+    {
+        // 模拟 0.2.3 测试版写下的设置：只有一个 AutoLoginPassword 字段
+        File.WriteAllText(
+            Path.Combine(_directory, "settings.json"),
+            """
+            {
+              "SettingsVersion": 1,
+              "Automation": {
+                "AutoLoginEnabled": true,
+                "AutoLoginPassword": "enc-legacy"
+              }
+            }
+            """);
+
+        using var service = new SettingsService(_directory);
+        var passwords = service.Current.Automation.AutoLoginPasswords;
+
+        // 迁移到「当前账户」名下，值保持不变（仍是 DPAPI 密文）
+        Assert.Single(passwords);
+        Assert.True(passwords.TryGetValue(Environment.UserName, out var migrated));
+        Assert.Equal("enc-legacy", migrated);
+
+        // 旧字段清空，不再写回
+        Assert.Null(service.Current.Automation.LegacyAutoLoginPassword);
+        service.Flush();
+
+        var json = File.ReadAllText(Path.Combine(_directory, "settings.json"));
+        Assert.DoesNotContain("enc-legacy\",\n    \"AutoLoginPassword", json);
+    }
+
     public void Dispose()
     {
         try
