@@ -55,6 +55,12 @@ internal sealed class DiagnosticsWindow : FluentWindow
     /// <summary>问题标题快照，解决后仍然能显示原来的标题。</summary>
     private readonly Dictionary<string, string> _titles = new(StringComparer.Ordinal);
 
+    /// <summary>当前处于展开状态的行（按问题标识）。刷新重建时按它恢复。</summary>
+    private readonly HashSet<string> _expanded = new(StringComparer.Ordinal);
+
+    /// <summary>上一次渲染的内容签名。内容没变就不重建，避免每 2 秒把展开的行折回去。</summary>
+    private string? _renderedSignature;
+
     private bool _fixInProgress;
     private bool _closed;
 
@@ -300,14 +306,44 @@ internal sealed class DiagnosticsWindow : FluentWindow
             }
         }
 
+        var warningCount = 0;
+        var noticeCount = 0;
+        var inactiveCount = 0;
+
+        // 先只统计，不急着动界面。
+        foreach (var issue in issues)
+        {
+            switch (issue.IssueSeverity)
+            {
+                case ChildSessionEnvironmentCheck.Severity.Warning:
+                    warningCount++;
+                    break;
+
+                case ChildSessionEnvironmentCheck.Severity.Inactive:
+                    inactiveCount++;
+                    break;
+
+                default:
+                    noticeCount++;
+                    break;
+            }
+        }
+
+        // 2 秒一次轮询，但环境通常几小时都不变。内容没变就只更新状态栏，
+        // 否则用户刚点开的说明会被下一次重建折回去（滚动位置也会跳回顶部）。
+        var signature = BuildRenderSignature(issues);
+        if (signature == _renderedSignature)
+        {
+            UpdateStatus(warningCount, noticeCount, inactiveCount);
+            return;
+        }
+
+        _renderedSignature = signature;
+
         _warningSection.Children.Clear();
         _noticeSection.Children.Clear();
         _resolvedSection.Children.Clear();
         _inactiveSection.Children.Clear();
-
-        var warningCount = 0;
-        var noticeCount = 0;
-        var inactiveCount = 0;
 
         foreach (var issue in issues)
         {
@@ -315,17 +351,14 @@ internal sealed class DiagnosticsWindow : FluentWindow
             {
                 case ChildSessionEnvironmentCheck.Severity.Warning:
                     _warningSection.Children.Add(BuildRow(issue, isResolved: false));
-                    warningCount++;
                     break;
 
                 case ChildSessionEnvironmentCheck.Severity.Inactive:
                     _inactiveSection.Children.Add(BuildRow(issue, isResolved: false));
-                    inactiveCount++;
                     break;
 
                 default:
                     _noticeSection.Children.Add(BuildRow(issue, isResolved: false));
-                    noticeCount++;
                     break;
             }
         }
@@ -355,17 +388,59 @@ internal sealed class DiagnosticsWindow : FluentWindow
             _inactiveSection.Children.Add(BuildPlaceholder(Locale.Get("Diag.Empty.Inactive")));
         }
 
-        if (!_fixInProgress)
+        UpdateStatus(warningCount, noticeCount, inactiveCount);
+    }
+
+    /// <summary>
+    /// 刷新底部状态栏。计数变了但列表没变时也要更新，所以单独拆出来。
+    /// </summary>
+    private void UpdateStatus(int warningCount, int noticeCount, int inactiveCount)
+    {
+        if (_fixInProgress)
         {
-            _statusText.Text = _showAll
-                ? Locale.Format(
-                    "Diag.Status.SummaryAll",
-                    warningCount + noticeCount,
-                    inactiveCount)
-                : warningCount == 0
-                    ? Locale.Get("Diag.Status.Clean")
-                    : Locale.Format("Diag.Status.Summary", warningCount, noticeCount);
+            return;
         }
+
+        _statusText.Text = _showAll
+            ? Locale.Format("Diag.Status.SummaryAll", warningCount + noticeCount, inactiveCount)
+            : warningCount == 0
+                ? Locale.Get("Diag.Status.Clean")
+                : Locale.Format("Diag.Status.Summary", warningCount, noticeCount);
+    }
+
+    /// <summary>
+    /// 当前这一屏的内容签名。用它判断「和上次渲染的一样吗」。
+    ///
+    /// 刻意把文案也纳入签名：换了语言文件、或者某一项的当前值变了（未触发项会显示当前值），
+    /// 都要重建，否则界面会停在旧文字上。
+    /// </summary>
+    private string BuildRenderSignature(IReadOnlyList<ChildSessionEnvironmentCheck.Issue> issues)
+    {
+        var builder = new System.Text.StringBuilder();
+        builder.Append(_showAll ? '1' : '0');
+
+        foreach (var issue in issues)
+        {
+            builder.Append('\u0001')
+                .Append(issue.Id).Append('|')
+                .Append((int)issue.IssueSeverity).Append('|')
+                .Append(issue.CanAutoFix ? '1' : '0').Append('|')
+                .Append(issue.Title).Append('|')
+                .Append(issue.Summary).Append('|')
+                .Append(issue.Detail);
+        }
+
+        // 已解决区只显示标题，按标识排序保证顺序稳定。
+        var resolved = new List<string>(_resolved);
+        resolved.Sort(StringComparer.Ordinal);
+        foreach (var id in resolved)
+        {
+            builder.Append('\u0002')
+                .Append(id).Append('|')
+                .Append(_titles.TryGetValue(id, out var title) ? title : id);
+        }
+
+        return builder.ToString();
     }
 
     private TextBlock BuildPlaceholder(string text) => new()
@@ -394,7 +469,9 @@ internal sealed class DiagnosticsWindow : FluentWindow
             FontSize = 12.5,
             LineHeight = 19,
             Margin = new Thickness(0, 8, 0, 0),
-            Visibility = Visibility.Collapsed
+
+            // 展开状态存在 _expanded 里：列表重建（例如环境真的变了）之后仍然展开。
+            Visibility = _expanded.Contains(issue.Id) ? Visibility.Visible : Visibility.Collapsed
         };
 
         var textPanel = new StackPanel();
@@ -450,9 +527,16 @@ internal sealed class DiagnosticsWindow : FluentWindow
 
         border.MouseLeftButtonUp += (_, _) =>
         {
-            detail.Visibility = detail.Visibility == Visibility.Visible
-                ? Visibility.Collapsed
-                : Visibility.Visible;
+            if (detail.Visibility == Visibility.Visible)
+            {
+                detail.Visibility = Visibility.Collapsed;
+                _expanded.Remove(issue.Id);
+            }
+            else
+            {
+                detail.Visibility = Visibility.Visible;
+                _expanded.Add(issue.Id);
+            }
         };
 
         return border;
