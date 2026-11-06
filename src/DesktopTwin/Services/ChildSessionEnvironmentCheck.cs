@@ -5,6 +5,7 @@ using System.Security;
 using System.Text;
 using DesktopTwin.Interop;
 using Microsoft.Win32;
+using DesktopTwin.Localization;
 
 namespace DesktopTwin.Services;
 
@@ -153,7 +154,7 @@ public static class ChildSessionEnvironmentCheck
                 builder.AppendLine().AppendLine();
             }
 
-            builder.Append('【').Append(issue.Title).Append('】').AppendLine();
+            builder.AppendLine(Locale.Format("Check.SummaryEntry", issue.Title));
             builder.Append(issue.Detail);
         }
 
@@ -166,30 +167,30 @@ public static class ChildSessionEnvironmentCheck
     public static string BuildDiagnosticSnapshot()
     {
         var builder = new StringBuilder();
-        builder.AppendLine($"系统版本：{Environment.OSVersion.VersionString}（64 位进程：{Environment.Is64BitProcess}）");
-        builder.AppendLine($"Windows 版本：{ReadString(RegistryHive.LocalMachine, CurrentVersionRegistryPath, "DisplayVersion") ?? "未知"}");
-        builder.AppendLine($"系统内部版本：{ReadString(RegistryHive.LocalMachine, CurrentVersionRegistryPath, "CurrentBuild") ?? "未知"}");
-        builder.AppendLine($"版本标识：{ReadString(RegistryHive.LocalMachine, CurrentVersionRegistryPath, "EditionID") ?? "未知"}");
-        builder.AppendLine($"产品名称：{ReadString(RegistryHive.LocalMachine, CurrentVersionRegistryPath, "ProductName") ?? "未知"}");
-        builder.AppendLine($"RDP 端口：{ChildSessionNativeMethods.GetConfiguredRdpPort()}");
-        builder.AppendLine($"fDenyTSConnections：{ReadInt(RegistryHive.LocalMachine, TerminalServerRegistryPath, "fDenyTSConnections")?.ToString() ?? "未设置"}");
-        builder.AppendLine($"TermService 状态：{DescribeTermService()}");
-        builder.AppendLine($"ServiceDll：{ReadServiceDll() ?? "读取失败"}");
+        builder.AppendLine(Locale.Format("Check.Snapshot.OsVersion", Environment.OSVersion.VersionString, Environment.Is64BitProcess));
+        builder.AppendLine(Locale.Format("Check.Snapshot.WindowsVersion", ReadString(RegistryHive.LocalMachine, CurrentVersionRegistryPath, "DisplayVersion") ?? Locale.Get("Check.Unknown")));
+        builder.AppendLine(Locale.Format("Check.Snapshot.Build", ReadString(RegistryHive.LocalMachine, CurrentVersionRegistryPath, "CurrentBuild") ?? Locale.Get("Check.Unknown")));
+        builder.AppendLine(Locale.Format("Check.Snapshot.Edition", ReadString(RegistryHive.LocalMachine, CurrentVersionRegistryPath, "EditionID") ?? Locale.Get("Check.Unknown")));
+        builder.AppendLine(Locale.Format("Check.Snapshot.Product", ReadString(RegistryHive.LocalMachine, CurrentVersionRegistryPath, "ProductName") ?? Locale.Get("Check.Unknown")));
+        builder.AppendLine(Locale.Format("Check.Snapshot.RdpPort", ChildSessionNativeMethods.GetConfiguredRdpPort()));
+        builder.AppendLine(Locale.Format("Check.Snapshot.DenyTsConnections", ReadInt(RegistryHive.LocalMachine, TerminalServerRegistryPath, "fDenyTSConnections")?.ToString() ?? Locale.Get("Check.NotSet")));
+        builder.AppendLine(Locale.Format("Check.Snapshot.TermService", DescribeTermService()));
+        builder.AppendLine(Locale.Format("Check.Snapshot.ServiceDll", ReadServiceDll() ?? Locale.Get("Check.ReadFailed")));
 
         try
         {
-            builder.AppendLine($"Child Sessions 已启用：{ChildSessionNativeMethods.IsChildSessionsEnabled()}");
-            builder.AppendLine($"当前分身会话：{ChildSessionNativeMethods.TryGetChildSessionId()?.ToString() ?? "无"}");
+            builder.AppendLine(Locale.Format("Check.Snapshot.ChildSessions", ChildSessionNativeMethods.IsChildSessionsEnabled()));
+            builder.AppendLine(Locale.Format("Check.Snapshot.CurrentSession", ChildSessionNativeMethods.TryGetChildSessionId()?.ToString() ?? Locale.Get("Check.None")));
         }
         catch (Exception exception)
         {
-            builder.AppendLine($"读取 Child Session 状态失败：{exception.Message}");
+            builder.AppendLine(Locale.Format("Check.Snapshot.ChildSessionFailed", exception.Message));
         }
 
         var issues = Collect();
         builder.AppendLine();
-        builder.AppendLine("环境预检结论：");
-        builder.AppendLine(issues.Count == 0 ? "未发现问题。" : BuildSummary(issues));
+        builder.AppendLine(Locale.Get("Check.Snapshot.Header"));
+        builder.AppendLine(issues.Count == 0 ? Locale.Get("Check.NoIssues") : BuildSummary(issues));
         return builder.ToString();
     }
 
@@ -263,18 +264,9 @@ public static class ChildSessionEnvironmentCheck
 
             issues.Add(new Issue(
                 "home-edition",
-                "当前系统为家庭版",
-                "家庭版不带远程桌面主机，桌面分身属于「不受支持」状态",
-                "检测到系统版本为 " + editionId + "（家庭版）。微软官方文档说明家庭版不包含远程桌面主机，"
-                + "桌面分身在该版本上属于「不受支持」状态。" + Environment.NewLine
-                + "实测大部分家庭版系统仍可正常建立分身会话，因此这里不做阻止——"
-                + "如果启动后一直连不上，再考虑升级。" + Environment.NewLine + Environment.NewLine
-                + "升级到专业版的方法（仅切换版本，**不会激活系统**，激活需要你自己另行处理）：" + Environment.NewLine
-                + "1. 断开网络；" + Environment.NewLine
-                + "2. 打开「设置」→ 搜索「激活」→ 点「更改产品密钥」；" + Environment.NewLine
-                + "3. 输入通用密钥 VK7JG-NPHTM-C97JM-9MPGT-3V66T；" + Environment.NewLine
-                + "4. 按提示确认并重启，重启后即为专业版。" + Environment.NewLine + Environment.NewLine
-                + "也可以输入你自己从其他途径获得的产品密钥，效果相同。",
+                Locale.Get("Check.Home.Title"),
+                Locale.Get("Check.Home.Summary"),
+                Locale.Format("Check.Home.Detail", editionId),
                 Severity.Notice,
                 IsBlocking: false,
                 CanAutoFix: false));
@@ -295,11 +287,9 @@ public static class ChildSessionEnvironmentCheck
         {
             issues.Add(new Issue(
                 "child-session-api-missing",
-                "系统版本过旧",
-                "当前 Windows 没有 Child Session API，无法创建分身",
-                "本程序依赖 wtsapi32.dll 的 WTSEnableChildSessions，该接口从 Windows 10 1803 开始提供。"
-                + "当前系统上找不到这个导出，桌面分身无法使用。" + Environment.NewLine
-                + "请升级到 Windows 10 1803 或更高版本。",
+                Locale.Get("Check.OldSystem.Title"),
+                Locale.Get("Check.OldSystem.Summary"),
+                Locale.Get("Check.OldSystem.Detail"),
                 Severity.Warning,
                 IsBlocking: true,
                 CanAutoFix: false));
@@ -323,12 +313,9 @@ public static class ChildSessionEnvironmentCheck
         {
             issues.Add(new Issue(
                 "termservice-disabled",
-                "TermService 已被禁用",
-                "远程桌面服务被设为「禁用」，分身无法建立",
-                "远程桌面服务（TermService）的启动类型是「禁用」，系统不会自动拉起它，"
-                + "桌面分身因此无法建立会话。" + Environment.NewLine
-                + "修复会把启动类型改回「手动」并启动服务。这不会让服务开机自启，"
-                + "只是允许在需要时被拉起——与 Windows 默认状态一致。",
+                Locale.Get("Check.TermDisabled.Title"),
+                Locale.Get("Check.TermDisabled.Summary"),
+                Locale.Get("Check.TermDisabled.Detail"),
                 Severity.Warning,
                 IsBlocking: true,
                 CanAutoFix: true));
@@ -339,10 +326,9 @@ public static class ChildSessionEnvironmentCheck
         {
             issues.Add(new Issue(
                 "termservice-stopped",
-                "TermService 没有运行",
-                "远程桌面服务处于停止状态",
-                "远程桌面服务（TermService）当前没有运行，分身无法建立会话。" + Environment.NewLine
-                + "修复会直接启动该服务。",
+                Locale.Get("Check.TermStopped.Title"),
+                Locale.Get("Check.TermStopped.Summary"),
+                Locale.Get("Check.TermStopped.Detail"),
                 Severity.Warning,
                 IsBlocking: true,
                 CanAutoFix: true));
@@ -371,18 +357,11 @@ public static class ChildSessionEnvironmentCheck
 
         issues.Add(new Issue(
             "rdp-disabled",
-            "远程桌面主机已关闭",
-            "fDenyTSConnections = 1，本机不监听 RDP 连接",
-            $"注册表 fDenyTSConnections = 1（{(byPolicy ? "组策略" : "本机设置")}），"
-            + "本机 RDP 监听器不会启动，桌面分身无法建立会话。" + Environment.NewLine + Environment.NewLine
-            + (byPolicy
-                ? "该值由组策略下发，改本机注册表会被组策略覆盖，程序无法自动修复。" + Environment.NewLine
-                  + "请在 gpedit.msc 的「计算机配置 → 管理模板 → Windows 组件 → 远程桌面服务 → "
-                  + "远程桌面会话主机 → 连接」中启用「允许用户通过使用远程桌面服务进行远程连接」，"
-                  + "或联系域管理员。"
-                : "可以点右侧的「修复」自动改回 0 并重启远程桌面服务。" + Environment.NewLine
-                  + "注意：这一项等于「允许别人从网络远程连接这台电脑」，是安全设置的放宽；"
-                  + "重启服务还会断开当前所有远程桌面会话（包括正在运行的分身）。"),
+            Locale.Get("Check.RdpOff.Title"),
+            Locale.Get("Check.RdpOff.Summary"),
+            byPolicy
+                ? Locale.Get("Check.RdpOff.Detail.Policy")
+                : Locale.Get("Check.RdpOff.Detail.Local"),
             Severity.Warning,
             IsBlocking: true,
             CanAutoFix: !byPolicy));
@@ -404,14 +383,9 @@ public static class ChildSessionEnvironmentCheck
 
         issues.Add(new Issue(
             "hello-only",
-            "仅允许 Windows Hello 登录",
-            "微软账户在本机没有可用的密码凭据",
-            "系统已开启「为了提高安全性，仅允许对此设备上的 Microsoft 帐户使用 Windows Hello 登录」，"
-            + "此时 Microsoft 帐户在本机没有可用的密码凭据，桌面分身的登录会一直提示凭据无效，"
-            + "无论输入什么密码都会失败。" + Environment.NewLine + Environment.NewLine
-            + "可以点右侧的「修复」把该开关关掉，但**改完必须注销或重启才生效**——"
-            + "凭据提供程序在登录时就已确定，不重新登录不会刷新。" + Environment.NewLine
-            + "也可以手动在「设置 → 帐户 → 登录选项」中关闭同名选项。",
+            Locale.Get("Check.HelloOnly.Title"),
+            Locale.Get("Check.HelloOnly.Summary"),
+            Locale.Get("Check.HelloOnly.Detail"),
             Severity.Warning,
             IsBlocking: true,
             CanAutoFix: true));
@@ -430,15 +404,9 @@ public static class ChildSessionEnvironmentCheck
 
         issues.Add(new Issue(
             "rdp-wrapper",
-            "TermService 被第三方补丁接管",
-            $"ServiceDll 指向 {Path.GetFileName(serviceDll ?? string.Empty)}，与分身互斥",
-            "系统 TermService 的 ServiceDll 指向了非原生的 DLL（当前：" + serviceDll + "）。"
-            + "RDP Wrapper、SuperRDP 这类工具就是靠替换这个值来解锁多用户并发远程桌面，"
-            + "而桌面分身走的是原生 termsrv.dll 的 Child Session——同一个值只能指向一个 DLL，两者互斥。"
-            + Environment.NewLine + Environment.NewLine
-            + "修复会做三件事：备份当前值 → 改回原生 termsrv.dll → 停用计划任务「RDP Wrapper Autoupdate」"
-            + "（不停用的话它会在开机时把补丁写回去）→ 重启远程桌面服务。" + Environment.NewLine
-            + "代价是：还原后多用户并发远程桌面的能力就没有了，需要重新安装补丁工具才能恢复。",
+            Locale.Get("Check.Wrapper.Title"),
+            Locale.Format("Check.Wrapper.Summary", Path.GetFileName(serviceDll ?? string.Empty)),
+            Locale.Format("Check.Wrapper.Detail", serviceDll),
             Severity.Warning,
             IsBlocking: true,
             CanAutoFix: true));

@@ -8,6 +8,7 @@ using Wpf.Ui.Controls;
 
 // WPF-UI 也有一个 TextBlock，同时引入两个命名空间会歧义。这里明确用 WPF 原生的。
 using TextBlock = System.Windows.Controls.TextBlock;
+using DesktopTwin.Localization;
 
 namespace DesktopTwin.View;
 
@@ -30,18 +31,18 @@ internal static class PasswordDialog
     /// <returns>确认时返回密码，取消返回 null。</returns>
     internal static Task<string?> ShowAsync(
         string userName,
-        string confirmText = "保存并验证",
+        string? confirmText = null,
         IReadOnlyList<string>? storedAccounts = null)
     {
         var completion = new TaskCompletionSource<string?>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var dialog = Dialogs.CreateWindow("自动登录分身", 460);
+        var dialog = Dialogs.CreateWindow(Locale.Get("Password.Title"), 460);
 
         var passwordBox = new Wpf.Ui.Controls.PasswordBox
         {
             Margin = new Thickness(0, 8, 0, 0),
-            PlaceholderText = "Windows 登录密码（不是 PIN）"
+            PlaceholderText = Locale.Get("Password.Placeholder")
         };
 
         var errorText = new TextBlock
@@ -54,7 +55,7 @@ internal static class PasswordDialog
 
         var applyButton = new Wpf.Ui.Controls.Button
         {
-            Content = confirmText,
+            Content = confirmText ?? Locale.Get("Password.Confirm.Default"),
             Appearance = ControlAppearance.Primary,
             MinWidth = 110,
             IsDefault = true
@@ -62,7 +63,7 @@ internal static class PasswordDialog
 
         var cancelButton = new Wpf.Ui.Controls.Button
         {
-            Content = "取消",
+            Content = Locale.Get("Common.Cancel"),
             MinWidth = 80,
             IsCancel = true,
             Margin = new Thickness(0, 0, 8, 0)
@@ -80,13 +81,12 @@ internal static class PasswordDialog
         var panel = new StackPanel { Margin = new Thickness(24, 18, 24, 20) };
         panel.Children.Add(new TextBlock
         {
-            Text = $"自动登录会使用账户「{userName}」的 Windows 登录密码，"
-                + "在重连分身时自动填入凭据框。",
+            Text = Locale.Format("Password.Intro", userName),
             TextWrapping = TextWrapping.Wrap
         });
         panel.Children.Add(new TextBlock
         {
-            Text = "密码用 DPAPI 加密后保存在本机，只有当前 Windows 账户能解开；不会上传到任何地方。",
+            Text = Locale.Get("Password.Note"),
             Opacity = 0.7,
             FontSize = 12,
             TextWrapping = TextWrapping.Wrap,
@@ -107,9 +107,10 @@ internal static class PasswordDialog
             }
 
             var hint = others.Count == 0
-                ? $"已保存密码的账户：{userName}（本次会更新这一个）。"
-                : $"已保存密码的账户：{string.Join("、", storedAccounts)}。"
-                  + "每个账户的密码分开保存，本次只修改当前账户，不影响其它账户。";
+                ? Locale.Format("Password.Accounts.Single", userName)
+                : Locale.Format(
+                    "Password.Accounts.Many",
+                    string.Join(Locale.Get("Common.ListSeparator"), storedAccounts));
 
             panel.Children.Add(new TextBlock
             {
@@ -131,7 +132,7 @@ internal static class PasswordDialog
             var password = passwordBox.Password;
             if (string.IsNullOrEmpty(password))
             {
-                errorText.Text = "密码不能为空。";
+                errorText.Text = Locale.Get("Password.Error.Empty");
                 errorText.Visibility = Visibility.Visible;
                 return;
             }

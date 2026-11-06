@@ -9,6 +9,7 @@ using Wpf.Ui.Controls;
 
 // WPF-UI 也有一个 TextBlock，同时引入两个命名空间会歧义。这里明确用 WPF 原生的。
 using TextBlock = System.Windows.Controls.TextBlock;
+using DesktopTwin.Localization;
 
 namespace DesktopTwin.View;
 
@@ -41,11 +42,11 @@ internal static class ResolutionDialog
             Margin = new Thickness(0, 8, 0, 0)
         };
 
-        var dialog = Dialogs.CreateWindow("自定义分辨率", 400);
+        var dialog = Dialogs.CreateWindow(Locale.Get("Resolution.Title"), 400);
 
         var applyButton = new Wpf.Ui.Controls.Button
         {
-            Content = "应用",
+            Content = Locale.Get("Common.Apply"),
             Appearance = ControlAppearance.Primary,
             MinWidth = 80,
             IsDefault = true
@@ -53,7 +54,7 @@ internal static class ResolutionDialog
 
         var cancelButton = new Wpf.Ui.Controls.Button
         {
-            Content = "取消",
+            Content = Locale.Get("Common.Cancel"),
             MinWidth = 80,
             IsCancel = true,
             Margin = new Thickness(0, 0, 8, 0)
@@ -85,14 +86,18 @@ internal static class ResolutionDialog
         var panel = new StackPanel { Margin = new Thickness(24, 16, 24, 20) };
         panel.Children.Add(new TextBlock
         {
-            Text = "输入桌面分身的宽度和高度（像素）。",
+            Text = Locale.Get("Resolution.Intro"),
             TextWrapping = TextWrapping.Wrap
         });
         panel.Children.Add(sizePanel);
         panel.Children.Add(new TextBlock
         {
-            Text = $"允许范围：{SessionSettings.MinDesktopWidth}×{SessionSettings.MinDesktopHeight}"
-                + $" ~ {SessionSettings.MaxDesktopWidth}×{SessionSettings.MaxDesktopHeight}",
+            Text = Locale.Format(
+                "Resolution.Range",
+                SessionSettings.MinDesktopWidth,
+                SessionSettings.MinDesktopHeight,
+                SessionSettings.MaxDesktopWidth,
+                SessionSettings.MaxDesktopHeight),
             Opacity = 0.7,
             FontSize = 12,
             Margin = new Thickness(0, 8, 0, 0)
@@ -107,16 +112,19 @@ internal static class ResolutionDialog
             if (!TryParseSize(widthBox.Text, out var newWidth)
                 || !TryParseSize(heightBox.Text, out var newHeight))
             {
-                errorText.Text = "宽度和高度都必须是整数。";
+                errorText.Text = Locale.Get("Resolution.Error.NotInteger");
                 errorText.Visibility = Visibility.Visible;
                 return;
             }
 
             if (!SessionSettings.IsValidDesktopSize(newWidth, newHeight))
             {
-                errorText.Text =
-                    $"分辨率必须在 {SessionSettings.MinDesktopWidth}×{SessionSettings.MinDesktopHeight}"
-                    + $" 到 {SessionSettings.MaxDesktopWidth}×{SessionSettings.MaxDesktopHeight} 之间。";
+                errorText.Text = Locale.Format(
+                    "Resolution.Error.OutOfRange",
+                    SessionSettings.MinDesktopWidth,
+                    SessionSettings.MinDesktopHeight,
+                    SessionSettings.MaxDesktopWidth,
+                    SessionSettings.MaxDesktopHeight);
                 errorText.Visibility = Visibility.Visible;
                 return;
             }

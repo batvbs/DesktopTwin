@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
+using DesktopTwin.Localization;
 
 namespace DesktopTwin.Services;
 
@@ -111,14 +112,14 @@ internal sealed class GlobalHotkeyService : IDisposable
 
         if (!TryParse(combination, out var modifiers, out var virtualKey))
         {
-            error = $"无法识别的组合键：{combination}";
+            error = Locale.Format("Hotkey.Error.Unrecognized", combination);
             return false;
         }
 
         if (!modifiers.HasValue || modifiers.Value == 0)
         {
             // 不带修饰键的全局热键会吃掉整个系统的普通按键，绝对不允许。
-            error = "全局热键必须包含 Ctrl / Alt / Shift / Win 之一。";
+            error = Locale.Get("Hotkey.Error.NeedModifier");
             return false;
         }
 
@@ -127,14 +128,14 @@ internal sealed class GlobalHotkeyService : IDisposable
         var handle = new WindowInteropHelper(window).Handle;
         if (handle == IntPtr.Zero)
         {
-            error = "窗口尚未创建，无法注册热键。";
+            error = Locale.Get("Hotkey.Error.NoWindow");
             return false;
         }
 
         _source ??= HwndSource.FromHwnd(handle);
         if (_source is null)
         {
-            error = "无法取得窗口消息源，注册热键失败。";
+            error = Locale.Get("Hotkey.Error.NoMessageSource");
             return false;
         }
 
@@ -145,8 +146,8 @@ internal sealed class GlobalHotkeyService : IDisposable
             var code = Marshal.GetLastPInvokeError();
             _source.RemoveHook(WndProc);
             error = code == 1409
-                ? $"组合键 {Format(combination)} 已被其他程序占用，换一个试试。"
-                : $"注册热键失败（Win32 错误 {code}）。";
+                ? Locale.Format("Hotkey.Error.Occupied", Format(combination))
+                : Locale.Format("Hotkey.Error.RegisterFailed", code);
             return false;
         }
 

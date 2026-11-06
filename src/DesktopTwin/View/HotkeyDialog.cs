@@ -9,6 +9,7 @@ using Wpf.Ui.Controls;
 
 // WPF-UI 也有一个 TextBlock，同时引入两个命名空间会歧义。这里明确用 WPF 原生的。
 using TextBlock = System.Windows.Controls.TextBlock;
+using DesktopTwin.Localization;
 
 namespace DesktopTwin.View;
 
@@ -32,7 +33,7 @@ internal static class HotkeyDialog
         var completion = new TaskCompletionSource<string?>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var dialog = Dialogs.CreateWindow("设置切换快捷键", 420);
+        var dialog = Dialogs.CreateWindow(Locale.Get("Hotkey.Title"), 420);
 
         var preview = new TextBlock
         {
@@ -45,7 +46,7 @@ internal static class HotkeyDialog
 
         var hint = new TextBlock
         {
-            Text = "请按下新的组合键（需要包含 Ctrl / Alt / Shift / Win 之一，Esc 取消）",
+            Text = Locale.Get("Hotkey.Hint"),
             Opacity = 0.7,
             FontSize = 12,
             TextWrapping = TextWrapping.Wrap,
@@ -56,7 +57,7 @@ internal static class HotkeyDialog
         var panel = new StackPanel { Margin = new Thickness(24, 20, 24, 22) };
         panel.Children.Add(new TextBlock
         {
-            Text = "把光标放在这个窗口里，直接按下想要的组合键。",
+            Text = Locale.Get("Hotkey.Intro"),
             TextWrapping = TextWrapping.Wrap
         });
         panel.Children.Add(preview);
@@ -89,14 +90,14 @@ internal static class HotkeyDialog
 
             if (modifiers == ModifierKeys.None)
             {
-                preview.Text = "需要搭配 Ctrl / Alt / Shift / Win";
+                preview.Text = Locale.Get("Hotkey.NeedModifier");
                 preview.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x9A, 0x3D));
                 return;
             }
 
             if (GlobalHotkeyService.KeyToToken(key) is not { } token)
             {
-                preview.Text = "这个键不支持，换一个";
+                preview.Text = Locale.Get("Hotkey.Unsupported");
                 preview.Foreground = new SolidColorBrush(Color.FromRgb(0xFF, 0x9A, 0x3D));
                 return;
             }

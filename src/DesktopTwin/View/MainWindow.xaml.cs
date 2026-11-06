@@ -9,6 +9,7 @@ using DesktopTwin.Interop;
 using DesktopTwin.Services;
 using DesktopTwin.ViewModel;
 using Wpf.Ui.Controls;
+using DesktopTwin.Localization;
 
 namespace DesktopTwin.View;
 
@@ -695,8 +696,8 @@ public partial class MainWindow : FluentWindow
             }
 
             var confirmed = await Dialogs.ConfirmAsync(
-                "关闭会断开 RDP 并注销桌面分身，其中所有正在运行的程序都会被关闭，未保存的数据会丢失。是否继续？",
-                "关闭桌面分身");
+                Locale.Get("Main.ConfirmClose.Message"),
+                Locale.Get("Main.ConfirmClose.Title"));
             if (!confirmed)
             {
                 return;

@@ -224,7 +224,7 @@
                                                  Header="{loc:Loc Menu.UuTrigger}" />
                                     <ui:MenuItem Command="{Binding RepairUuStreamingCommand}"
                                                  Header="{loc:Loc Menu.UuRepair}"
-                                                 ToolTip="快速连续切换后，手机上的 UU 可能显示设备离线：切换需要结束串流端，短时间内连续结束会被 UU 服务当成连续崩溃而暂停重拉。点这里重启 UU 服务恢复，然后在手机上重新连接一次。" />
+                                                 ToolTip="{loc:Loc Menu.UuRepair.ToolTip}" />
                                 </ui:MenuItem>
                                 <ui:MenuItem Header="{Binding AutoLoginMenuHeader}">
                                     <ui:MenuItem Command="{Binding ShowAutoLoginOptionsCommand}"
@@ -236,7 +236,7 @@
                                                  Header="{loc:Loc Menu.AutoLogin.Enable}"
                                                  IsCheckable="True"
                                                  IsChecked="{Binding AutoLoginEnabled, Mode=OneWay}"
-                                                 ToolTip="连接分身时自动填入 Windows 登录凭据。密码用 DPAPI 加密保存在本机，只有当前账户能解开；若凭据框仍出现，程序最多尝试自动填写两次，之后交回手动输入。" />
+                                                 ToolTip="{loc:Loc Menu.AutoLogin.Enable.ToolTip}" />
                                     <ui:MenuItem Command="{Binding SetAutoLoginPasswordCommand}"
                                                  Header="{loc:Loc Menu.AutoLogin.SetPassword}" />
                                     <ui:MenuItem Command="{Binding ClearAutoLoginPasswordCommand}"
@@ -245,7 +245,7 @@
                                     <Separator />
                                     <ui:MenuItem Command="{Binding OpenSystemAutoLoginSettingsCommand}"
                                                  Header="{loc:Loc Menu.AutoLogin.System}"
-                                                 ToolTip="等同于 Win+R 输入 netplwiz。取消勾选「要使用本计算机，用户必须输入用户名和密码」，点应用后输入账户密码（不是 PIN），重启生效。注意这会让本机开机即进桌面。" />
+                                                 ToolTip="{loc:Loc Menu.AutoLogin.System.ToolTip}" />
                                 </ui:MenuItem>
                                 <Separator />
                                 <ui:MenuItem Header="{loc:Loc Menu.Diagnostics}">
@@ -539,7 +539,7 @@
                                    Margin="6,0,0,0"
                                    Click="OnFullscreenCloseClicked"
                                    Content="✕"
-                                   ToolTip="关闭" />
+                                   ToolTip="{loc:Loc Common.Close}" />
                         <Border Width="1"
                                 Margin="10,4"
                                 Background="#33FFFFFF" />

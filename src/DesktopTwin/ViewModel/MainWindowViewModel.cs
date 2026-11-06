@@ -42,20 +42,20 @@ public partial class MainWindowViewModel : ObservableObject
     private Brush _connectionStatusBrush = Brushes.Red;
 
     [ObservableProperty]
-    private string _connectionStatusToolTip = "桌面分身未启动";
+    private string _connectionStatusToolTip = Locale.Get("Main.Status.ToolTip");
 
     [ObservableProperty]
     private string _connectionStatusTitle = Locale.Get("Main.Status.NotStarted");
 
     [ObservableProperty]
     private string _connectionStatusDescription =
-        "点击“启动并连接”，程序会创建一个独立的 Windows 桌面，并把画面嵌到这个窗口里。";
+        Locale.Get("Main.Status.Description");
 
     [ObservableProperty]
-    private string _rdpStatusText = "RDP 未连接";
+    private string _rdpStatusText = Locale.Get("Main.Rdp.NotConnected");
 
     [ObservableProperty]
-    private string _childSessionStatusText = "分身会话未创建";
+    private string _childSessionStatusText = Locale.Get("Main.Session.None");
 
     [ObservableProperty]
     private bool _isRdpConnected;
@@ -107,7 +107,7 @@ public partial class MainWindowViewModel : ObservableObject
     private bool _isAudioMuted;
 
     [ObservableProperty]
-    private string _targetProgramText = "未选择";
+    private string _targetProgramText = Locale.Get("Menu.TargetProgram.None");
 
     [ObservableProperty]
     private bool _autoLaunchOnConnect = true;
@@ -199,38 +199,38 @@ public partial class MainWindowViewModel : ObservableObject
     /// <summary>
     /// 置顶按钮提示文本。
     /// </summary>
-    public string TopmostButtonToolTip => IsTopmost ? "取消置顶" : "置顶";
+    public string TopmostButtonToolTip => IsTopmost ? Locale.Get("Main.Topmost.Off") : Locale.Get("Main.Topmost.On");
 
     /// <summary>
     /// 音频按钮提示文本。
     /// </summary>
     public string AudioButtonToolTip => IsAudioMuted
-        ? "开启分身声音，不影响主桌面的其他程序；切换时会自动重新连接 RDP"
-        : "关闭分身声音，不影响主桌面的其他程序；切换时会自动重新连接 RDP";
+        ? Locale.Get("Main.Audio.Unmute")
+        : Locale.Get("Main.Audio.Mute");
 
     /// <summary>
     /// 小窗模式菜单文本。
     /// </summary>
-    public string WindowSizeModeMenuHeader => IsSmallWindowMode ? "还原窗口" : "小窗模式";
+    public string WindowSizeModeMenuHeader => IsSmallWindowMode ? Locale.Get("Main.SmallWindow.Restore") : Locale.Get("Main.SmallWindow.Enable");
 
     /// <summary>
     /// 小窗模式菜单提示。
     /// </summary>
     public string WindowSizeModeMenuToolTip => IsSmallWindowMode
-        ? "将窗口还原至默认大小"
-        : "把窗口缩到 750 宽，并按 16:9 同步缩小高度";
+        ? Locale.Get("Main.SmallWindow.Restore.ToolTip")
+        : Locale.Get("Main.SmallWindow.Enable.ToolTip");
 
     /// <summary>
     /// 观看模式菜单文本。
     /// </summary>
-    public string WatchModeMenuHeader => IsWatchModeEnabled ? "控制模式" : "观看模式";
+    public string WatchModeMenuHeader => IsWatchModeEnabled ? Locale.Get("Main.WatchMode.Control") : Locale.Get("Main.WatchMode.Watch");
 
     /// <summary>
     /// 观看模式菜单提示。
     /// </summary>
     public string WatchModeMenuToolTip => IsWatchModeEnabled
-        ? "退出观看模式"
-        : "分身画面仅可观看，本机键鼠不会生效";
+        ? Locale.Get("Main.WatchMode.Exit.ToolTip")
+        : Locale.Get("Main.WatchMode.Enter.ToolTip");
 
     /// <summary>
     /// 尺寸切换目标宽度。
@@ -385,8 +385,8 @@ public partial class MainWindowViewModel : ObservableObject
         if (string.IsNullOrWhiteSpace(launch.TargetPath))
         {
             ShowNotification(
-                "还需要选择目标程序",
-                "「自动启动 + 管理员权限」需要一个明确的目标程序。选好之后会再确认一次。",
+                Locale.Get("Startup.NeedTarget.Title"),
+                Locale.Get("Startup.NeedTarget.Message"),
                 InfoBarSeverity.Informational);
             return;
         }
@@ -400,14 +400,13 @@ public partial class MainWindowViewModel : ObservableObject
         }
 
         var confirmed = await Dialogs.ConfirmAsync(
-            $"已同时勾选「连接成功后自动启动」和「以管理员权限启动目标程序」。\n\n"
-            + $"目标程序：{launch.TargetPath}"
-            + (string.IsNullOrWhiteSpace(launch.TargetArguments)
-                ? string.Empty
-                : $"\n参数：{launch.TargetArguments}")
-            + "\n\n这表示每次连接上桌面分身，都会以管理员权限自动运行它。"
-            + "如果换一个目标程序，程序会再问你一次。是否继续？",
-            "确认自动以管理员权限启动");
+            Locale.Format(
+                "Startup.ElevatedConfirm.Message",
+                launch.TargetPath,
+                string.IsNullOrWhiteSpace(launch.TargetArguments)
+                    ? string.Empty
+                    : Locale.Format("Startup.ElevatedConfirm.Arguments", launch.TargetArguments)),
+            Locale.Get("Startup.ElevatedConfirm.Title"));
 
         if (!confirmed)
         {
@@ -443,8 +442,8 @@ public partial class MainWindowViewModel : ObservableObject
             {
                 AppLog.Warn("授权后立刻启动目标程序失败。", exception);
                 ShowNotification(
-                    "启动失败",
-                    $"已记住授权，但本次启动没有成功：{exception.GetBaseException().Message}",
+                    Locale.Get("Startup.LaunchFailed.Title"),
+                    Locale.Format("Startup.LaunchFailed.Message", exception.GetBaseException().Message),
                     InfoBarSeverity.Warning);
             }
         }
@@ -470,7 +469,7 @@ public partial class MainWindowViewModel : ObservableObject
             {
                 await Dialogs.ErrorAsync(
                     _childSessionService.EnvironmentIssueSummary,
-                    "无法启动桌面分身");
+                    Locale.Get("Startup.Blocked.Title"));
                 return;
             }
 
@@ -479,8 +478,8 @@ public partial class MainWindowViewModel : ObservableObject
                 // 风险项只是提示，不应该挡住本来可以连上的用户。
                 var confirmed = await Dialogs.ConfirmAsync(
                     _childSessionService.EnvironmentIssueSummary
-                    + "\n\n检测到可能影响桌面分身的环境设置。是否仍要继续？",
-                    "桌面分身环境检查");
+                    + Locale.Get("Startup.IssueConfirm.Suffix"),
+                    Locale.Get("Startup.IssueConfirm.Title"));
                 if (!confirmed)
                 {
                     return;
@@ -522,14 +521,8 @@ public partial class MainWindowViewModel : ObservableObject
         }
 
         var accepted = await Dialogs.ConfirmAsync(
-            "启动桌面分身之前，请先了解它会做什么：\n\n"
-            + "1. 本程序以管理员权限运行，并会打开 Windows 的「子会话（Child Sessions）」功能。\n"
-            + "   这是一个系统级设置，关闭程序后仍然保留，重启电脑也不会自动恢复。\n"
-            + "2. 你可以在「控制中心 → 诊断 → 关闭 Child Sessions（恢复系统原状）」中随时还原。\n"
-            + "3. 桌面分身会创建一个与当前账户相同的第二个桌面。它不是沙盒：\n"
-            + "   分身里能访问的文件和权限，与主桌面完全一样。\n\n"
-            + "是否继续？",
-            "首次使用说明");
+            Locale.Get("Startup.FirstRun.Message"),
+            Locale.Get("Startup.FirstRun.Title"));
         if (!accepted)
         {
             return false;
@@ -560,8 +553,8 @@ public partial class MainWindowViewModel : ObservableObject
     {
         var fileDialog = new OpenFileDialog
         {
-            Title = "选择要在桌面分身中启动的程序",
-            Filter = "Windows 程序 (*.exe)|*.exe",
+            Title = Locale.Get("Dialog.SelectProgram.Title"),
+            Filter = Locale.Get("Dialog.SelectProgram.Filter"),
             CheckFileExists = true,
             CheckPathExists = true,
             DereferenceLinks = true,
@@ -589,8 +582,8 @@ public partial class MainWindowViewModel : ObservableObject
         _settings.SaveSoon();
         TargetProgramText = BuildTargetProgramText(path);
         ShowNotification(
-            "已选择目标程序",
-            $"{Path.GetFileName(path)} 将在下次连接成功后自动启动。",
+                Locale.Get("Notify.TargetSelected.Title"),
+                Locale.Format("Notify.TargetSelected.Message", Path.GetFileName(path)),
             InfoBarSeverity.Success);
 
         // 换了目标程序，之前那份「自动以管理员权限启动」的授权就作废了
@@ -643,12 +636,13 @@ public partial class MainWindowViewModel : ObservableObject
         {
             // 提权启动等于在本机管理员上下文里执行这个文件，必须让用户看清目标再确认一次。
             var confirmed = await Dialogs.ConfirmAsync(
-                $"即将以管理员权限在桌面分身中启动：\n\n{launch.TargetPath}"
-                + (string.IsNullOrWhiteSpace(launch.TargetArguments)
+            Locale.Format(
+                "Startup.ElevatedLaunch.Message",
+                launch.TargetPath,
+                string.IsNullOrWhiteSpace(launch.TargetArguments)
                     ? string.Empty
-                    : $"\n参数：{launch.TargetArguments}")
-                + "\n\n请确认这是你要运行的程序。",
-                "确认以管理员权限启动");
+                    : Locale.Format("Startup.ElevatedConfirm.Arguments", launch.TargetArguments)),
+            Locale.Get("Startup.ElevatedLaunch.Title"));
             if (!confirmed)
             {
                 return;
@@ -834,8 +828,8 @@ public partial class MainWindowViewModel : ObservableObject
 
         _globalHotkey?.Unregister();
         ShowNotification(
-            "已关闭 UU 视角切换",
-            "热键已注销，不会影响其他程序。",
+                Locale.Get("Notify.UuDisabled.Title"),
+                Locale.Get("Notify.UuDisabled.Message"),
             InfoBarSeverity.Informational);
     }
 
@@ -877,10 +871,13 @@ public partial class MainWindowViewModel : ObservableObject
         }
 
         ShowNotification(
-            "分辨率与屏幕不一致",
-            $"桌面分身当前是 {session.DesktopWidth} × {session.DesktopHeight}，"
-            + $"屏幕是 {screenWidth} × {screenHeight}。全屏下画面会被拉伸，内容可能模糊；"
-            + $"建议在「控制中心 → 桌面分辨率」里改为 {screenWidth} × {screenHeight}。",
+                Locale.Get("Notify.ResolutionMismatch.Title"),
+                Locale.Format(
+                    "Notify.ResolutionMismatch.Message",
+                    session.DesktopWidth,
+                    session.DesktopHeight,
+                    screenWidth,
+                    screenHeight),
             InfoBarSeverity.Warning,
             TimeSpan.FromSeconds(12));
     }
@@ -927,7 +924,7 @@ public partial class MainWindowViewModel : ObservableObject
         var autoLogin = _childSessionService.AutoLogin;
         if (autoLogin is null)
         {
-            ShowNotification("自动登录不可用", "当前运行环境没有初始化自动登录服务。", InfoBarSeverity.Warning);
+            ShowNotification(Locale.Get("AutoLogin.Unavailable.Title"), Locale.Get("AutoLogin.Unavailable.Message"), InfoBarSeverity.Warning);
             return;
         }
 
@@ -970,13 +967,13 @@ public partial class MainWindowViewModel : ObservableObject
 
         if (!autoLogin.TryOpenSystemAutoLoginSettings(out var error))
         {
-            ShowNotification("打开失败", error, InfoBarSeverity.Warning, TimeSpan.FromSeconds(7));
+            ShowNotification(Locale.Get("AutoLogin.OpenFailed.Title"), error, InfoBarSeverity.Warning, TimeSpan.FromSeconds(7));
             return;
         }
 
         ShowNotification(
-            "已打开系统设置",
-            "取消勾选「要使用本计算机，用户必须输入用户名和密码」，点「应用」后输入账户密码（不是 PIN），重启电脑生效。",
+                Locale.Get("AutoLogin.SystemOpened.Title"),
+                Locale.Get("AutoLogin.SystemOpened.Message"),
             InfoBarSeverity.Informational,
             TimeSpan.FromSeconds(12));
     }
@@ -991,8 +988,8 @@ public partial class MainWindowViewModel : ObservableObject
         _settings.Current.Automation.AutoLoginEnabled = true;
         _settings.SaveSoon();
         ShowNotification(
-            "已启用自动登录",
-            $"将使用账户「{autoLogin?.UserName}」的登录密码。若凭据框仍然出现，程序会尝试自动填写，最多两次。",
+                Locale.Get("AutoLogin.Enabled.Title"),
+                Locale.Format("AutoLogin.Enabled.Message", autoLogin?.UserName),
             InfoBarSeverity.Success,
             TimeSpan.FromSeconds(7));
     }
@@ -1006,7 +1003,7 @@ public partial class MainWindowViewModel : ObservableObject
         var autoLogin = _childSessionService.AutoLogin;
         if (autoLogin is null)
         {
-            ShowNotification("自动登录不可用", "当前运行环境没有初始化自动登录服务。", InfoBarSeverity.Warning);
+            ShowNotification(Locale.Get("AutoLogin.Unavailable.Title"), Locale.Get("AutoLogin.Unavailable.Message"), InfoBarSeverity.Warning);
             return;
         }
 
@@ -1016,8 +1013,8 @@ public partial class MainWindowViewModel : ObservableObject
             _settings.Current.Automation.AutoLoginEnabled = false;
             _settings.SaveSoon();
             ShowNotification(
-                "已关闭自动登录",
-                "重连分身时会重新要求手动输入密码。",
+                Locale.Get("AutoLogin.Disabled.Title"),
+                Locale.Get("AutoLogin.Disabled.Message"),
                 InfoBarSeverity.Informational);
             return;
         }
@@ -1052,8 +1049,8 @@ public partial class MainWindowViewModel : ObservableObject
         _settings.Current.Automation.AutoLoginEnabled = false;
         _settings.SaveSoon();
         ShowNotification(
-            "已清除密码",
-            "自动登录已关闭，重连分身时需要手动输入密码。",
+                Locale.Get("AutoLogin.Cleared.Title"),
+                Locale.Get("AutoLogin.Cleared.Message"),
             InfoBarSeverity.Informational);
     }
 
@@ -1075,7 +1072,7 @@ public partial class MainWindowViewModel : ObservableObject
 
         if (await PasswordDialog.ShowAsync(
                 autoLogin.UserName,
-                "保存并验证",
+                confirmText: null,
                 autoLogin.StoredAccountNames) is not { } password)
         {
             return false;
@@ -1084,8 +1081,8 @@ public partial class MainWindowViewModel : ObservableObject
         if (!autoLogin.SavePassword(password))
         {
             ShowNotification(
-                "保存失败",
-                "无法加密保存密码，请查看日志。自动登录不会启用。",
+                Locale.Get("AutoLogin.SaveFailed.Title"),
+                Locale.Get("AutoLogin.SaveFailed.Message"),
                 InfoBarSeverity.Error);
             return false;
         }
@@ -1093,8 +1090,8 @@ public partial class MainWindowViewModel : ObservableObject
         HasAutoLoginPassword = true;
 
         ShowNotification(
-            "正在验证",
-            "即将弹出 Windows 凭据框，程序会自动填入刚保存的密码并提交。",
+                Locale.Get("AutoLogin.Verifying.Title"),
+                Locale.Get("AutoLogin.Verifying.Message"),
             InfoBarSeverity.Informational,
             TimeSpan.FromSeconds(4));
 
@@ -1116,8 +1113,8 @@ public partial class MainWindowViewModel : ObservableObject
         if (prompt.Canceled)
         {
             ShowNotification(
-                "已取消验证",
-                "密码已保存，但没有验证。可以稍后再点一次「设置登录密码…」。",
+                Locale.Get("AutoLogin.VerifyCanceled.Title"),
+                Locale.Get("AutoLogin.VerifyCanceled.Message"),
                 InfoBarSeverity.Informational,
                 TimeSpan.FromSeconds(6));
             return false;
@@ -1125,7 +1122,7 @@ public partial class MainWindowViewModel : ObservableObject
 
         if (!prompt.Success)
         {
-            ShowNotification("验证未完成", prompt.Message, InfoBarSeverity.Warning, TimeSpan.FromSeconds(10));
+            ShowNotification(Locale.Get("AutoLogin.VerifyIncomplete.Title"), prompt.Message, InfoBarSeverity.Warning, TimeSpan.FromSeconds(10));
             return false;
         }
 
@@ -1138,15 +1135,15 @@ public partial class MainWindowViewModel : ObservableObject
         if (check == AutoLoginService.PasswordCheckResult.Valid)
         {
             ShowNotification(
-                "验证通过",
-                "凭据有效，自动填充也已生效。下次重连分身时会直接使用这组密码。",
+                Locale.Get("AutoLogin.VerifyOk.Title"),
+                Locale.Get("AutoLogin.VerifyOk.Message"),
                 InfoBarSeverity.Success,
                 TimeSpan.FromSeconds(7));
             return true;
         }
 
         ShowNotification(
-            "密码校验未通过",
+                Locale.Get("AutoLogin.VerifyFailed.Title"),
             BuildVerifyFailureMessage(check, errorCode, autoLogin),
             InfoBarSeverity.Warning,
             TimeSpan.FromSeconds(14));
@@ -1182,20 +1179,15 @@ public partial class MainWindowViewModel : ObservableObject
         return result switch
         {
             AutoLoginService.PasswordCheckResult.AccountDisabled =>
-                "该 Windows 账户已被禁用，无法用于登录。请先启用账户。",
+                        Locale.Get("AutoLogin.Verify.AccountDisabled"),
             AutoLoginService.PasswordCheckResult.PasswordExpired =>
-                "账户密码已过期，请先修改密码再重新设置。",
+                        Locale.Get("AutoLogin.Verify.PasswordExpired"),
             AutoLoginService.PasswordCheckResult.AccountRestricted =>
-                "账户受限：可能是空密码、登录时段或工作站限制。请给账户设置密码后再试。",
+                        Locale.Get("AutoLogin.Verify.AccountRestricted"),
             AutoLoginService.PasswordCheckResult.InvalidPassword =>
-                $"用户名或密码错误（错误 {errorCode}）。如果密码确实是对的，"
-                + "可能是本机缓存的微软账户凭据已过期，用下面这条命令刷新一次再重试："
-                + Environment.NewLine + Environment.NewLine
-                + autoLogin.BuildPasswordSyncCommand()
-                + Environment.NewLine + Environment.NewLine
-                + "（执行后输入一次账户密码，命令行不会有任何提示，属正常现象）",
+                        Locale.Format("AutoLogin.Verify.BadPassword", errorCode),
             _ =>
-                $"无法校验这组凭据（错误 {errorCode}）。请确认账户类型后重试。"
+                        Locale.Format("AutoLogin.Verify.Unknown", errorCode)
         };
     }
 
@@ -1239,9 +1231,10 @@ public partial class MainWindowViewModel : ObservableObject
             if (notifySuccess)
             {
                 ShowNotification(
-                    "UU 视角切换已启用",
-                    $"按 {GlobalHotkeyService.Format(combination)} 可在「整台电脑」与「桌面分身」之间切换。"
-                    + (agentReady ? "分身画面内由分身端接管，同样有效。" : string.Empty),
+                Locale.Get("Notify.UuEnabled.Title"),
+                Locale.Format(
+                    agentReady ? "Notify.UuEnabled.Message.Agent" : "Notify.UuEnabled.Message",
+                    GlobalHotkeyService.Format(combination)),
                     InfoBarSeverity.Success,
                     TimeSpan.FromSeconds(7));
             }
@@ -1255,7 +1248,7 @@ public partial class MainWindowViewModel : ObservableObject
         _settings.Current.Automation.UuViewSwitchEnabled = false;
         _settings.SaveSoon();
         _sessionAgent.Uninstall();
-        ShowNotification("快捷键注册失败", error, InfoBarSeverity.Warning, TimeSpan.FromSeconds(7));
+            ShowNotification(Locale.Get("Hotkey.Registered.Failed.Title"), error, InfoBarSeverity.Warning, TimeSpan.FromSeconds(7));
     }
 
     /// <summary>
@@ -1383,10 +1376,10 @@ public partial class MainWindowViewModel : ObservableObject
             UpdateConnectionStatus();
 
             ShowNotification(
-                reconnectStarted ? "正在应用设置" : "设置已保存",
+            reconnectStarted ? Locale.Get("Notify.SettingsApplying") : Locale.Get("Notify.SettingsSaved"),
                 reconnectStarted
-                    ? "RDP 正在自动重新连接，连接完成后系统组合键设置生效。"
-                    : "当前没有分身会话，系统组合键设置将在下次连接时生效。",
+                ? Locale.Get("Notify.SystemShortcuts.Applying")
+                : Locale.Get("Notify.SystemShortcuts.NextConnect"),
                 InfoBarSeverity.Informational);
         }
         catch (Exception exception)
@@ -1394,7 +1387,7 @@ public partial class MainWindowViewModel : ObservableObject
             IsSystemShortcutsReconnectPending = false;
             SendSystemShortcutsToRemote = _childSessionService.SendSystemShortcutsToRemote;
             ShowNotification(
-                "设置切换失败",
+                Locale.Get("Notify.SettingsSwitchFailed.Title"),
                 exception.GetBaseException().Message,
                 InfoBarSeverity.Error,
                 TimeSpan.FromSeconds(8));
@@ -1419,10 +1412,10 @@ public partial class MainWindowViewModel : ObservableObject
 
         IsWatchModeEnabled = _childSessionService.WatchModeEnabled;
         ShowNotification(
-            enabled ? "观看模式已开启" : "观看模式已关闭",
+            enabled ? Locale.Get("Notify.WatchMode.On") : Locale.Get("Notify.WatchMode.Off"),
             enabled
-                ? "本机键鼠不会对分身生效，但控制中心的组合键仍然生效。"
-                : "本机键鼠恢复操作桌面分身。",
+                ? Locale.Get("Notify.WatchMode.On.Message")
+                : Locale.Get("Notify.WatchMode.Off.Message"),
             enabled ? InfoBarSeverity.Informational : InfoBarSeverity.Success);
     }
 
@@ -1437,12 +1430,12 @@ public partial class MainWindowViewModel : ObservableObject
             UpdateConnectionStatus();
 
             ShowNotification(
-                reconnectStarted ? "正在应用音频设置" : "音频设置已保存",
+            reconnectStarted ? Locale.Get("Notify.AudioApplying") : Locale.Get("Notify.AudioSaved"),
                 reconnectStarted
-                    ? "RDP 正在自动重新连接，连接完成后音频设置生效。"
-                    : IsAudioMuted
-                        ? "分身将在下次连接时保持静音。"
-                        : "分身将在下次连接时播放声音。",
+                ? Locale.Get("Notify.Audio.Applying")
+                : IsAudioMuted
+                    ? Locale.Get("Notify.Audio.NextConnect.Muted")
+                    : Locale.Get("Notify.Audio.NextConnect.On"),
                 InfoBarSeverity.Informational);
         }
         catch (Exception exception)
@@ -1450,7 +1443,7 @@ public partial class MainWindowViewModel : ObservableObject
             IsAudioReconnectPending = false;
             IsAudioMuted = _childSessionService.AudioMuted;
             ShowNotification(
-                "音频设置切换失败",
+                Locale.Get("Notify.AudioSwitchFailed.Title"),
                 exception.GetBaseException().Message,
                 InfoBarSeverity.Error,
                 TimeSpan.FromSeconds(8));
@@ -1497,8 +1490,8 @@ public partial class MainWindowViewModel : ObservableObject
             var snapshot = ChildSessionEnvironmentCheck.BuildDiagnosticSnapshot();
             Clipboard.SetText(snapshot);
             ShowNotification(
-                "环境信息已复制",
-                "已复制到剪贴板，可以直接粘贴到 Issue 中。",
+                Locale.Get("Notify.EnvCopied.Title"),
+                Locale.Get("Notify.EnvCopied.Message"),
                 InfoBarSeverity.Success);
         }
         catch (Exception exception)
@@ -1558,9 +1551,8 @@ public partial class MainWindowViewModel : ObservableObject
     private async Task DisableChildSessionsAsync()
     {
         var confirmed = await Dialogs.ConfirmAsync(
-            "关闭 Child Sessions 会撤销本程序对 Windows 的修改，之后本机将无法再创建第二个桌面会话，"
-            + "直到再次启动桌面分身。\n\n当前分身会被注销，其中正在运行的程序会被关闭。是否继续？",
-            "关闭 Child Sessions");
+                Locale.Get("Diag.DisableChildSessions.Message"),
+                Locale.Get("Menu.Diagnostics.DisableChildSessions"));
         if (!confirmed)
         {
             return;
@@ -1571,8 +1563,8 @@ public partial class MainWindowViewModel : ObservableObject
             await _childSessionService.LogoffAndHideAsync();
             _childSessionService.DisableChildSessionsFeature();
             ShowNotification(
-                "已关闭 Child Sessions",
-                "系统已恢复原状，下次启动桌面分身时会重新启用。",
+                Locale.Get("Notify.ChildSessionsOff.Title"),
+                Locale.Get("Notify.ChildSessionsOff.Message"),
                 InfoBarSeverity.Success);
         }
         catch (Exception exception)
@@ -1677,8 +1669,8 @@ public partial class MainWindowViewModel : ObservableObject
                 IsAudioReconnectPending = false;
                 UpdateConnectionStatus();
                 ShowNotification(
-                    "RDP 连接失败",
-                    e.Message + " 已打开诊断面板，可直接查看可能的原因。",
+                Locale.Get("Notify.RdpFailed.Title"),
+                e.Message + Locale.Get("Notify.RdpFailed.Suffix"),
                     InfoBarSeverity.Error,
                     TimeSpan.FromSeconds(10));
 
@@ -1697,10 +1689,10 @@ public partial class MainWindowViewModel : ObservableObject
                 IsSystemShortcutsReconnectPending = false;
                 UpdateConnectionStatus();
                 ShowNotification(
-                    "设置已生效",
-                    SendSystemShortcutsToRemote
-                        ? "系统组合键现在会发送到桌面分身。"
-                        : "系统组合键现在会在本机生效。",
+                Locale.Get("Notify.Applied.Title"),
+                SendSystemShortcutsToRemote
+                    ? Locale.Get("Notify.Applied.ToChild")
+                    : Locale.Get("Notify.Applied.ToLocal"),
                     InfoBarSeverity.Success);
             }));
     }
@@ -1730,11 +1722,8 @@ public partial class MainWindowViewModel : ObservableObject
                 }
 
                 ShowNotification(
-                    "已跳过自动启动",
-                    "自动启动已被跳过：目标程序要求管理员权限但还没有确认过，"
-                    + "或当前系统（UAC 未启用）无法真正降权。\n"
-                    + "如果是第一种：把「连接成功后自动启动」和「以管理员权限启动目标程序」都勾上，"
-                    + "确认一次后以后就会自动以管理员权限运行；也可以点「控制中心 → 立即在分身中启动」手动启动。",
+                Locale.Get("Startup.AutoLaunchSkipped.Title"),
+                Locale.Get("Startup.AutoLaunchSkipped.Message"),
                     InfoBarSeverity.Warning,
                     TimeSpan.FromSeconds(12));
             }));
@@ -1750,10 +1739,10 @@ public partial class MainWindowViewModel : ObservableObject
                 IsAudioMuted = _childSessionService.AudioMuted;
                 UpdateConnectionStatus();
                 ShowNotification(
-                    IsAudioMuted ? "分身已静音" : "分身声音已开启",
+            IsAudioMuted ? Locale.Get("Notify.Muted.Title") : Locale.Get("Notify.SoundOn.Title"),
                     IsAudioMuted
-                        ? "仅分身的声音已关闭，主桌面其他程序不受影响。"
-                        : "分身的声音已恢复。",
+                ? Locale.Get("Notify.Muted.Message")
+                : Locale.Get("Notify.SoundOn.Message"),
                     InfoBarSeverity.Success);
             }));
     }
@@ -1796,52 +1785,52 @@ public partial class MainWindowViewModel : ObservableObject
         if (IsSessionClosing)
         {
             ConnectionStatusBrush = Brushes.Orange;
-            ConnectionStatusTitle = "正在关闭桌面分身";
-            ConnectionStatusDescription = "正在断开 RDP 并注销分身会话，此过程可能需要一些时间。";
-            RdpStatusText = connectedState == 0 ? "RDP 已断开" : "正在断开 RDP";
+            ConnectionStatusTitle = Locale.Get("Main.Status.Closing");
+            ConnectionStatusDescription = Locale.Get("Main.Status.Closing.Description");
+            RdpStatusText = connectedState == 0 ? Locale.Get("Main.Rdp.Disconnected") : Locale.Get("Main.Rdp.Disconnecting");
             ChildSessionStatusText = childSessionId is null
-                ? "正在确认分身会话已注销"
-                : $"正在注销分身会话 {childSessionId.Value}";
-            ConnectionStatusToolTip = "关闭期间已暂停桌面分身操作，完成后窗口会自动隐藏。";
+                ? Locale.Get("Main.Status.Closing.Confirming")
+                : Locale.Format("Main.Status.Closing.LoggingOff", childSessionId.Value);
+            ConnectionStatusToolTip = Locale.Get("Main.Status.Closing.ToolTip");
             return;
         }
 
         if (IsRdpConnected)
         {
             ConnectionStatusBrush = Brushes.LimeGreen;
-            ConnectionStatusTitle = "桌面分身已连接";
-            ConnectionStatusDescription = "RDP 连接正常，可以直接在这个窗口里操作分身桌面。";
+            ConnectionStatusTitle = Locale.Get("Main.Status.Connected");
+            ConnectionStatusDescription = Locale.Get("Main.Status.Connected.Description");
         }
         else if (connectedState == 2)
         {
             ConnectionStatusBrush = childSessionId is null ? Brushes.Red : Brushes.DodgerBlue;
-            ConnectionStatusTitle = "正在连接桌面分身";
-            ConnectionStatusDescription = "正在创建或恢复 RDP 连接，请稍候。";
+            ConnectionStatusTitle = Locale.Get("Main.Status.Connecting");
+            ConnectionStatusDescription = Locale.Get("Main.Status.Connecting.Description");
         }
         else if (childSessionId is not null)
         {
             ConnectionStatusBrush = Brushes.DodgerBlue;
-            ConnectionStatusTitle = "桌面分身已启动，等待连接";
-            ConnectionStatusDescription = "分身会话仍在运行，点击“启动并连接”可重新建立 RDP 连接。";
+            ConnectionStatusTitle = Locale.Get("Main.Status.Started");
+            ConnectionStatusDescription = Locale.Get("Main.Status.Started.Description");
         }
         else
         {
             ConnectionStatusBrush = Brushes.Red;
             ConnectionStatusTitle = Locale.Get("Main.Status.NotStarted");
             ConnectionStatusDescription =
-                "点击“启动并连接”，程序会创建一个独立的 Windows 桌面，并把画面嵌到这个窗口里。";
+            Locale.Get("Main.Status.Description");
         }
 
         RdpStatusText = connectedState switch
         {
-            0 => "RDP 未连接",
-            1 => "RDP 已连接",
-            2 => "RDP 正在连接",
-            _ => $"RDP 状态未知（{connectedState}）"
+                0 => Locale.Get("Main.Rdp.NotConnected"),
+                1 => Locale.Get("Main.Rdp.Connected"),
+                2 => Locale.Get("Main.Rdp.Connecting"),
+                _ => Locale.Format("Main.Rdp.Unknown", connectedState)
         };
         ChildSessionStatusText = childSessionId is null
-            ? "分身会话未创建"
-            : $"分身会话 {childSessionId.Value}";
+                ? Locale.Get("Main.Session.None")
+                : Locale.Format("Main.Session.Number", childSessionId.Value);
         ConnectionStatusToolTip = _childSessionService.StatusText;
     }
 
@@ -1856,12 +1845,12 @@ public partial class MainWindowViewModel : ObservableObject
     {
         var actualException = exception.GetBaseException();
         var suggestion = actualException is System.ComponentModel.Win32Exception { NativeErrorCode: 5 }
-            ? "\n\n操作被系统拒绝，请确认 DesktopTwin 正在以管理员权限运行。"
+                ? Locale.Get("Error.AccessDenied.Suffix")
             : string.Empty;
 
         AppLog.Error("界面操作失败。", actualException);
         Dialogs.ShowError(
             $"{actualException.Message}{suggestion}",
-            "桌面分身");
+                Locale.Get("Main.Title"));
     }
 }

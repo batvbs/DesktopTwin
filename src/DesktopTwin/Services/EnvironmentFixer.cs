@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using DesktopTwin.Interop;
 using Microsoft.Win32;
+using DesktopTwin.Localization;
 
 namespace DesktopTwin.Services;
 
@@ -65,7 +66,7 @@ public static class EnvironmentFixer
                 return FixHelloOnly();
 
             default:
-                return new Result(false, "这个问题没有提供自动修复，请按展开后的说明手动处理。");
+                return new Result(false, Locale.Get("Fix.NoAutoFix"));
         }
     }
 
@@ -79,7 +80,7 @@ public static class EnvironmentFixer
             return new Result(false, error);
         }
 
-        return new Result(true, "远程桌面服务已启动。");
+        return new Result(true, Locale.Get("Fix.ServiceStarted"));
     }
 
     /// <summary>
@@ -94,10 +95,10 @@ public static class EnvironmentFixer
 
         if (!ServiceNativeMethods.TryStart("TermService", out var startError))
         {
-            return new Result(false, $"启动类型已改为手动，但{startError}");
+            return new Result(false, Locale.Format("Fix.StartTypeChangedButError", startError));
         }
 
-        return new Result(true, "TermService 启动类型已改为「手动」并已启动。");
+        return new Result(true, Locale.Get("Fix.StartTypeChanged"));
     }
 
     /// <summary>
@@ -112,7 +113,7 @@ public static class EnvironmentFixer
             "fDenyTSConnections");
         if (policyValue is not null)
         {
-            return new Result(false, "该设置由组策略下发，改本机注册表会被覆盖。请改用 gpedit.msc 或联系管理员。");
+            return new Result(false, Locale.Get("Fix.GroupPolicyOverrides"));
         }
 
         if (!TryWriteDword(
@@ -131,13 +132,13 @@ public static class EnvironmentFixer
             "fDenyTSConnections");
         if (after != 0)
         {
-            return new Result(false, "注册表写入后回读不是 0，修复未生效。");
+            return new Result(false, Locale.Get("Fix.RegistryReadBackNotZero"));
         }
 
         var restart = RestartTermService(cancellationToken);
         return restart.Success
-            ? new Result(true, "已开启远程桌面并重启服务。如果正在使用分身，需要重新点一次「启动」。")
-            : new Result(false, "注册表已改回 0，但" + restart.Message);
+            ? new Result(true, Locale.Get("Fix.RdpEnabledNeedRestart"))
+            : new Result(false, Locale.Format("Fix.RdpRestoreFailed", restart.Message));
     }
 
     /// <summary>
@@ -148,7 +149,7 @@ public static class EnvironmentFixer
         var current = ChildSessionEnvironmentCheck.ReadServiceDll();
         if (!ChildSessionEnvironmentCheck.IsServiceDllHijacked(current))
         {
-            return new Result(true, "当前已经是原生 termsrv.dll，无需修复。");
+            return new Result(true, Locale.Get("Fix.AlreadyNativeDll"));
         }
 
         var backupPath = WriteBackup(current);
@@ -166,7 +167,7 @@ public static class EnvironmentFixer
         var after = ChildSessionEnvironmentCheck.ReadServiceDll();
         if (ChildSessionEnvironmentCheck.IsServiceDllHijacked(after))
         {
-            return new Result(false, "注册表写入后回读仍是第三方 DLL，修复未生效。");
+            return new Result(false, Locale.Get("Fix.RegistryStillForeignDll"));
         }
 
         var taskDisabled = TryDisableRdpWrapperUpdateTask(out var taskMessage);
@@ -174,17 +175,17 @@ public static class EnvironmentFixer
 
         if (!restart.Success)
         {
-            return new Result(false, "ServiceDll 已还原，但" + restart.Message);
+            return new Result(false, Locale.Format("Fix.RestoreFailed", restart.Message));
         }
 
-        var message = "已还原为原生 termsrv.dll 并重启远程桌面服务。";
+        var message = Locale.Get("Fix.RestoredNative");
         message += taskDisabled
-            ? "同时已停用计划任务「" + RdpWrapperUpdateTaskName + "」。"
-            : "（" + taskMessage + "）";
+            ? Locale.Format("Fix.TaskDisabled", RdpWrapperUpdateTaskName)
+            : Locale.Format("Fix.TaskNote", taskMessage);
         message += backupPath is null
             ? string.Empty
-            : $"原值已备份到 {backupPath}。";
-        message += "注意：多用户并发远程桌面的能力已随之失效。";
+            : Locale.Format("Fix.BackupSaved", backupPath);
+        message += Locale.Get("Fix.ConcurrentGone");
 
         return new Result(true, message);
     }
@@ -209,13 +210,12 @@ public static class EnvironmentFixer
             "DevicePasswordLessBuildVersion");
         if (after == ChildSessionEnvironmentCheck.PasswordLessHelloOnlyValue)
         {
-            return new Result(false, "注册表写入后回读仍是 2，修复未生效。");
+            return new Result(false, Locale.Get("Fix.RegistryStillTwo"));
         }
 
         return new Result(
             true,
-            "已关闭「仅允许 Windows Hello 登录」。**必须注销或重启**才会生效——"
-            + "凭据提供程序在登录时就已经确定，不重新登录不会刷新。");
+            Locale.Get("Fix.HelloOnlyOff"));
     }
 
     /// <summary>
@@ -227,23 +227,22 @@ public static class EnvironmentFixer
         {
             return new Result(
                 false,
-                "检测到还有正在运行的分身（或远程桌面）会话。请先关闭分身再重试，"
-                + "否则重启服务会把里面的程序一起关掉。");
+                Locale.Get("Fix.SessionsRunning"));
         }
 
         cancellationToken.ThrowIfCancellationRequested();
 
         if (!ServiceNativeMethods.TryStop("TermService", out var stopError))
         {
-            return new Result(false, "停止远程桌面服务失败：" + stopError);
+            return new Result(false, Locale.Format("Fix.StopFailed", stopError));
         }
 
         if (!ServiceNativeMethods.TryStart("TermService", out var startError))
         {
-            return new Result(false, "服务已停止但重新启动失败：" + startError);
+            return new Result(false, Locale.Format("Fix.RestartFailed", startError));
         }
 
-        return new Result(true, "远程桌面服务已重启。");
+        return new Result(true, Locale.Get("Fix.ServiceRestarted"));
     }
 
     /// <summary>
@@ -288,19 +287,19 @@ public static class EnvironmentFixer
 
         if (!File.Exists(schtasks))
         {
-            message = "找不到 schtasks.exe，请手动删除计划任务";
+            message = Locale.Get("Fix.SchtasksMissing");
             return false;
         }
 
         if (!RunSchtasks(schtasks, $"/Query /TN \"{RdpWrapperUpdateTaskName}\"", out _))
         {
-            message = "未发现该计划任务，无需停用";
+            message = Locale.Get("Fix.TaskNotFound");
             return true;
         }
 
         if (!RunSchtasks(schtasks, $"/Change /TN \"{RdpWrapperUpdateTaskName}\" /DISABLE", out var error))
         {
-            message = "停用计划任务失败：" + error;
+            message = Locale.Format("Fix.TaskDisableFailed", error);
             return false;
         }
 
@@ -384,7 +383,7 @@ public static class EnvironmentFixer
             using var key = baseKey.OpenSubKey(path, writable: true);
             if (key is null)
             {
-                error = $"无法打开注册表项 HKLM\\{path}（权限不足或路径不存在）。";
+                error = Locale.Format("Fix.RegistryOpenFailed", path);
                 return false;
             }
 
@@ -395,7 +394,7 @@ public static class EnvironmentFixer
                                               or System.Security.SecurityException
                                               or IOException)
         {
-            error = $"写入注册表失败：{exception.Message}";
+            error = Locale.Format("Fix.RegistryWriteFailed", exception.Message);
             return false;
         }
     }
@@ -415,7 +414,7 @@ public static class EnvironmentFixer
             using var key = baseKey.OpenSubKey(path, writable: true);
             if (key is null)
             {
-                error = $"无法打开注册表项 HKLM\\{path}（权限不足或路径不存在）。";
+                error = Locale.Format("Fix.RegistryOpenFailed", path);
                 return false;
             }
 
@@ -426,7 +425,7 @@ public static class EnvironmentFixer
                                               or System.Security.SecurityException
                                               or IOException)
         {
-            error = $"写入注册表失败：{exception.Message}";
+            error = Locale.Format("Fix.RegistryWriteFailed", exception.Message);
             return false;
         }
     }

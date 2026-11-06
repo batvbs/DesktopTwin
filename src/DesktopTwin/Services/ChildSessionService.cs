@@ -13,6 +13,7 @@ using DesktopTwin.Models;
 using DesktopTwin.View;
 using DrawingRectangle = System.Drawing.Rectangle;
 using DrawingSize = System.Drawing.Size;
+using DesktopTwin.Localization;
 
 namespace DesktopTwin.Services;
 
@@ -115,7 +116,7 @@ public sealed class ChildSessionService : IDisposable
     /// <summary>
     /// 状态栏文本。
     /// </summary>
-    public string StatusText { get; private set; } = "桌面分身尚未启动";
+    public string StatusText { get; private set; } = Locale.Get("Main.Status.NotStarted");
 
     /// <summary>
     /// 分身窗口当前是否可见。
@@ -282,7 +283,7 @@ public sealed class ChildSessionService : IDisposable
 
             try
             {
-                ConnectCore("正在启动桌面分身");
+                ConnectCore(Locale.Get("Svc.Status.Starting"));
             }
             catch
             {
@@ -338,7 +339,7 @@ public sealed class ChildSessionService : IDisposable
         ThrowIfDisposed();
         _windowHiddenByUser = true;
         _desktopWindow?.Hide();
-        RefreshState("已隐藏桌面分身窗口，RDP 连接保持不变");
+        RefreshState(Locale.Get("Svc.Status.Hidden"));
     }
 
     /// <summary>
@@ -361,8 +362,8 @@ public sealed class ChildSessionService : IDisposable
         // 不会触发「RDP 连接意外断开」的失败提示与重试。
         var disconnected = window.RdpHost.Disconnect();
         RefreshState(disconnected
-            ? "已断开分身桌面，会话与其中的程序保留"
-            : "断开分身桌面失败");
+            ? Locale.Get("Svc.Status.Disconnected")
+            : Locale.Get("Svc.Status.DisconnectFailed"));
         return disconnected;
     }
 
@@ -394,7 +395,7 @@ public sealed class ChildSessionService : IDisposable
             {
                 // 会话还在（只是断开）：重新连回去，桌面上的程序都还在。
                 window.RdpHost.ReconnectToChildSession(DesktopSize);
-                RefreshState("正在重新连接桌面分身");
+                RefreshState(Locale.Get("Svc.Status.Reconnecting"));
             }
         }
 
@@ -508,8 +509,8 @@ public sealed class ChildSessionService : IDisposable
             }
 
             AppLog.Info(connected
-                ? "后台重连分身：成功，已挂回后台。"
-                : "后台重连分身：失败，切回时需要重新连接。");
+                ? Locale.Get("Svc.Background.Reconnected")
+                : Locale.Get("Svc.Background.ReconnectFailed"));
 
             var window = _desktopWindow;
             if (window is not null && window.IsVisible)
@@ -551,7 +552,7 @@ public sealed class ChildSessionService : IDisposable
         var window = EnsureDesktopWindow();
         ShowDesktopWindow(window);
         window.RdpHost.SendShowDesktopShortcut();
-        RefreshState("已向桌面分身发送 Win+D");
+        RefreshState(Locale.Get("Svc.Status.SentWinD"));
     }
 
     /// <summary>
@@ -565,7 +566,7 @@ public sealed class ChildSessionService : IDisposable
         var window = EnsureDesktopWindow();
         ShowDesktopWindow(window);
         window.RdpHost.SendTaskViewShortcut();
-        RefreshState("已向桌面分身发送 Win+Tab");
+        RefreshState(Locale.Get("Svc.Status.SentWinTab"));
     }
 
     /// <summary>
@@ -584,7 +585,7 @@ public sealed class ChildSessionService : IDisposable
             _settings.SaveSoon();
         }
 
-        RefreshState(enabled ? "窗口显示模式已切换为自适应缩放" : "窗口显示模式已切换为 1:1");
+        RefreshState(enabled ? Locale.Get("Svc.Status.Adaptive") : Locale.Get("Svc.Status.OneToOne"));
     }
 
     /// <summary>
@@ -595,7 +596,7 @@ public sealed class ChildSessionService : IDisposable
         ThrowIfDisposed();
         _settings.Current.Session.KeepAspectRatio = enabled;
         _settings.SaveSoon();
-        RefreshState(enabled ? "窗口将保持 16:9 宽高比" : "窗口不再保持宽高比");
+        RefreshState(enabled ? Locale.Get("Svc.Status.KeepAspect") : Locale.Get("Svc.Status.NoAspect"));
     }
 
     /// <summary>
@@ -606,7 +607,7 @@ public sealed class ChildSessionService : IDisposable
         ThrowIfDisposed();
         _settings.Current.Session.Topmost = enabled;
         _settings.SaveSoon();
-        RefreshState(enabled ? "窗口已置顶" : "窗口已取消置顶");
+        RefreshState(enabled ? Locale.Get("Svc.Status.Topmost") : Locale.Get("Svc.Status.NotTopmost"));
     }
 
     /// <summary>
@@ -626,11 +627,11 @@ public sealed class ChildSessionService : IDisposable
         _settings.SaveSoon();
         var window = EnsureDesktopWindow();
         window.RdpHost.SetSendSystemShortcutsToRemote(enabled);
-        var target = enabled ? "桌面分身" : "本机";
+        var target = enabled ? Locale.Get("Svc.Target.Child") : Locale.Get("Svc.Target.Local");
         return ReconnectForRdpSettingChange(
             window,
             RdpSettingChange.SystemShortcuts,
-            $"系统组合键已改为在{target}生效");
+            Locale.Format("Svc.Status.SystemShortcuts", target));
     }
 
     /// <summary>
@@ -652,7 +653,7 @@ public sealed class ChildSessionService : IDisposable
         return ReconnectForRdpSettingChange(
             window,
             RdpSettingChange.Audio,
-            muted ? "分身声音已关闭" : "分身声音已开启");
+            muted ? Locale.Get("Svc.Status.AudioOff") : Locale.Get("Svc.Status.AudioOn"));
     }
 
     /// <summary>
@@ -665,8 +666,8 @@ public sealed class ChildSessionService : IDisposable
         _settings.SaveSoon();
         _desktopWindow?.RdpHost.SetInputBlocked(enabled);
         RefreshState(enabled
-            ? "已进入观看模式，本机鼠标和键盘不会进入桌面分身"
-            : "已退出观看模式，可以操作桌面分身");
+            ? Locale.Get("Svc.Status.WatchModeOn")
+            : Locale.Get("Svc.Status.WatchModeOff"));
     }
 
     /// <summary>
@@ -679,8 +680,12 @@ public sealed class ChildSessionService : IDisposable
         {
             throw new ArgumentOutOfRangeException(
                 nameof(width),
-                $"分辨率必须在 {SessionSettings.MinDesktopWidth}×{SessionSettings.MinDesktopHeight}"
-                + $" 到 {SessionSettings.MaxDesktopWidth}×{SessionSettings.MaxDesktopHeight} 之间。");
+                Locale.Format(
+                    "Svc.Error.ResolutionRange",
+                    SessionSettings.MinDesktopWidth,
+                    SessionSettings.MinDesktopHeight,
+                    SessionSettings.MaxDesktopWidth,
+                    SessionSettings.MaxDesktopHeight));
         }
 
         _settings.Current.Session.DesktopWidth = width;
@@ -693,12 +698,12 @@ public sealed class ChildSessionService : IDisposable
         var window = EnsureDesktopWindow();
         if (window.RdpHost.ConnectedState == 0 && ChildSessionId is null)
         {
-            RefreshState($"分辨率已设为 {width} × {height}，将在下次连接后生效");
+            RefreshState(Locale.Format("Svc.Status.ResolutionSetNext", width, height));
             return;
         }
 
         window.RdpHost.ReconnectToChildSession(new DrawingSize(width, height));
-        RefreshState($"分辨率已设为 {width} × {height}，正在自动重新连接 RDP");
+        RefreshState(Locale.Format("Svc.Status.ResolutionSetReconnect", width, height));
     }
 
     /// <summary>
@@ -710,7 +715,7 @@ public sealed class ChildSessionService : IDisposable
         var launch = _settings.Current.Launch;
         if (string.IsNullOrWhiteSpace(launch.TargetPath))
         {
-            throw new InvalidOperationException("还没有选择要在桌面分身中启动的程序。");
+            throw new InvalidOperationException(Locale.Get("Svc.Error.NoTargetProgram"));
         }
 
         return LaunchProgramCoreAsync(
@@ -746,7 +751,7 @@ public sealed class ChildSessionService : IDisposable
                 && active != expected)
             {
                 throw new InvalidOperationException(
-                    $"桌面分身会话已从 {expected} 变更为 {active}，已取消注销操作。");
+                    Locale.Format("Svc.Status.SessionChanged", expected, active));
             }
 
             // 完成目标会话校验后再取消连接和重试状态，避免旧菜单项影响刚创建的新会话。
@@ -757,7 +762,7 @@ public sealed class ChildSessionService : IDisposable
             _connectionAttemptCompletionSource?.TrySetResult(false);
 
             TryDisconnectRdpHost();
-            RefreshState("正在断开 RDP 并注销桌面分身会话");
+            RefreshState(Locale.Get("Svc.Status.LoggingOff"));
 
             var terminatedSessionId = await Task.Run(() =>
                 expectedSessionId is { } targetSessionId
@@ -765,8 +770,8 @@ public sealed class ChildSessionService : IDisposable
                     : ChildSessionNativeMethods.TerminateChildSession());
             _desktopWindow?.Hide();
             RefreshState(terminatedSessionId is null
-                ? "当前没有分身会话，窗口已隐藏"
-                : $"分身会话 {terminatedSessionId.Value} 已注销，窗口已隐藏");
+                ? Locale.Get("Svc.Status.NoSessionHidden")
+                : Locale.Format("Svc.Status.SessionLoggedOff", terminatedSessionId.Value));
         }
         finally
         {
@@ -781,7 +786,7 @@ public sealed class ChildSessionService : IDisposable
     {
         ThrowIfDisposed();
         ChildSessionNativeMethods.DisableChildSessions();
-        RefreshState("已关闭 Windows Child Sessions 功能");
+        RefreshState(Locale.Get("Svc.Status.ChildSessionsDisabled"));
     }
 
     /// <summary>
@@ -808,16 +813,16 @@ public sealed class ChildSessionService : IDisposable
 
             var connectionText = ConnectedState switch
             {
-                0 => "未连接",
-                1 => "已连接",
-                2 => "正在连接",
-                _ => $"未知连接状态 {ConnectedState}"
+                0 => Locale.Get("Svc.Conn.None"),
+                1 => Locale.Get("Svc.Conn.Connected"),
+                2 => Locale.Get("Svc.Conn.Connecting"),
+                _ => Locale.Format("Svc.Conn.Unknown", ConnectedState)
             };
-            var sessionText = ChildSessionId?.ToString() ?? "无";
+            var sessionText = ChildSessionId?.ToString() ?? Locale.Get("Check.None");
             var mainText = _lastOperationMessage ?? connectionText;
 
             StatusText =
-                $"{mainText} | RDP：{connectionText} | 分身会话：{sessionText} | 功能已启用：{enabled}";
+            Locale.Format("Svc.Status.Bar", mainText, connectionText, sessionText, enabled);
         }
         catch (Exception exception) when (IsExpectedChildSessionException(exception))
         {
@@ -1015,16 +1020,16 @@ public sealed class ChildSessionService : IDisposable
 
             var fileName = Path.GetFileName(executablePath);
             RefreshState(isAutomatic
-                ? $"分身已就绪，正在自动启动 {fileName}"
-                : $"正在启动 {fileName}");
+                ? Locale.Format("Svc.Status.ReadyAutoLaunching", fileName)
+                : Locale.Format("Svc.Status.Launching", fileName));
             await ChildSessionProcessLauncher.LaunchAsync(
                 childSessionId,
                 executablePath,
                 arguments,
                 runAsAdministrator);
             RefreshState(
-                $"已在分身（会话 {childSessionId}）中启动 {fileName}"
-                + (runAsAdministrator ? "（管理员权限）" : string.Empty));
+                Locale.Format("Svc.Status.Launched", childSessionId, fileName)
+                + (runAsAdministrator ? Locale.Get("Svc.Status.LaunchedElevated") : string.Empty));
         }
         finally
         {
@@ -1040,7 +1045,7 @@ public sealed class ChildSessionService : IDisposable
         var childSessionId = ChildSessionNativeMethods.TryGetChildSessionId();
         if (childSessionId is null)
         {
-            throw new InvalidOperationException("当前没有可用的分身会话，请先启动桌面分身。");
+            throw new InvalidOperationException(Locale.Get("Svc.Error.NoSession"));
         }
 
         return childSessionId.Value;
@@ -1139,7 +1144,7 @@ public sealed class ChildSessionService : IDisposable
             _pendingRdpSettingChanges = RdpSettingChange.None;
             _rdpSettingsReconnectRetriesRemaining = 0;
             _rdpSettingsReconnectRetryInProgress = false;
-            RefreshState("自动重新连接完成，RDP 设置已生效");
+            RefreshState(Locale.Get("Svc.Status.RdpSettingsApplied"));
 
             if (completedSettingChanges.HasFlag(RdpSettingChange.SystemShortcuts))
             {
@@ -1153,7 +1158,7 @@ public sealed class ChildSessionService : IDisposable
         }
         else
         {
-            RefreshState("桌面分身登录初始化完成");
+            RefreshState(Locale.Get("Svc.Status.LoginInitialized"));
         }
 
         if (!_autoLaunchPending)
@@ -1194,7 +1199,7 @@ public sealed class ChildSessionService : IDisposable
                         }
                         else
                         {
-                            RefreshState("已跳过自动启动：管理员权限启动需要先在菜单里确认一次");
+                            RefreshState(Locale.Get("Svc.Status.AutoLaunchSkippedAdmin"));
                             AutoLaunchSkipped?.Invoke(this, EventArgs.Empty);
                         }
                     }
@@ -1203,7 +1208,7 @@ public sealed class ChildSessionService : IDisposable
                         // 安全边界：UAC 关闭时 TASK_RUNLEVEL_LUA 不降权，普通权限的目标程序
                         // 仍然以高完整性运行，等于变相提权。这里判断的是「实际会不会降权」
                         // 而不是 RunAsAdministrator 标志，只看标志会被绕过去。
-                        RefreshState("已跳过自动启动：当前系统未启用 UAC，普通权限无法真正降权");
+                        RefreshState(Locale.Get("Svc.Status.AutoLaunchSkippedNoUac"));
                         AutoLaunchSkipped?.Invoke(this, EventArgs.Empty);
                     }
                     else
@@ -1219,7 +1224,7 @@ public sealed class ChildSessionService : IDisposable
         }
         catch (Exception exception) when (IsExpectedChildSessionException(exception))
         {
-            RefreshState($"自动启动目标程序失败：{exception.GetBaseException().Message}");
+            RefreshState(Locale.Format("Svc.Status.AutoLaunchFailed", exception.GetBaseException().Message));
         }
     }
 
@@ -1239,8 +1244,11 @@ public sealed class ChildSessionService : IDisposable
             + $"错误：{firstFailure.Message}，错误代码：{firstFailure.ErrorCode}，"
             + $"扩展错误代码：{firstFailure.ExtendedErrorCode}");
         RefreshState(
-            $"RDP 自动重连暂未成功，{retryDelay.TotalSeconds:0} 秒后重试"
-            + $"（{retryNumber}/{RdpSettingsReconnectRetryCount}）");
+            Locale.Format(
+                "Svc.Status.RdpReconnectRetrying",
+                retryDelay.TotalSeconds,
+                retryNumber,
+                RdpSettingsReconnectRetryCount));
 
         try
         {
@@ -1251,7 +1259,7 @@ public sealed class ChildSessionService : IDisposable
             }
 
             RefreshState(
-                $"正在重试 RDP 自动连接（{retryNumber}/{RdpSettingsReconnectRetryCount}）");
+                Locale.Format("Svc.Status.RdpReconnectRetryNow", retryNumber, RdpSettingsReconnectRetryCount));
             _rdpSettingsReconnectRetryInProgress = false;
             EnsureDesktopWindow().RdpHost.ReconnectToChildSession(DesktopSize);
         }
@@ -1265,7 +1273,7 @@ public sealed class ChildSessionService : IDisposable
                 ? comException.ErrorCode
                 : 0;
             retryFailure = new ChildSessionConnectionFailedEventArgs(
-                $"RDP 自动重新连接失败：{actualException.Message}",
+                Locale.Format("Svc.Error.RdpReconnectFailed", actualException.Message),
                 errorCode);
         }
         finally
@@ -1292,8 +1300,11 @@ public sealed class ChildSessionService : IDisposable
             + $"错误：{firstFailure.Message}，错误代码：{firstFailure.ErrorCode}，"
             + $"扩展错误代码：{firstFailure.ExtendedErrorCode}");
         RefreshState(
-            $"分身首次初始化尚未完成，{retryDelay.TotalSeconds:0} 秒后自动重试"
-            + $"（{retryNumber}/{InitialConnectionRetryCount}）");
+            Locale.Format(
+                "Svc.Status.InitialRetrying",
+                retryDelay.TotalSeconds,
+                retryNumber,
+                InitialConnectionRetryCount));
 
         try
         {
@@ -1310,7 +1321,7 @@ public sealed class ChildSessionService : IDisposable
             }
 
             RefreshState(
-                $"正在重试分身连接（{retryNumber}/{InitialConnectionRetryCount}）");
+                Locale.Format("Svc.Status.InitialRetryNow", retryNumber, InitialConnectionRetryCount));
             _connectionRetryInProgress = false;
             // OnLogonError 触发后 ActiveX 可能仍处于连接状态，必须先断开再重连。
             // 否则这里直接退出会丢失已捕获的真实错误，最终只剩外层连接超时。
@@ -1326,7 +1337,7 @@ public sealed class ChildSessionService : IDisposable
                 ? comException.ErrorCode
                 : 0;
             retryFailure = new ChildSessionConnectionFailedEventArgs(
-                $"重试分身连接失败：{actualException.Message}",
+                Locale.Format("Svc.Error.InitialRetryFailed", actualException.Message),
                 errorCode);
         }
         finally
@@ -1368,19 +1379,19 @@ public sealed class ChildSessionService : IDisposable
     private ChildSessionConnectionFailedEventArgs CreateConnectionTimeoutFailure()
     {
         var timeoutMessage =
-            $"分身连接及登录初始化未能在 {ConnectionTimeout.TotalSeconds:0} 秒内完成。";
+            Locale.Format("Svc.Error.Timeout", ConnectionTimeout.TotalSeconds);
         var lastDiagnostic =
             _desktopWindow?.RdpHost.LastConnectionDiagnostic
             ?? _lastConnectionFailure;
         if (lastDiagnostic is null)
         {
             return new ChildSessionConnectionFailedEventArgs(
-                $"{timeoutMessage}\n\nRDP ActiveX 未报告更具体的失败原因。",
+                Locale.Format("Svc.Error.Timeout.NoDetail", timeoutMessage),
                 ErrorTimeout);
         }
 
         return new ChildSessionConnectionFailedEventArgs(
-            $"{timeoutMessage}\n\nRDP ActiveX 最后报告：\n{lastDiagnostic.Message}",
+            Locale.Format("Svc.Error.Timeout.LastReport", timeoutMessage, lastDiagnostic.Message),
             lastDiagnostic.ErrorCode,
             lastDiagnostic.ExtendedErrorCode);
     }
@@ -1397,9 +1408,7 @@ public sealed class ChildSessionService : IDisposable
         {
             builder.AppendLine().AppendLine();
             builder.Append(
-                "诊断：当前没有可用的分身会话，说明 Windows 未能建立 RDP 会话。"
-                + "该状态本身无法确定原因——系统无法创建会话与凭据未通过验证都会得到这个结果，"
-                + "请结合上面的 RDP ActiveX 错误信息一并判断。");
+                Locale.Get("Svc.Diag.NoSession"));
         }
 
         if (_environmentIssues.Count > 0)
@@ -1452,7 +1461,7 @@ public sealed class ChildSessionService : IDisposable
         RefreshState();
         if (window.RdpHost.ConnectedState == 0 && ChildSessionId is null)
         {
-            RefreshState($"{operationMessage}，将在下次 RDP 连接后应用");
+            RefreshState(Locale.Format("Svc.Status.SettingAppliedNextConnect", operationMessage));
             return false;
         }
 
@@ -1474,7 +1483,7 @@ public sealed class ChildSessionService : IDisposable
             throw;
         }
 
-        RefreshState($"{operationMessage}，正在自动重新连接 RDP");
+        RefreshState(Locale.Format("Svc.Status.SettingAppliedReconnecting", operationMessage));
         return true;
     }
 

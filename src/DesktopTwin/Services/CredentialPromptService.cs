@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using DesktopTwin.Localization;
 
 namespace DesktopTwin.Services;
 
@@ -107,7 +108,7 @@ internal static class CredentialPromptService
             string.Empty,
             string.Empty,
             string.Empty,
-            "等待凭据输入超时。如果那个窗口还开着，关掉它再试。");
+            Locale.Get("Cred.Timeout"));
     }
 
     private static PromptResult Prompt(IntPtr ownerWindow)
@@ -116,8 +117,8 @@ internal static class CredentialPromptService
         {
             Size = Marshal.SizeOf<CredUiInfo>(),
             ParentWindow = ownerWindow,
-            MessageText = "请确认你的 Windows 登录密码。程序会用它验证自动登录是否可用。",
-            CaptionText = "桌面分身 · 验证自动登录"
+            MessageText = Locale.Get("Cred.MessageText"),
+            CaptionText = Locale.Get("Cred.CaptionText")
         };
 
         uint authPackage = 0;
@@ -136,7 +137,7 @@ internal static class CredentialPromptService
 
         if (result == ErrorCancelled)
         {
-            return new PromptResult(false, true, string.Empty, string.Empty, string.Empty, "已取消。");
+            return new PromptResult(false, true, string.Empty, string.Empty, string.Empty, Locale.Get("Cred.Canceled"));
         }
 
         if (result != 0)
@@ -147,7 +148,7 @@ internal static class CredentialPromptService
                 string.Empty,
                 string.Empty,
                 string.Empty,
-                $"无法弹出凭据框（错误 {result}）。");
+                Locale.Format("Cred.OpenFailed", result));
         }
 
         try
@@ -193,7 +194,7 @@ internal static class CredentialPromptService
                 string.Empty,
                 string.Empty,
                 string.Empty,
-                $"无法读取凭据框内容（错误 {error}）。");
+                Locale.Format("Cred.ReadFailed", error));
         }
 
         return new PromptResult(

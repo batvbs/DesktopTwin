@@ -2,6 +2,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using DesktopTwin.Localization;
 using Wpf.Ui.Controls;
 
 // WPF-UI 也有一个 TextBlock，同时引入两个命名空间会歧义。这里明确用 WPF 原生的。
@@ -51,63 +52,67 @@ internal static class AutoLoginDialog
         var completion = new TaskCompletionSource<Choice>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        var dialog = Dialogs.CreateWindow("自动登录设置", 600);
+        var dialog = Dialogs.CreateWindow(Locale.Get("AutoLogin.Title"), 600);
         dialog.SizeToContent = SizeToContent.Height;
 
         var choice = Choice.None;
 
         // ---------- 方式一：本程序自带 ----------
         var appStatus = appAutoLoginEnabled
-            ? (hasPassword ? "当前状态：已启用" : "当前状态：已启用（但没有保存密码，等同于未启用）")
-            : (hasPassword ? "当前状态：未启用（已保存密码）" : "当前状态：未启用");
+            ? (hasPassword
+                ? Locale.Get("AutoLogin.Status.On")
+                : Locale.Get("AutoLogin.Status.OnButNoPassword"))
+            : (hasPassword
+                ? Locale.Get("AutoLogin.Status.OffWithPassword")
+                : Locale.Get("AutoLogin.Status.Off"));
 
         var enableButton = new Wpf.Ui.Controls.Button
         {
-            Content = hasPassword ? "启用自动登录" : "设置密码并启用",
+            Content = hasPassword
+                ? Locale.Get("AutoLogin.Button.Enable")
+                : Locale.Get("AutoLogin.Button.SetAndEnable"),
             Appearance = ControlAppearance.Primary,
             MinWidth = 140
         };
 
         var appCard = BuildCard(
-            "方式一 · 本程序自动登录（推荐）",
+            Locale.Get("AutoLogin.Card1.Title"),
             [
-                $"只作用于「重连桌面分身」这一个动作，不影响开机、不影响其他程序。",
-                $"密码用 DPAPI 加密保存在本机，只有当前 Windows 账户能解开；不会上传到任何地方。",
-                $"账户：{userName}。若系统仍弹出凭据框，程序会尝试自动填写，最多两次，之后交回手动输入。",
+                Locale.Get("AutoLogin.Card1.P1"),
+                Locale.Get("AutoLogin.Card1.P2"),
+                Locale.Format("AutoLogin.Card1.P3", userName),
                 appStatus
             ],
             enableButton);
 
         // ---------- 方式二：Windows 系统自动登录 ----------
         var systemStatus = systemAutoLoginEnabled
-            ? $"当前状态：已开启（账户 {systemAutoLoginUser}）"
-            : "当前状态：未开启";
+            ? Locale.Format("AutoLogin.Card2.Status.On", systemAutoLoginUser)
+            : Locale.Get("AutoLogin.Card2.Status.Off");
 
         var openButton = new Wpf.Ui.Controls.Button
         {
-            Content = "打开系统设置",
+            Content = Locale.Get("AutoLogin.Button.OpenSystem"),
             MinWidth = 140
         };
 
         var systemCard = BuildCard(
-            "方式二 · Windows 系统自动登录",
+            Locale.Get("AutoLogin.Card2.Title"),
             [
-                "开机后直接进入桌面，不再要求输入密码；桌面分身重连时通常也就不再弹凭据框。",
-                "操作步骤：",
-                "　　1. 点下面的「打开系统设置」（等同于 Win+R 输入 netplwiz）；",
-                "　　2. 取消勾选「要使用本计算机，用户必须输入用户名和密码」；",
-                "　　3. 点「应用」，在弹出的框里保持默认用户名不变，只输入账户密码（不是 PIN）；",
-                "　　4. 点确定后重启电脑生效。",
+                Locale.Get("AutoLogin.Card2.P1"),
+                Locale.Get("AutoLogin.Card2.P2"),
+                Locale.Get("AutoLogin.Card2.Step1"),
+                Locale.Get("AutoLogin.Card2.Step2"),
+                Locale.Get("AutoLogin.Card2.Step3"),
+                Locale.Get("AutoLogin.Card2.Step4"),
                 systemStatus
             ],
             openButton,
-            warning: "注意：这会让任何能接触到这台电脑的人开机即进入你的桌面。"
-                + "Windows 也会把该密码以可还原的形式保存在本机（注册表或 LSA 机密），"
-                + "因此它降低的是整机安全性，不只是这一个程序的安全性。");
+            warning: Locale.Get("AutoLogin.Card2.Warning"));
 
         var closeButton = new Wpf.Ui.Controls.Button
         {
-            Content = "关闭",
+            Content = Locale.Get("Common.Close"),
             MinWidth = 88,
             IsCancel = true
         };
@@ -123,7 +128,7 @@ internal static class AutoLoginDialog
         var panel = new StackPanel { Margin = new Thickness(24, 20, 24, 20) };
         panel.Children.Add(new TextBlock
         {
-            Text = "选择一种自动登录方式。两者可以同时开启，也可以都不用。",
+            Text = Locale.Get("AutoLogin.Intro"),
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 0, 0, 14)
         });

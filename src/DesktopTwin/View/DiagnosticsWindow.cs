@@ -14,6 +14,7 @@ using Wpf.Ui.Controls;
 
 // WPF-UI 也有一个 TextBlock，同时引入两个命名空间会歧义。这里明确用 WPF 原生的。
 using TextBlock = System.Windows.Controls.TextBlock;
+using DesktopTwin.Localization;
 
 namespace DesktopTwin.View;
 
@@ -55,7 +56,7 @@ internal sealed class DiagnosticsWindow : FluentWindow
     /// </summary>
     public DiagnosticsWindow()
     {
-        Title = "诊断与修复";
+        Title = Locale.Get("Diag.Title");
         Width = 760;
         Height = 640;
         MinWidth = 560;
@@ -71,7 +72,7 @@ internal sealed class DiagnosticsWindow : FluentWindow
         _resolvedSection = CreateSection();
         _statusText = new TextBlock
         {
-            Text = "正在检查…",
+            Text = Locale.Get("Diag.Checking"),
             VerticalAlignment = VerticalAlignment.Center,
             Opacity = 0.75,
             TextWrapping = TextWrapping.Wrap
@@ -120,13 +121,13 @@ internal sealed class DiagnosticsWindow : FluentWindow
         var header = new StackPanel { Margin = new Thickness(0, 0, 0, 12) };
         header.Children.Add(new TextBlock
         {
-            Text = "桌面分身依赖 Windows 的远程桌面与子会话能力。下面列出当前环境里可能影响启动的问题。",
+            Text = Locale.Get("Diag.Intro"),
             TextWrapping = TextWrapping.Wrap,
             Opacity = 0.85
         });
         header.Children.Add(new TextBlock
         {
-            Text = "点任意一行可展开完整说明与手动修复步骤；能自动修复的会在右侧显示「修复」按钮。",
+            Text = Locale.Get("Diag.Hint"),
             TextWrapping = TextWrapping.Wrap,
             Opacity = 0.6,
             FontSize = 12,
@@ -142,11 +143,11 @@ internal sealed class DiagnosticsWindow : FluentWindow
         };
 
         var sections = new StackPanel();
-        sections.Children.Add(BuildSectionHeader("警告", WarningColor));
+        sections.Children.Add(BuildSectionHeader(Locale.Get("Diag.Section.Warning"), WarningColor));
         sections.Children.Add(_warningSection);
-        sections.Children.Add(BuildSectionHeader("提示", NoticeColor));
+        sections.Children.Add(BuildSectionHeader(Locale.Get("Diag.Section.Notice"), NoticeColor));
         sections.Children.Add(_noticeSection);
-        sections.Children.Add(BuildSectionHeader("已解决", ResolvedColor));
+        sections.Children.Add(BuildSectionHeader(Locale.Get("Diag.Section.Resolved"), ResolvedColor));
         sections.Children.Add(_resolvedSection);
         scroll.Content = sections;
 
@@ -177,7 +178,7 @@ internal sealed class DiagnosticsWindow : FluentWindow
 
         var closeButton = new Wpf.Ui.Controls.Button
         {
-            Content = "关闭",
+            Content = Locale.Get("Common.Close"),
             MinWidth = 84,
             Margin = new Thickness(0, 0, 8, 0),
             IsCancel = true
@@ -186,7 +187,7 @@ internal sealed class DiagnosticsWindow : FluentWindow
 
         var refreshButton = new Wpf.Ui.Controls.Button
         {
-            Content = "重新检测",
+            Content = Locale.Get("Diag.Button.Recheck"),
             MinWidth = 92,
             Margin = new Thickness(0, 0, 8, 0)
         };
@@ -194,7 +195,7 @@ internal sealed class DiagnosticsWindow : FluentWindow
 
         var restartButton = new Wpf.Ui.Controls.Button
         {
-            Content = "重启电脑",
+            Content = Locale.Get("Diag.Button.Reboot"),
             Appearance = ControlAppearance.Primary,
             MinWidth = 92
         };
@@ -239,7 +240,7 @@ internal sealed class DiagnosticsWindow : FluentWindow
         catch (Exception exception) when (exception is InvalidOperationException
                                               or System.ComponentModel.Win32Exception)
         {
-            _statusText.Text = $"检查失败：{exception.GetBaseException().Message}";
+            _statusText.Text = Locale.Format("Diag.Status.CheckFailed", exception.GetBaseException().Message);
             return;
         }
 
@@ -285,12 +286,12 @@ internal sealed class DiagnosticsWindow : FluentWindow
 
         if (warningCount == 0)
         {
-            _warningSection.Children.Add(BuildPlaceholder("没有发现会阻止启动的问题。"));
+            _warningSection.Children.Add(BuildPlaceholder(Locale.Get("Diag.Empty.Warning")));
         }
 
         if (noticeCount == 0)
         {
-            _noticeSection.Children.Add(BuildPlaceholder("没有提示项。"));
+            _noticeSection.Children.Add(BuildPlaceholder(Locale.Get("Diag.Empty.Notice")));
         }
 
         foreach (var id in _resolved)
@@ -300,14 +301,14 @@ internal sealed class DiagnosticsWindow : FluentWindow
 
         if (_resolved.Count == 0)
         {
-            _resolvedSection.Children.Add(BuildPlaceholder("还没有已解决的问题。修好之后会自动移到这里。"));
+            _resolvedSection.Children.Add(BuildPlaceholder(Locale.Get("Diag.Empty.Resolved")));
         }
 
         if (!_fixInProgress)
         {
             _statusText.Text = warningCount == 0
-                ? "环境检查完成：没有阻塞项。"
-                : $"环境检查完成：{warningCount} 个警告，{noticeCount} 个提示。";
+                ? Locale.Get("Diag.Status.Clean")
+                : Locale.Format("Diag.Status.Summary", warningCount, noticeCount);
         }
     }
 
@@ -368,7 +369,7 @@ internal sealed class DiagnosticsWindow : FluentWindow
         {
             var fixButton = new Wpf.Ui.Controls.Button
             {
-                Content = "修复",
+                Content = Locale.Get("Diag.Button.Fix"),
                 Appearance = ControlAppearance.Primary,
                 MinWidth = 72,
                 VerticalAlignment = VerticalAlignment.Top,
@@ -444,10 +445,8 @@ internal sealed class DiagnosticsWindow : FluentWindow
         }
 
         var confirmed = await Dialogs.ConfirmAsync(
-            $"即将修复：{issue.Title}\n\n"
-            + BuildConfirmHint(issue.Id)
-            + "\n\n是否继续？",
-            "确认修复");
+            Locale.Format("Diag.Confirm.Fix", issue.Title, BuildConfirmHint(issue.Id)),
+            Locale.Get("Diag.Confirm.FixButton"));
 
         if (!confirmed)
         {
@@ -456,7 +455,7 @@ internal sealed class DiagnosticsWindow : FluentWindow
 
         _fixInProgress = true;
         button.IsEnabled = false;
-        _statusText.Text = "正在修复…";
+        _statusText.Text = Locale.Get("Diag.Status.Fixing");
 
         try
         {
@@ -469,7 +468,7 @@ internal sealed class DiagnosticsWindow : FluentWindow
                                               or UnauthorizedAccessException
                                               or IOException)
         {
-            _statusText.Text = $"修复失败：{exception.GetBaseException().Message}";
+            _statusText.Text = Locale.Format("Diag.Status.FixFailed", exception.GetBaseException().Message);
             AppLog.Warn($"诊断修复 {issue.Id} 抛出异常。", exception);
         }
         finally
@@ -485,24 +484,20 @@ internal sealed class DiagnosticsWindow : FluentWindow
 
     private static string BuildConfirmHint(string issueId) => issueId switch
     {
-        "rdp-disabled" => "这会开启本机的远程桌面监听（允许他人从网络连接这台电脑），"
-            + "并重启远程桌面服务。如果此刻有分身或远程会话在运行，修复会被拒绝。",
-        "rdp-wrapper" => "这会把 TermService 还原成系统原生的 termsrv.dll，并停用补丁的自动更新任务。"
-            + "还原后，多用户并发远程桌面的能力会失效，需要重装补丁工具才能恢复。",
-        "termservice-disabled" => "这会把远程桌面服务的启动类型从「禁用」改回「手动」并启动它。",
-        "termservice-stopped" => "这会启动远程桌面服务。",
-        "hello-only" => "这会关闭「仅允许 Windows Hello 登录」。改完需要你自己注销或重启才会生效。",
-        _ => "这会修改系统设置。"
+        "rdp-disabled" => Locale.Get("Diag.FixHint.RdpDisabled"),
+        "rdp-wrapper" => Locale.Get("Diag.FixHint.RdpWrapper"),
+        "termservice-disabled" => Locale.Get("Diag.FixHint.TermServiceDisabled"),
+        "termservice-stopped" => Locale.Get("Diag.FixHint.TermServiceStopped"),
+        "hello-only" => Locale.Get("Diag.FixHint.HelloOnly"),
+        _ => Locale.Get("Diag.FixHint.Default")
     };
 
     private async Task RestartComputerAsync()
     {
         var confirmed = await Dialogs.ConfirmAsync(
-            "将立即重启这台电脑。\n\n"
-            + "请先保存所有正在编辑的内容——重启会关闭本机所有程序，"
-            + "分身里的程序也会一起结束。\n\n确定要重启吗？",
-            "重启电脑",
-            "立即重启");
+            Locale.Get("Diag.Reboot.Message"),
+            Locale.Get("Diag.Button.Reboot"),
+            Locale.Get("Diag.Button.RebootNow"));
 
         if (!confirmed)
         {
@@ -518,18 +513,18 @@ internal sealed class DiagnosticsWindow : FluentWindow
             using var process = Process.Start(new ProcessStartInfo
             {
                 FileName = shutdown,
-                Arguments = "/r /t 5 /c \"桌面分身：诊断修复后重启\"",
+                Arguments = "/r /t 5 /c \"" + Locale.Get("Diag.Reboot.Comment") + "\"",
                 UseShellExecute = false,
                 CreateNoWindow = true
             });
 
-            _statusText.Text = "已请求重启，5 秒后关机。";
+            _statusText.Text = Locale.Get("Diag.Status.RebootRequested");
         }
         catch (Exception exception) when (exception is System.ComponentModel.Win32Exception
                                               or InvalidOperationException
                                               or IOException)
         {
-            _statusText.Text = $"无法发起重启：{exception.GetBaseException().Message}。请手动重启。";
+            _statusText.Text = Locale.Format("Diag.Status.RebootFailed", exception.GetBaseException().Message);
         }
     }
 }

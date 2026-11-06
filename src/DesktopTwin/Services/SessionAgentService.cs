@@ -3,6 +3,7 @@ using System.IO;
 using System.Threading;
 using System.Windows.Threading;
 using DesktopTwin.Interop;
+using DesktopTwin.Localization;
 
 namespace DesktopTwin.Services;
 
@@ -113,7 +114,7 @@ internal sealed class SessionAgentService : IDisposable
                                               or UnauthorizedAccessException
                                               or System.Security.SecurityException)
         {
-            error = $"释放分身端失败：{exception.Message}";
+            error = Locale.Format("Agent.Error.ReleaseFailed", exception.Message);
             AppLog.Warn(error, exception);
             return false;
         }
@@ -126,7 +127,7 @@ internal sealed class SessionAgentService : IDisposable
                                               or System.Security.SecurityException
                                               or IOException)
         {
-            error = $"写自启项失败：{exception.Message}";
+            error = Locale.Format("Agent.Error.RunKeyFailed", exception.Message);
             AppLog.Warn(error, exception);
             return false;
         }
@@ -176,8 +177,8 @@ internal sealed class SessionAgentService : IDisposable
             taskNamePrefix: "DesktopTwin-SessionAgent-");
 
         AppLog.Info(ok
-            ? $"已在分身会话 {sessionId} 里启动分身端。"
-            : $"在分身会话 {sessionId} 里启动分身端失败，下次登录时由自启项兜底。");
+            ? Locale.Format("Agent.Started", sessionId)
+            : Locale.Format("Agent.StartFailed", sessionId));
 
         if (ok)
         {
@@ -365,8 +366,7 @@ internal sealed class SessionAgentService : IDisposable
         var assembly = typeof(SessionAgentService).Assembly;
         var resourceName = ResolveAgentResourceName(assembly);
         using var stream = assembly.GetManifestResourceStream(resourceName)
-            ?? throw new InvalidOperationException(
-                "程序内没有找到内嵌的分身端（DesktopTwin.Agent.exe）。这是打包错误，请重新安装。");
+            ?? throw new InvalidOperationException(Locale.Get("Agent.EmbeddedMissing"));
 
         var buffer = new byte[stream.Length];
         var offset = 0;

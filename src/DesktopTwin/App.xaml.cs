@@ -88,7 +88,7 @@ public partial class App : Application
             }
 
             MessageBox.Show(
-                "DesktopTwin 已经在运行了。\n\n请切换到已打开的窗口（可能在任务栏）。",
+                Locale.Get("App.AlreadyRunning"),
                 "桌面分身",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information);
@@ -291,7 +291,7 @@ public partial class App : Application
         // 界面线程异常直接终止进程体验很差，这里提示后继续运行；
         // 真正的状态问题会由后续操作再次暴露并写入日志。
         MessageBox.Show(
-            $"发生未处理的错误：{e.Exception.GetBaseException().Message}\n\n详细信息已写入日志。",
+            Locale.Format("App.UnhandledError", e.Exception.GetBaseException().Message),
             "DesktopTwin",
             MessageBoxButton.OK,
             MessageBoxImage.Error);

@@ -295,7 +295,9 @@ internal sealed class UuViewSwitchService : IDisposable
 
             if (!start)
             {
-                return new Result(false, $"重启 UU 服务失败（停止{(stop ? "成功" : "失败")}、启动失败）。请在服务管理器里手动重启 GameViewerService。");
+                return new Result(false, Locale.Format(
+                "Uu.Result.ServiceRestartFailed2",
+                stop ? Locale.Get("Common.Success") : Locale.Get("Common.Failed")));
             }
 
             // 服务起来后，串流端要等客户端连入才会拉起；这里只确认服务状态。

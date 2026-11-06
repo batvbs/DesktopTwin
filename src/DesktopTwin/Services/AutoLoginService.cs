@@ -11,6 +11,7 @@ using System.Windows.Automation;
 using DesktopTwin.Interop;
 using DesktopTwin.Models;
 using Microsoft.Win32;
+using DesktopTwin.Localization;
 
 namespace DesktopTwin.Services;
 
@@ -443,7 +444,7 @@ internal sealed class AutoLoginService : IDisposable
         var netplwizPath = Path.Combine(systemDirectory, "netplwiz.exe");
         if (!File.Exists(netplwizPath))
         {
-            error = "找不到 netplwiz.exe，请手动按 Win+R 输入 netplwiz 打开。";
+            error = Locale.Get("AutoLogin.System.NotFound");
             return false;
         }
 
@@ -457,7 +458,7 @@ internal sealed class AutoLoginService : IDisposable
 
             if (process is null)
             {
-                error = "系统设置没有启动起来，请手动按 Win+R 输入 netplwiz。";
+                error = Locale.Get("AutoLogin.System.NotStarted");
                 return false;
             }
 
@@ -469,7 +470,7 @@ internal sealed class AutoLoginService : IDisposable
                                               or FileNotFoundException)
         {
             AppLog.Warn("打开 netplwiz 失败。", exception);
-            error = $"无法打开系统设置：{exception.GetBaseException().Message}";
+            error = Locale.Format("AutoLogin.System.OpenError", exception.GetBaseException().Message);
             return false;
         }
     }
