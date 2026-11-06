@@ -375,7 +375,10 @@ public partial class MainWindowViewModel : ObservableObject
     /// 没选过目标程序时先不弹（等选了目标再说），避免弹一个没有对象的确认框。
     /// </summary>
     /// <param name="revertAutoLaunch">用户拒绝时，是否把「自动启动」开关退回关闭。</param>
-    private async Task EnsureElevatedAutoLaunchConsentAsync(bool revertAutoLaunch)
+    /// <param name="launchImmediately">授权成功后立刻启动一次（用于「连接时被跳过」的补救）。</param>
+    private async Task EnsureElevatedAutoLaunchConsentAsync(
+        bool revertAutoLaunch,
+        bool launchImmediately = false)
     {
         var launch = _settings.Current.Launch;
         if (string.IsNullOrWhiteSpace(launch.TargetPath))
@@ -424,6 +427,26 @@ public partial class MainWindowViewModel : ObservableObject
             launch.TargetArguments);
         _settings.SaveSoon();
         AppLog.Info($"已授权「自动以管理员权限启动」：{launch.TargetPath}");
+
+        if (launchImmediately)
+        {
+            // 这次连接时因为没授权被跳过了：现在补上，立刻启动一次，
+            // 用户不必再去菜单里点「立即在分身中启动」。
+            try
+            {
+                await _childSessionService.LaunchTargetAsync();
+            }
+            catch (Exception exception) when (exception is InvalidOperationException
+                                                  or System.ComponentModel.Win32Exception
+                                                  or ObjectDisposedException)
+            {
+                AppLog.Warn("授权后立刻启动目标程序失败。", exception);
+                ShowNotification(
+                    "启动失败",
+                    $"已记住授权，但本次启动没有成功：{exception.GetBaseException().Message}",
+                    InfoBarSeverity.Warning);
+            }
+        }
     }
 
     /// <summary>
@@ -1679,6 +1702,24 @@ public partial class MainWindowViewModel : ObservableObject
             DispatcherPriority.Normal,
             new Action(() =>
             {
+                var launch = _settings.Current.Launch;
+
+                // 用户其实早就把两个开关都勾上了（比如从旧版本带过来的设置），
+                // 但「确认一次」这个动作没发生过——这里当场问，别让它一直跳过。
+                if (launch.RunAsAdministrator
+                    && launch.AutoLaunchOnConnect
+                    && !string.IsNullOrWhiteSpace(launch.TargetPath)
+                    && !ElevatedLaunchConsent.IsValid(
+                        launch.ElevatedAutoLaunchConsent,
+                        launch.TargetPath,
+                        launch.TargetArguments))
+                {
+                    _ = EnsureElevatedAutoLaunchConsentAsync(
+                        revertAutoLaunch: false,
+                        launchImmediately: true);
+                    return;
+                }
+
                 ShowNotification(
                     "已跳过自动启动",
                     "自动启动已被跳过：目标程序要求管理员权限但还没有确认过，"
