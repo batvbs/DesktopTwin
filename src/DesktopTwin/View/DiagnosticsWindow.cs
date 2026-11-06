@@ -32,10 +32,17 @@ internal sealed class DiagnosticsWindow : FluentWindow
     private static readonly Color WarningColor = Color.FromRgb(0xFF, 0xC8, 0x3D);
     private static readonly Color NoticeColor = Color.FromRgb(0x60, 0xB9, 0xF4);
     private static readonly Color ResolvedColor = Color.FromRgb(0x4C, 0xD0, 0x7D);
+    private static readonly Color InactiveColor = Color.FromRgb(0x9A, 0x9A, 0x9A);
 
     private readonly StackPanel _warningSection;
     private readonly StackPanel _noticeSection;
     private readonly StackPanel _resolvedSection;
+
+    /// <summary>未触发的检查项，只在「全部检查项」视图里有内容。</summary>
+    private readonly StackPanel _inactiveSection;
+
+    /// <summary>是否显示未触发的检查项。按 Shift 打开时为 true。</summary>
+    private readonly bool _showAll;
     private readonly TextBlock _statusText;
     private readonly DispatcherTimer _refreshTimer;
 
@@ -55,7 +62,21 @@ internal sealed class DiagnosticsWindow : FluentWindow
     /// 创建面板。
     /// </summary>
     public DiagnosticsWindow()
+        : this(showAll: false)
     {
+    }
+
+    /// <summary>
+    /// 创建面板。
+    /// </summary>
+    /// <param name="showAll">
+    /// true 时额外列出当前没有触发的检查项。用于核对文案（含翻译），
+    /// 由「按住 Shift 打开诊断与修复」触发。
+    /// </param>
+    public DiagnosticsWindow(bool showAll)
+    {
+        _showAll = showAll;
+
         Title = Locale.Get("Diag.Title");
         Width = 760;
         Height = 640;
@@ -70,6 +91,7 @@ internal sealed class DiagnosticsWindow : FluentWindow
         _warningSection = CreateSection();
         _noticeSection = CreateSection();
         _resolvedSection = CreateSection();
+        _inactiveSection = CreateSection();
         _statusText = new TextBlock
         {
             Text = Locale.Get("Diag.Checking"),
@@ -127,7 +149,7 @@ internal sealed class DiagnosticsWindow : FluentWindow
         });
         header.Children.Add(new TextBlock
         {
-            Text = Locale.Get("Diag.Hint"),
+            Text = _showAll ? Locale.Get("Diag.ShowAll.Hint") : Locale.Get("Diag.Hint"),
             TextWrapping = TextWrapping.Wrap,
             Opacity = 0.6,
             FontSize = 12,
@@ -149,6 +171,13 @@ internal sealed class DiagnosticsWindow : FluentWindow
         sections.Children.Add(_noticeSection);
         sections.Children.Add(BuildSectionHeader(Locale.Get("Diag.Section.Resolved"), ResolvedColor));
         sections.Children.Add(_resolvedSection);
+
+        if (_showAll)
+        {
+            sections.Children.Add(BuildSectionHeader(Locale.Get("Diag.Section.Inactive"), InactiveColor));
+            sections.Children.Add(_inactiveSection);
+        }
+
         scroll.Content = sections;
 
         Grid.SetRow(scroll, 1);
@@ -235,7 +264,9 @@ internal sealed class DiagnosticsWindow : FluentWindow
         IReadOnlyList<ChildSessionEnvironmentCheck.Issue> issues;
         try
         {
-            issues = ChildSessionEnvironmentCheck.Collect();
+            issues = _showAll
+                ? ChildSessionEnvironmentCheck.CollectAll()
+                : ChildSessionEnvironmentCheck.Collect();
         }
         catch (Exception exception) when (exception is InvalidOperationException
                                               or System.ComponentModel.Win32Exception)
@@ -247,6 +278,12 @@ internal sealed class DiagnosticsWindow : FluentWindow
         var currentIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (var issue in issues)
         {
+            if (issue.IssueSeverity == ChildSessionEnvironmentCheck.Severity.Inactive)
+            {
+                // 未触发项不参与「已解决」判断，否则一切正常时它们会全被记成已解决过。
+                continue;
+            }
+
             currentIds.Add(issue.Id);
             _titles[issue.Id] = issue.Title;
             _seen.Add(issue.Id);
@@ -266,21 +303,30 @@ internal sealed class DiagnosticsWindow : FluentWindow
         _warningSection.Children.Clear();
         _noticeSection.Children.Clear();
         _resolvedSection.Children.Clear();
+        _inactiveSection.Children.Clear();
 
         var warningCount = 0;
         var noticeCount = 0;
+        var inactiveCount = 0;
 
         foreach (var issue in issues)
         {
-            if (issue.IssueSeverity == ChildSessionEnvironmentCheck.Severity.Warning)
+            switch (issue.IssueSeverity)
             {
-                _warningSection.Children.Add(BuildRow(issue, isResolved: false));
-                warningCount++;
-            }
-            else
-            {
-                _noticeSection.Children.Add(BuildRow(issue, isResolved: false));
-                noticeCount++;
+                case ChildSessionEnvironmentCheck.Severity.Warning:
+                    _warningSection.Children.Add(BuildRow(issue, isResolved: false));
+                    warningCount++;
+                    break;
+
+                case ChildSessionEnvironmentCheck.Severity.Inactive:
+                    _inactiveSection.Children.Add(BuildRow(issue, isResolved: false));
+                    inactiveCount++;
+                    break;
+
+                default:
+                    _noticeSection.Children.Add(BuildRow(issue, isResolved: false));
+                    noticeCount++;
+                    break;
             }
         }
 
@@ -304,11 +350,21 @@ internal sealed class DiagnosticsWindow : FluentWindow
             _resolvedSection.Children.Add(BuildPlaceholder(Locale.Get("Diag.Empty.Resolved")));
         }
 
+        if (_showAll && inactiveCount == 0)
+        {
+            _inactiveSection.Children.Add(BuildPlaceholder(Locale.Get("Diag.Empty.Inactive")));
+        }
+
         if (!_fixInProgress)
         {
-            _statusText.Text = warningCount == 0
-                ? Locale.Get("Diag.Status.Clean")
-                : Locale.Format("Diag.Status.Summary", warningCount, noticeCount);
+            _statusText.Text = _showAll
+                ? Locale.Format(
+                    "Diag.Status.SummaryAll",
+                    warningCount + noticeCount,
+                    inactiveCount)
+                : warningCount == 0
+                    ? Locale.Get("Diag.Status.Clean")
+                    : Locale.Format("Diag.Status.Summary", warningCount, noticeCount);
         }
     }
 

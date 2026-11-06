@@ -81,7 +81,13 @@ public static class ChildSessionEnvironmentCheck
         Warning,
 
         /// <summary>不影响启动，但值得知道（例如家庭版、功能受限）。</summary>
-        Notice
+        Notice,
+
+        /// <summary>
+        /// 当前环境里没有触发这一项。只有「全部检查项」视图才会产出，
+        /// 用于人工核对每条结论的文案（尤其是翻译）。
+        /// </summary>
+        Inactive
     }
 
     /// <summary>
@@ -123,6 +129,155 @@ public static class ChildSessionEnvironmentCheck
     /// <summary>
     /// 是否存在「必然失败」的环境问题。
     /// </summary>
+    /// <summary>
+    /// 列出**全部**已知检查项，包括当前没有触发的。
+    ///
+    /// 用途是核对文案：正常情况下只有出问题时才会有结论，改一句提示语、翻一份语言文件
+    /// 都看不到效果。这个视图把每一项的标题、简述、完整说明都摆出来，
+    /// 未触发的额外给出「当前值」，方便判断是文本问题还是环境真的变了。
+    ///
+    /// 不参与 <see cref="HasBlockingIssue"/> 之类的判定——未触发项一律
+    /// <see cref="Severity.Inactive"/>，界面上分开放。
+    /// </summary>
+    public static IReadOnlyList<Issue> CollectAll()
+    {
+        var active = new Dictionary<string, Issue>(StringComparer.Ordinal);
+        foreach (var issue in Collect())
+        {
+            active[issue.Id] = issue;
+        }
+
+        var all = new List<Issue>(8);
+
+        void Add(
+            string id,
+            string titleKey,
+            string summaryKey,
+            string inactiveDetailKey,
+            object? summaryValue,
+            object? detailValue,
+            bool blocking,
+            bool CanAutoFix)
+        {
+            if (active.TryGetValue(id, out var found))
+            {
+                all.Add(found);
+                return;
+            }
+
+            all.Add(new Issue(
+                id,
+                Locale.Get(titleKey),
+                Locale.Format(
+                    "Check.Inactive.Summary",
+                    Locale.Format(summaryKey, summaryValue)),
+                Locale.Format(inactiveDetailKey, detailValue),
+                Severity.Inactive,
+                blocking,
+                CanAutoFix: false));
+        }
+
+        Add(
+            "home-edition",
+            "Check.Home.Title",
+            "Check.Home.Summary",
+            "Check.Home.InactiveDetail",
+            ReadString(RegistryHive.LocalMachine, CurrentVersionRegistryPath, "EditionID")
+                ?? Locale.Get("Check.Unknown"),
+            ReadString(RegistryHive.LocalMachine, CurrentVersionRegistryPath, "EditionID")
+                ?? Locale.Get("Check.Unknown"),
+            blocking: false,
+            CanAutoFix: false);
+
+        Add(
+            "child-session-api-missing",
+            "Check.OldSystem.Title",
+            "Check.OldSystem.Summary",
+            "Check.OldSystem.InactiveDetail",
+            Environment.OSVersion.VersionString,
+            Environment.OSVersion.VersionString,
+            blocking: true,
+            CanAutoFix: false);
+
+        var (serviceState, serviceStartType) = QueryTermService();
+
+        Add(
+            "termservice-disabled",
+            "Check.TermDisabled.Title",
+            "Check.TermDisabled.Summary",
+            "Check.TermDisabled.InactiveDetail",
+            serviceStartType,
+            serviceStartType,
+            blocking: true,
+            CanAutoFix: true);
+
+        Add(
+            "termservice-stopped",
+            "Check.TermStopped.Title",
+            "Check.TermStopped.Summary",
+            "Check.TermStopped.InactiveDetail",
+            serviceState,
+            serviceState,
+            blocking: true,
+            CanAutoFix: true);
+
+        Add(
+            "rdp-disabled",
+            "Check.RdpOff.Title",
+            "Check.RdpOff.Summary",
+            "Check.RdpOff.InactiveDetail",
+            ReadInt(
+                RegistryHive.LocalMachine,
+                TerminalServerPolicyRegistryPath,
+                "fDenyTSConnections")?.ToString()
+            ?? ReadInt(
+                RegistryHive.LocalMachine,
+                TerminalServerRegistryPath,
+                "fDenyTSConnections")?.ToString()
+            ?? Locale.Get("Check.NotSet"),
+            ReadInt(
+                RegistryHive.LocalMachine,
+                TerminalServerPolicyRegistryPath,
+                "fDenyTSConnections")?.ToString()
+            ?? ReadInt(
+                RegistryHive.LocalMachine,
+                TerminalServerRegistryPath,
+                "fDenyTSConnections")?.ToString()
+            ?? Locale.Get("Check.NotSet"),
+            blocking: true,
+            CanAutoFix: true);
+
+        Add(
+            "hello-only",
+            "Check.HelloOnly.Title",
+            "Check.HelloOnly.Summary",
+            "Check.HelloOnly.InactiveDetail",
+            ReadInt(
+                RegistryHive.LocalMachine,
+                PasswordLessRegistryPath,
+                "DevicePasswordLessBuildVersion")?.ToString()
+            ?? Locale.Get("Check.NotSet"),
+            ReadInt(
+                RegistryHive.LocalMachine,
+                PasswordLessRegistryPath,
+                "DevicePasswordLessBuildVersion")?.ToString()
+            ?? Locale.Get("Check.NotSet"),
+            blocking: true,
+            CanAutoFix: true);
+
+        Add(
+            "rdp-wrapper",
+            "Check.Wrapper.Title",
+            "Check.Wrapper.Summary",
+            "Check.Wrapper.InactiveDetail",
+            Path.GetFileName(ReadServiceDll() ?? string.Empty),
+            ReadServiceDll() ?? Locale.Get("Check.ReadFailed"),
+            blocking: true,
+            CanAutoFix: true);
+
+        return all;
+    }
+
     public static bool HasBlockingIssue(IReadOnlyList<Issue> issues)
     {
         foreach (var issue in issues)

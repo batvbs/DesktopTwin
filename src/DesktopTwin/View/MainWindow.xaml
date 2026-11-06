@@ -249,9 +249,9 @@
                                 </ui:MenuItem>
                                 <Separator />
                                 <ui:MenuItem Header="{loc:Loc Menu.Diagnostics}">
-                                    <ui:MenuItem Command="{Binding OpenDiagnosticsCommand}"
-                                                 Header="{loc:Loc Menu.Diagnostics.Open}"
-                                                 ToolTip="{loc:Loc Menu.Diagnostics.Open.ToolTip}" />
+                                    <ui:MenuItem Header="{loc:Loc Menu.Diagnostics.Open}"
+                                                 ToolTip="{loc:Loc Menu.Diagnostics.Open.ToolTip}"
+                                                 Click="OnOpenDiagnosticsMenuClick" />
                                     <Separator />
                                     <ui:MenuItem Command="{Binding CopyDiagnosticsCommand}"
                                                  Header="{loc:Loc Menu.Diagnostics.CopyEnv}"

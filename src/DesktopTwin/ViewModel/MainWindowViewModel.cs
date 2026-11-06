@@ -895,7 +895,17 @@ public partial class MainWindowViewModel : ObservableObject
     /// 打开诊断与修复面板。已经打开时把它叫到前面并刷新一次。
     /// </summary>
     [RelayCommand]
-    private void OpenDiagnostics()
+    private void OpenDiagnostics() => ShowDiagnostics(showAll: false);
+
+    /// <summary>
+    /// 打开「全部检查项」视图：把当前没有触发的检查也列出来。
+    ///
+    /// 入口是「按住 Shift 点诊断与修复」。正常视图只列当前存在的问题，
+    /// 想核对某条文案（尤其是改翻译）时根本看不到它——这个视图补上这一块。
+    /// 不带 [RelayCommand]：它需要参数，由菜单项的 Click 事件直接调用。
+    /// </summary>
+    /// <param name="showAll">是否列出未触发的检查项。</param>
+    internal void ShowDiagnostics(bool showAll)
     {
         if (_diagnosticsWindow is { IsLoaded: true } existing)
         {
@@ -909,7 +919,7 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        var window = new DiagnosticsWindow();
+        var window = new DiagnosticsWindow(showAll);
         window.Closed += (_, _) => _diagnosticsWindow = null;
         _diagnosticsWindow = window;
         Dialogs.Show(window);

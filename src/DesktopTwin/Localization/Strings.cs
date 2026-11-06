@@ -115,7 +115,7 @@ internal static class Strings
         // ---- 诊断 ----
         Pair("Menu.Diagnostics", "诊断"),
         Pair("Menu.Diagnostics.Open", "诊断与修复…"),
-        Pair("Menu.Diagnostics.Open.ToolTip", "列出所有可能影响启动的环境问题，可自动修复的直接在面板里修。"),
+        Pair("Menu.Diagnostics.Open.ToolTip", "列出所有可能影响启动的环境问题，可自动修复的直接在面板里修。按住 Shift 点这里，会连没触发的检查项一起列出来（用于核对文案）。"),
         Pair("Menu.Diagnostics.CopyEnv", "复制环境信息"),
         Pair("Menu.Diagnostics.Logs", "打开日志目录"),
         Pair("Menu.Diagnostics.Settings", "打开设置目录"),
@@ -521,6 +521,38 @@ internal static class Strings
         Pair("AutoLogin.System.OpenError", "无法打开系统设置：{0}"),
         Pair("Svc.Status.SettingAppliedNextConnect", "{0}，将在下次 RDP 连接后应用"),
         Pair("Svc.Status.SettingAppliedReconnecting", "{0}，正在自动重新连接 RDP"),
+
+        // ---- 全部检查项（Shift 打开） ----
+        Pair("Diag.Section.Inactive", "未触发（全部检查项）"),
+        Pair("Diag.ShowAll.Hint", "全部检查项视图：连当前没有触发的条目也列出来，用来核对文案；每项会附带当前读到的值。"),
+        Pair("Diag.Empty.Inactive", "所有检查项都已触发。"),
+        Pair("Diag.Status.SummaryAll", "全部检查项：{0} 个已触发，{1} 个未触发。"),
+        Pair("Check.Inactive.Summary", "未触发 · {0}"),
+        Pair("Check.Home.InactiveDetail", "检查项：系统版本是否为家庭版。家庭版官方不带远程桌面主机，但实测多数仍能建立分身会话，因此只作提示、不阻止启动。\n当前版本：{0}"),
+        Pair("Check.OldSystem.InactiveDetail", "检查项：wtsapi32.dll 是否提供 WTSEnableChildSessions（Windows 10 1803 起才有）。当前系统有这个导出，所以不报错。\n当前系统：{0}"),
+        Pair("Check.TermDisabled.InactiveDetail", "检查项：远程桌面服务（TermService）的启动类型是否为「禁用」。\n当前启动类型：{0}"),
+        Pair("Check.TermStopped.InactiveDetail", "检查项：远程桌面服务（TermService）是否在运行。\n当前状态：{0}"),
+        Pair("Check.RdpOff.InactiveDetail", "检查项：注册表 fDenyTSConnections 是否为 1（组策略优先于本机设置）。为 1 时本机不监听 RDP，分身无法建立。\n当前值：{0}"),
+        Pair("Check.HelloOnly.InactiveDetail", "检查项：DevicePasswordLessBuildVersion 是否为 2（仅允许 Windows Hello 登录）。为 2 时微软账户没有可用的密码凭据。\n当前值：{0}"),
+        Pair("Check.Wrapper.InactiveDetail", "检查项：TermService 的 ServiceDll 是否被 RDP Wrapper、SuperRDP 这类补丁替换。被替换时原生 Child Session 与它互斥。\n当前指向：{0}"),
+
+        // ---- RDP 控件自身的文字与连接步骤 ----
+        Pair("Rdp.ConnectingText", "正在创建 桌面分身..."),
+        Pair("Rdp.DisconnectedText", "桌面分身已断开"),
+        Pair("Rdp.Error.SecuredSettings", "RDP ActiveX 未返回 SecuredSettings2。"),
+        Pair("Rdp.Error.AdvancedSettings", "RDP ActiveX 未返回 AdvancedSettings7。"),
+        Pair("Rdp.Error.SinkNotReady", "RDP ActiveX 控件尚未初始化，无法挂接事件。"),
+        Pair("Rdp.Error.CannotSend", "桌面分身尚未完全连接，无法发送 {0}。"),
+        Pair("Rdp.Error.CannotFocus", "无法将键盘焦点切换到桌面分身。"),
+        Pair("Rdp.Step.Failed", "{0}失败：{1}"),
+        Pair("Rdp.Step.ShortcutTarget", "设置系统组合键发送位置"),
+        Pair("Rdp.Step.AudioRedirection", "设置远程音频重定向"),
+        Pair("Rdp.Step.Port", "设置 RDP 连接端口"),
+        Pair("Rdp.Step.CredSsp", "启用 CredSSP"),
+        Pair("Rdp.Step.RemoteWindowsKey", "启用远程 Windows 键"),
+        Pair("Rdp.Step.DisplayScale", "设置显示缩放"),
+        Pair("Rdp.Step.ChildSession", "设置 ConnectToChildSession"),
+        Pair("Rdp.Step.Connect", "调用 RDP Connect()"),
 
     ];
 

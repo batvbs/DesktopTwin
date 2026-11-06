@@ -2,6 +2,7 @@ using System;
 using System.ComponentModel;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
@@ -151,6 +152,23 @@ public partial class MainWindow : FluentWindow
         RdpFormsHost.Child = null;
         RdpHost.Dispose();
         base.OnClosed(e);
+    }
+
+    /// <summary>
+    /// 「诊断与修复」菜单项被点击。
+    ///
+    /// 按住 Shift 时打开「全部检查项」视图（含当前没触发的条目），
+    /// 用于核对文案。这是隐藏入口，所以菜单项的提示语里写了——不写没人会发现。
+    /// </summary>
+    private void OnOpenDiagnosticsMenuClick(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is not MainWindowViewModel viewModel)
+        {
+            return;
+        }
+
+        var showAll = (Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift;
+        viewModel.ShowDiagnostics(showAll);
     }
 
     private void OnWindowLoaded(object sender, RoutedEventArgs e)

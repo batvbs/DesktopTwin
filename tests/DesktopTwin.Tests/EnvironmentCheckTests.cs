@@ -98,4 +98,63 @@ public sealed class EnvironmentCheckTests
             }
         }
     }
+
+    [Fact]
+    public void 全部检查项包含每一个已知结论()
+    {
+        var active = ChildSessionEnvironmentCheck.Collect();
+        var all = ChildSessionEnvironmentCheck.CollectAll();
+
+        // 当前触发的条目必须原样出现在全量列表里（同一 id，且不是 Inactive）
+        foreach (var issue in active)
+        {
+            var match = Assert.Single(all, x => x.Id == issue.Id);
+            Assert.Equal(issue.IssueSeverity, match.IssueSeverity);
+            Assert.Equal(issue.Title, match.Title);
+        }
+
+        // 全量列表不能有重复 id
+        var ids = new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal);
+        foreach (var issue in all)
+        {
+            Assert.True(ids.Add(issue.Id), $"全量检查项里出现重复 id：{issue.Id}");
+        }
+
+        // 已知检查项固定 7 个，增减时要同步改这里
+        Assert.Equal(7, all.Count);
+    }
+
+    [Fact]
+    public void 未触发的检查项不会给出修复按钮()
+    {
+        var all = ChildSessionEnvironmentCheck.CollectAll();
+        foreach (var issue in all)
+        {
+            if (issue.IssueSeverity != ChildSessionEnvironmentCheck.Severity.Inactive)
+            {
+                continue;
+            }
+
+            // 没触发就没有可修的东西；给了按钮会被用户当成「这里有毛病」
+            Assert.False(issue.CanAutoFix);
+            Assert.Contains("未触发", issue.Summary);
+            Assert.NotEmpty(issue.Detail);
+        }
+    }
+
+    [Fact]
+    public void 未触发项不影响阻塞判定()
+    {
+        var all = ChildSessionEnvironmentCheck.CollectAll();
+        var onlyInactive = new System.Collections.Generic.List<ChildSessionEnvironmentCheck.Issue>();
+        foreach (var issue in all)
+        {
+            if (issue.IssueSeverity == ChildSessionEnvironmentCheck.Severity.Inactive)
+            {
+                onlyInactive.Add(issue);
+            }
+        }
+
+        Assert.False(ChildSessionEnvironmentCheck.HasBlockingIssue(onlyInactive));
+    }
 }

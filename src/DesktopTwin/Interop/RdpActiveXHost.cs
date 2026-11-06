@@ -7,6 +7,7 @@ using System.Windows.Forms;
 using DesktopTwin.Models;
 using DesktopTwin.Services;
 using DrawingSize = System.Drawing.Size;
+using DesktopTwin.Localization;
 
 namespace DesktopTwin.Interop;
 
@@ -93,12 +94,12 @@ internal sealed class RdpActiveXHost : AxHost
         SetComProperty(client, "DesktopWidth", width);
         SetComProperty(client, "DesktopHeight", height);
         SetComProperty(client, "ColorDepth", 32);
-        SetComProperty(client, "ConnectingText", "正在创建 桌面分身...");
-        SetComProperty(client, "DisconnectedText", "桌面分身已断开");
+        SetComProperty(client, "ConnectingText", Locale.Get("Rdp.ConnectingText"));
+        SetComProperty(client, "DisconnectedText", Locale.Get("Rdp.DisconnectedText"));
 
         var securedSettings = GetComProperty(client, "SecuredSettings2")
-            ?? throw new COMException("RDP ActiveX 未返回 SecuredSettings2。");
-        RunComStep("设置系统组合键发送位置", () =>
+            ?? throw new COMException(Locale.Get("Rdp.Error.SecuredSettings"));
+        RunComStep(Locale.Get("Rdp.Step.ShortcutTarget"), () =>
         {
             var hookMode = _sendSystemShortcutsToRemote ? 1 : 0;
             SetComProperty(securedSettings, "KeyboardHookMode", hookMode);
@@ -118,28 +119,28 @@ internal sealed class RdpActiveXHost : AxHost
                 AppLog.Warn("KeyboardHookMode 读回失败，无法确认是否生效。", exception);
             }
         });
-        RunComStep("设置远程音频重定向", () =>
+        RunComStep(Locale.Get("Rdp.Step.AudioRedirection"), () =>
             SetComProperty(
                 securedSettings,
                 "AudioRedirectionMode",
                 _audioMuted ? DisableRemoteAudio : RedirectAudioToClient));
 
         var advancedSettings = GetComProperty(client, "AdvancedSettings7")
-            ?? throw new COMException("RDP ActiveX 未返回 AdvancedSettings7。");
-        RunComStep("设置 RDP 连接端口", () =>
+            ?? throw new COMException(Locale.Get("Rdp.Error.AdvancedSettings"));
+        RunComStep(Locale.Get("Rdp.Step.Port"), () =>
             SetComProperty(
                 advancedSettings,
                 "RDPPort",
                 ChildSessionNativeMethods.GetConfiguredRdpPort()));
-        RunComStep("启用 CredSSP", () =>
+        RunComStep(Locale.Get("Rdp.Step.CredSsp"), () =>
             SetComProperty(advancedSettings, "EnableCredSspSupport", true));
-        RunComStep("启用远程 Windows 键", () =>
+        RunComStep(Locale.Get("Rdp.Step.RemoteWindowsKey"), () =>
             SetComProperty(advancedSettings, "EnableWindowsKey", 1));
-        RunComStep("设置显示缩放", () =>
+        RunComStep(Locale.Get("Rdp.Step.DisplayScale"), () =>
             SetComProperty(advancedSettings, "SmartSizing", _smartSizingEnabled));
 
         object connectToChildSession = true;
-        RunComStep("设置 ConnectToChildSession", () =>
+        RunComStep(Locale.Get("Rdp.Step.ChildSession"), () =>
         {
             var extendedSettings = (IMsRdpExtendedSettings)client;
             TrySetExtendedProperty(extendedSettings, "EnableZoom", true);
@@ -154,7 +155,7 @@ internal sealed class RdpActiveXHost : AxHost
         _disconnectRequested = false;
         try
         {
-            RunComStep("调用 RDP Connect()", () => InvokeComMethod(client, "Connect"));
+            RunComStep(Locale.Get("Rdp.Step.Connect"), () => InvokeComMethod(client, "Connect"));
         }
         catch
         {
@@ -198,8 +199,8 @@ internal sealed class RdpActiveXHost : AxHost
         }
 
         var advancedSettings = GetComProperty(GetRequiredOcx(), "AdvancedSettings7")
-            ?? throw new COMException("RDP ActiveX 未返回 AdvancedSettings7。");
-        RunComStep("设置显示缩放", () =>
+            ?? throw new COMException(Locale.Get("Rdp.Error.AdvancedSettings"));
+        RunComStep(Locale.Get("Rdp.Step.DisplayScale"), () =>
             SetComProperty(advancedSettings, "SmartSizing", enabled));
     }
 
@@ -335,7 +336,7 @@ internal sealed class RdpActiveXHost : AxHost
         _eventSink = new RdpEventSink(this);
         var ocx = GetOcx()
                   ?? throw new InvalidOperationException(
-                      "RDP ActiveX 控件尚未初始化，无法挂接事件。");
+                      Locale.Get("Rdp.Error.SinkNotReady"));
         _eventCookie = new ConnectionPointCookie(
             ocx,
             _eventSink,
@@ -361,7 +362,7 @@ internal sealed class RdpActiveXHost : AxHost
         if (ConnectedState != 1)
         {
             throw new InvalidOperationException(
-                $"桌面分身尚未完全连接，无法发送 {displayName}。");
+                Locale.Format("Rdp.Error.CannotSend", displayName));
         }
 
         // 组合键由调用方显式发起，发送期间短暂恢复输入窗口，发完立刻回到屏蔽状态。
@@ -374,7 +375,7 @@ internal sealed class RdpActiveXHost : AxHost
         {
             if (!ChildSessionNativeMethods.TryFocusRdpInputWindow(Handle))
             {
-                throw new InvalidOperationException("无法将键盘焦点切换到桌面分身。");
+                throw new InvalidOperationException(Locale.Get("Rdp.Error.CannotFocus"));
             }
 
             RunComStep($"向 Child Session 发送 {displayName}", () => SendKeyStrokes(strokes));
@@ -787,7 +788,7 @@ internal sealed class RdpActiveXHost : AxHost
             if (actualException is COMException comException)
             {
                 throw new COMException(
-                    $"{stepName}失败：{comException.Message}",
+                    Locale.Format("Rdp.Step.Failed", stepName, comException.Message),
                     comException.ErrorCode);
             }
 
