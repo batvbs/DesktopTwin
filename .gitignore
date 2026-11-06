@@ -39,3 +39,6 @@ Desktop.ini
 
 ## WPF 增量编译留下的临时工程文件
 *_wpftmp.csproj
+
+# 界面语言文件：属于用户/译者自己的数据，不进仓库
+*.lng

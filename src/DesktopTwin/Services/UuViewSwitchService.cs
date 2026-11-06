@@ -6,6 +6,7 @@ using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using DesktopTwin.Interop;
+using DesktopTwin.Localization;
 
 namespace DesktopTwin.Services;
 
@@ -73,7 +74,7 @@ internal sealed class UuViewSwitchService : IDisposable
         // 上一次切换还没结束就忽略本次：连点热键会让会话状态反复横跳。
         if (!await _gate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
         {
-            return new Result(false, "上一次切换还没结束，已忽略本次。");
+            return new Result(false, Locale.Get("Uu.Result.Busy"));
         }
 
         try
@@ -111,14 +112,14 @@ internal sealed class UuViewSwitchService : IDisposable
         }
         catch (OperationCanceledException)
         {
-            return new Result(false, "切换已取消。");
+            return new Result(false, Locale.Get("Uu.Result.Cancelled"));
         }
         catch (Exception exception) when (exception is InvalidOperationException
                                               or Win32Exception
                                               or ObjectDisposedException)
         {
             AppLog.Warn("UU 视角切换失败。", exception);
-            return new Result(false, $"切换失败：{exception.GetBaseException().Message}");
+            return new Result(false, Locale.Format("Uu.Result.Failed", exception.GetBaseException().Message));
         }
         finally
         {
@@ -306,19 +307,19 @@ internal sealed class UuViewSwitchService : IDisposable
             return new Result(
                 true,
                 settled
-                    ? "UU 服务已重启，串流端已重新拉起。"
-                    : "UU 服务已重启。请在手机上重新连接一次 UU（设备应该已经回到在线）。");
+                    ? Locale.Get("Uu.Result.ServiceRestarted")
+                    : Locale.Get("Uu.Result.ServiceRestarted.NoStreamer"));
         }
         catch (OperationCanceledException)
         {
-            return new Result(false, "已取消。");
+            return new Result(false, Locale.Get("Uu.Result.Cancelled"));
         }
         catch (Exception exception) when (exception is InvalidOperationException
                                               or Win32Exception
                                               or ObjectDisposedException)
         {
             AppLog.Warn("重启 UU 服务失败。", exception);
-            return new Result(false, $"重启 UU 服务失败：{exception.GetBaseException().Message}");
+            return new Result(false, Locale.Format("Uu.Result.Failed", exception.GetBaseException().Message));
         }
     }
 
@@ -389,7 +390,7 @@ internal sealed class UuViewSwitchService : IDisposable
 
                 if (!disconnected)
                 {
-                    return new Result(false, "分身会话没能断开，请稍后重试。");
+                    return new Result(false, Locale.Get("Uu.Result.DisconnectFailed"));
                 }
             }
         }
@@ -400,7 +401,7 @@ internal sealed class UuViewSwitchService : IDisposable
         if (killed == 0)
         {
             // 手机没连着的时候本来就没有串流端，分身已经断开，目的已经达到。
-            return new Result(true, "已切到「整台电脑」。当前没有 UU 串流端，下次连入即是主桌面。");
+            return new Result(true, Locale.Get("Uu.Result.ToMain.NoStreamer"));
         }
 
         var console = ChildSessionNativeMethods.TryGetConsoleSessionId();
@@ -412,7 +413,7 @@ internal sealed class UuViewSwitchService : IDisposable
 
         if (!settled)
         {
-            return new Result(false, "UU 串流端没能落到主桌面。程序会在后台自动重试拉起 UU 服务，也可以稍后在手机上重连一次。");
+            return new Result(false, Locale.Get("Uu.Result.ToMain.StreamerStuck"));
         }
 
         // 串流端已经在主桌面上了，这时候把分身挂回后台不会影响 UU 的选择；
@@ -425,8 +426,8 @@ internal sealed class UuViewSwitchService : IDisposable
         return new Result(
             true,
             restored
-                ? "已切到「整台电脑」，分身已挂回后台，下次切回是秒切。"
-                : "已切到「整台电脑」，但分身没能挂回后台，切回时会重新连接。");
+                ? Locale.Get("Uu.Result.ToMain")
+                : Locale.Get("Uu.Result.ToMain.NotRestored"));
     }
 
     /// <summary>
@@ -475,14 +476,14 @@ internal sealed class UuViewSwitchService : IDisposable
 
         if (!connected)
         {
-            return new Result(false, "分身没能连上。请在窗口里手动点「启动并连接」。");
+            return new Result(false, Locale.Get("Uu.Result.NotConnected"));
         }
 
         // 3) 会话号重新取一次：上面可能刚重建过，旧的号已经失效。
         var childSession = ChildSessionNativeMethods.TryGetChildSessionId();
         if (childSession is not { } sessionId)
         {
-            return new Result(false, "分身会话不存在，请在窗口里手动点「启动并连接」。");
+            return new Result(false, Locale.Get("Uu.Result.NoSession"));
         }
 
         // 4) 弹掉串流端，让服务落到分身。这一步不能因为「已连接」而跳过：
@@ -492,7 +493,7 @@ internal sealed class UuViewSwitchService : IDisposable
         _killedStreamersInLastSwitch = killed > 0;
         if (killed == 0)
         {
-            return new Result(true, "已切回「桌面分身」。当前没有 UU 串流端，下次连入即是游戏桌面。");
+            return new Result(true, Locale.Get("Uu.Result.ToChild.NoStreamer"));
         }
 
         var settled = await WaitUntilAsync(
@@ -501,8 +502,8 @@ internal sealed class UuViewSwitchService : IDisposable
             cancellationToken).ConfigureAwait(false);
 
         return settled
-            ? new Result(true, "已切回「桌面分身」，重新连一下 UU 就进游戏桌面。")
-            : new Result(false, "UU 串流端还没落到分身。程序会在后台自动重试拉起 UU 服务，稍候在手机上重连一次即可。");
+            ? new Result(true, Locale.Get("Uu.Result.ToChild"))
+            : new Result(false, Locale.Get("Uu.Result.ToChild.StreamerStuck"));
     }
 
     /// <summary>

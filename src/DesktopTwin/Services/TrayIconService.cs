@@ -2,6 +2,7 @@ using System;
 using System.Drawing;
 using System.IO;
 using System.Windows;
+using DesktopTwin.Localization;
 using DesktopTwin.View;
 using Forms = System.Windows.Forms;
 
@@ -33,10 +34,10 @@ internal sealed class TrayIconService : IDisposable
     {
         _childSessionService = childSessionService;
 
-        _showItem = new Forms.ToolStripMenuItem("显示主窗口", image: null, OnShowClicked);
-        _hideItem = new Forms.ToolStripMenuItem("隐藏窗口", image: null, OnHideClicked);
-        var fullscreenItem = new Forms.ToolStripMenuItem("全屏显示", image: null, OnFullscreenClicked);
-        var exitItem = new Forms.ToolStripMenuItem("退出", image: null, OnExitClicked);
+        _showItem = new Forms.ToolStripMenuItem(Locale.Get("Tray.Show"), image: null, OnShowClicked);
+        _hideItem = new Forms.ToolStripMenuItem(Locale.Get("Tray.Hide"), image: null, OnHideClicked);
+        var fullscreenItem = new Forms.ToolStripMenuItem(Locale.Get("Tray.Fullscreen"), image: null, OnFullscreenClicked);
+        var exitItem = new Forms.ToolStripMenuItem(Locale.Get("Tray.Exit"), image: null, OnExitClicked);
 
         _menu = new Forms.ContextMenuStrip();
         _menu.Items.Add(_showItem);
@@ -48,7 +49,7 @@ internal sealed class TrayIconService : IDisposable
         _notifyIcon = new Forms.NotifyIcon
         {
             Icon = LoadTrayIcon(),
-            Text = "桌面分身",
+            Text = Locale.Get("Main.Title"),
             Visible = true,
             ContextMenuStrip = _menu
         };
@@ -192,7 +193,9 @@ internal sealed class TrayIconService : IDisposable
         var visible = _childSessionService.IsDesktopVisible;
         _showItem.Enabled = !visible;
         _hideItem.Enabled = visible;
-        _notifyIcon.Text = visible ? "桌面分身（窗口已显示）" : "桌面分身（窗口已隐藏）";
+        _notifyIcon.Text = visible
+            ? Locale.Get("Tray.ToolTip.Visible")
+            : Locale.Get("Tray.ToolTip.Hidden");
     }
 
     private void ShowWindow()

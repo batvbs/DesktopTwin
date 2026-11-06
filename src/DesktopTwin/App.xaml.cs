@@ -4,9 +4,13 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
+using DesktopTwin.Localization;
 using DesktopTwin.Services;
 using DesktopTwin.View;
 using DesktopTwin.ViewModel;
+
+// 命名空间和类都叫 Localization，直接写 Localization.X 会被解析成命名空间，这里起个别名。
+using AppLocale = DesktopTwin.Localization.Locale;
 
 namespace DesktopTwin;
 
@@ -36,6 +40,17 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        // 命令行入口要先处理：它只生成语言模板，不该走到单实例检查（否则已有实例在跑时
+        // 会变成「把旧窗口叫到前台」，什么都不生成），也不该创建任何窗口。
+        if (LocalizationCommandLine.TryHandle(e.Args))
+        {
+            Shutdown();
+            return;
+        }
+
+        // 界面语言：只认程序同目录同名的 .lng，没有就用内置简体中文。
+        AppLocale.Initialize();
 
         DispatcherUnhandledException += OnDispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += OnDomainUnhandledException;

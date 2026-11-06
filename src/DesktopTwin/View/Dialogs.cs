@@ -5,6 +5,8 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using Wpf.Ui.Controls;
 
+using DesktopTwin.Localization;
+
 // WPF-UI 也有一个 TextBlock，同时引入两个命名空间会歧义。这里明确用 WPF 原生的。
 using TextBlock = System.Windows.Controls.TextBlock;
 
@@ -33,9 +35,13 @@ internal static class Dialogs
     internal static Task<bool> ConfirmAsync(
         string message,
         string title,
-        string primaryText = "继续",
-        string cancelText = "取消")
+        string? primaryText = null,
+        string? cancelText = null)
     {
+        // 默认按钮文字要等语言文件加载后才能取，所以不能写成默认参数。
+        primaryText ??= Locale.Get("Common.Continue");
+        cancelText ??= Locale.Get("Common.Cancel");
+
         var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var primary = new Wpf.Ui.Controls.Button
@@ -84,7 +90,7 @@ internal static class Dialogs
 
         var close = new Wpf.Ui.Controls.Button
         {
-            Content = "知道了",
+            Content = Locale.Get("Common.GotIt"),
             Appearance = ControlAppearance.Primary,
             MinWidth = 84,
             IsCancel = true

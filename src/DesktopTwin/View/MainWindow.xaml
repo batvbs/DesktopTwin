@@ -6,9 +6,10 @@
                  xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
                  xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
                  xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+                 xmlns:loc="clr-namespace:DesktopTwin.Localization"
                  xmlns:viewModel="clr-namespace:DesktopTwin.ViewModel"
                  xmlns:wfi="clr-namespace:System.Windows.Forms.Integration;assembly=WindowsFormsIntegration"
-                 Title="桌面分身"
+                 Title="{loc:Loc Main.Title}"
                  Icon="pack://application:,,,/Assets/DesktopTwin.ico"
                  Width="1280"
                  Height="752"
@@ -50,7 +51,7 @@
                              Fill="{Binding ConnectionStatusBrush}"
                              ToolTip="{Binding ConnectionStatusToolTip}" />
                     <TextBlock VerticalAlignment="Center"
-                               Text="桌面分身" />
+                               Text="{loc:Loc Main.Title}" />
                 </StackPanel>
             </ui:TitleBar.Header>
             <ui:TitleBar.TrailingContent>
@@ -68,10 +69,10 @@
                                BorderBrush="Transparent"
                                behaviors:ResponsiveTitleBarBehavior.CollapseOrder="1"
                                Command="{Binding StartCommand}"
-                               Content="启动"
+                               Content="{loc:Loc Main.Start}"
                                CornerRadius="0"
                                Icon="{ui:SymbolIcon Play24}"
-                               ToolTip="启动并连接桌面分身" />
+                               ToolTip="{loc:Loc Main.Start.ToolTip}" />
                     <ui:Button x:Name="HideButton"
                                Width="80"
                                Height="32"
@@ -79,10 +80,10 @@
                                BorderBrush="Transparent"
                                behaviors:ResponsiveTitleBarBehavior.CollapseOrder="2"
                                Command="{Binding HideCommand}"
-                               Content="隐藏"
+                               Content="{loc:Loc Main.Hide}"
                                CornerRadius="0"
                                Icon="{ui:SymbolIcon EyeOff24}"
-                               ToolTip="隐藏窗口并保持 RDP 连接" />
+                               ToolTip="{loc:Loc Main.Hide.ToolTip}" />
                     <ui:Button x:Name="SwitchWindowButton"
                                Width="110"
                                Height="32"
@@ -90,10 +91,10 @@
                                BorderBrush="Transparent"
                                behaviors:ResponsiveTitleBarBehavior.CollapseOrder="3"
                                Command="{Binding SwitchWindowCommand}"
-                               Content="切换窗口"
+                               Content="{loc:Loc Main.SwitchWindow}"
                                CornerRadius="0"
                                Icon="{ui:SymbolIcon ArrowSwap24}"
-                               ToolTip="向桌面分身发送 Win+Tab" />
+                               ToolTip="{loc:Loc Main.SwitchWindow.ToolTip}" />
 
                     <!-- 窗口变窄时，被折叠的按钮在这里仍然可用 -->
                     <ui:DropDownButton Width="40"
@@ -108,15 +109,15 @@
                         <ui:DropDownButton.Flyout>
                             <ContextMenu>
                                 <ui:MenuItem Command="{Binding StartCommand}"
-                                             Header="启动"
+                                             Header="{loc:Loc Menu.Start}"
                                              Icon="{ui:SymbolIcon Play24}"
                                              Visibility="{Binding Source={x:Reference StartButton}, Path=IsVisible, Converter={StaticResource BooleanToVisibilityRevertConverter}}" />
                                 <ui:MenuItem Command="{Binding HideCommand}"
-                                             Header="隐藏"
+                                             Header="{loc:Loc Menu.Hide}"
                                              Icon="{ui:SymbolIcon EyeOff24}"
                                              Visibility="{Binding Source={x:Reference HideButton}, Path=IsVisible, Converter={StaticResource BooleanToVisibilityRevertConverter}}" />
                                 <ui:MenuItem Command="{Binding SwitchWindowCommand}"
-                                             Header="切换窗口"
+                                             Header="{loc:Loc Menu.SwitchWindow}"
                                              Icon="{ui:SymbolIcon ArrowSwap24}"
                                              Visibility="{Binding Source={x:Reference SwitchWindowButton}, Path=IsVisible, Converter={StaticResource BooleanToVisibilityRevertConverter}}" />
                             </ContextMenu>
@@ -127,28 +128,28 @@
                                        Height="32"
                                        Background="Transparent"
                                        BorderBrush="Transparent"
-                                       Content="控制中心"
+                                       Content="{loc:Loc Main.ControlCenter}"
                                        CornerRadius="0"
                                        Icon="{ui:SymbolIcon AppsList24}">
                         <ui:DropDownButton.Flyout>
                             <ContextMenu>
                                 <ui:MenuItem Command="{Binding SelectTargetProgramCommand}"
-                                             Header="选择要在分身中运行的程序…"
+                                             Header="{loc:Loc Menu.SelectTarget}"
                                              Icon="{ui:SymbolIcon FolderOpen24}" />
                                 <ui:MenuItem Command="{Binding LaunchTargetCommand}"
-                                             Header="立即在分身中启动"
+                                             Header="{loc:Loc Menu.LaunchTarget}"
                                              Icon="{ui:SymbolIcon Play24}" />
-                                <ui:MenuItem Header="{Binding TargetProgramText, StringFormat=目标程序：{0}}"
+                                <ui:MenuItem Header="{Binding TargetProgramText, StringFormat={loc:Loc Menu.TargetProgram}}"
                                              IsEnabled="False" />
                                 <ui:MenuItem Command="{Binding ToggleAutoLaunchCommand}"
-                                             Header="连接成功后自动启动"
+                                             Header="{loc:Loc Menu.AutoLaunch}"
                                              IsCheckable="True"
                                              IsChecked="{Binding AutoLaunchOnConnect, Mode=OneWay}" />
                                 <ui:MenuItem Command="{Binding ToggleRunAsAdministratorCommand}"
-                                             Header="以管理员权限启动目标程序"
+                                             Header="{loc:Loc Menu.RunAsAdmin}"
                                              IsCheckable="True"
                                              IsChecked="{Binding RunAsAdministrator, Mode=OneWay}"
-                                             ToolTip="默认不勾选：以普通权限运行可以减少与反作弊机制的冲突。只有目标程序自身要求提权时才需要勾选。" />
+                                             ToolTip="{loc:Loc Menu.RunAsAdmin.ToolTip}" />
                                 <Separator />
                                 <ui:MenuItem Command="{Binding ToggleSmallWindowModeCommand}"
                                              Header="{Binding WindowSizeModeMenuHeader}"
@@ -157,7 +158,7 @@
                                              Header="{Binding WatchModeMenuHeader}"
                                              ToolTip="{Binding WatchModeMenuToolTip}" />
                                 <Separator />
-                                <ui:MenuItem Header="桌面分辨率">
+                                <ui:MenuItem Header="{loc:Loc Menu.Resolution}">
                                     <ui:MenuItem Command="{Binding SelectResolutionCommand}"
                                                  CommandParameter="1920x1080"
                                                  Header="1920 × 1080"
@@ -180,14 +181,14 @@
                                                  IsChecked="{Binding IsHdResolutionSelected, Mode=OneWay}" />
                                     <Separator />
                                     <ui:MenuItem Command="{Binding CustomResolutionCommand}"
-                                                 Header="自定义…"
+                                                 Header="{loc:Loc Menu.Resolution.Custom}"
                                                  IsCheckable="True"
                                                  IsChecked="{Binding IsCustomResolutionSelected, Mode=OneWay}"
-                                                 ToolTip="输入任意宽高。当前分辨率会在状态栏显示。" />
+                                                 ToolTip="{loc:Loc Menu.Resolution.Custom.ToolTip}" />
                                 </ui:MenuItem>
-                                <ui:MenuItem Header="窗口">
+                                <ui:MenuItem Header="{loc:Loc Menu.Window}">
                                     <ui:MenuItem Command="{Binding UseAdaptiveCommand}"
-                                                 Header="自适应缩放"
+                                                 Header="{loc:Loc Menu.Adaptive}"
                                                  IsCheckable="True"
                                                  IsChecked="{Binding IsAdaptive, Mode=OneWay}" />
                                     <ui:MenuItem Command="{Binding UseOneToOneCommand}"
@@ -196,74 +197,74 @@
                                                  IsChecked="{Binding IsOneToOne, Mode=OneWay}" />
                                     <Separator />
                                     <ui:MenuItem Command="{Binding ToggleKeepAspectRatioCommand}"
-                                                 Header="保持宽高比"
+                                                 Header="{loc:Loc Menu.KeepAspectRatio}"
                                                  IsCheckable="True"
                                                  IsChecked="{Binding KeepAspectRatio, Mode=OneWay}" />
                                 </ui:MenuItem>
-                                <ui:MenuItem Header="快捷键">
+                                <ui:MenuItem Header="{loc:Loc Menu.Shortcuts}">
                                     <ui:MenuItem Command="{Binding ToggleSendSystemShortcutsToRemoteCommand}"
-                                                 Header="系统组合键发送到桌面分身"
+                                                 Header="{loc:Loc Menu.SendSystemShortcuts}"
                                                  IsCheckable="True"
                                                  IsChecked="{Binding SendSystemShortcutsToRemote, Mode=OneWay}"
-                                                 ToolTip="勾选后，Alt+Tab、Windows 键等系统组合键发送到桌面分身；取消勾选后在本机生效。切换时会自动重新连接 RDP。" />
+                                                 ToolTip="{loc:Loc Menu.SendSystemShortcuts.ToolTip}" />
                                     <Separator />
                                     <ui:MenuItem Command="{Binding ShowDesktopCommand}"
-                                                 Header="发送 Win+D 显示桌面" />
+                                                 Header="{loc:Loc Menu.SendWinD}" />
                                     <ui:MenuItem Command="{Binding ShowTaskViewCommand}"
-                                                 Header="发送 Win+Tab 切换窗口" />
+                                                 Header="{loc:Loc Menu.SendWinTab}" />
                                     <Separator />
                                     <ui:MenuItem Command="{Binding ToggleUuViewSwitchCommand}"
                                                  Header="{Binding UuViewSwitchMenuHeader}"
                                                  IsCheckable="True"
                                                  IsChecked="{Binding UuViewSwitchEnabled, Mode=OneWay}"
-                                                 ToolTip="启用后可用全局热键在「UU 控制整台电脑」与「UU 控制桌面分身」之间切换。切换时会结束 UU 的串流端进程，让 UU 服务重新挑选会话；分身只是断开，不会注销。" />
+                                                 ToolTip="{loc:Loc Menu.UuSwitch.ToolTip}" />
                                     <ui:MenuItem Command="{Binding ConfigureUuHotkeyCommand}"
-                                                 Header="{Binding UuHotkeyText, StringFormat=切换快捷键：{0}}" />
+                                                 Header="{Binding UuHotkeyText, StringFormat={loc:Loc Menu.UuHotkey}}" />
                                     <ui:MenuItem Command="{Binding TriggerUuViewSwitchCommand}"
-                                                 Header="立即切换一次" />
+                                                 Header="{loc:Loc Menu.UuTrigger}" />
                                     <ui:MenuItem Command="{Binding RepairUuStreamingCommand}"
-                                                 Header="修复 UU 串流（重启 UU 服务）"
+                                                 Header="{loc:Loc Menu.UuRepair}"
                                                  ToolTip="快速连续切换后，手机上的 UU 可能显示设备离线：切换需要结束串流端，短时间内连续结束会被 UU 服务当成连续崩溃而暂停重拉。点这里重启 UU 服务恢复，然后在手机上重新连接一次。" />
                                 </ui:MenuItem>
                                 <ui:MenuItem Header="{Binding AutoLoginMenuHeader}">
                                     <ui:MenuItem Command="{Binding ShowAutoLoginOptionsCommand}"
-                                                 Header="自动登录设置…"
+                                                 Header="{loc:Loc Menu.AutoLogin.Settings}"
                                                  Icon="{ui:SymbolIcon Settings24}"
-                                                 ToolTip="在「本程序自动登录」与「Windows 系统自动登录」之间选择，并查看各自的步骤与影响范围。" />
+                                                 ToolTip="{loc:Loc Menu.AutoLogin.Settings.ToolTip}" />
                                     <Separator />
                                     <ui:MenuItem Command="{Binding ToggleAutoLoginCommand}"
-                                                 Header="启用自动登录（本程序）"
+                                                 Header="{loc:Loc Menu.AutoLogin.Enable}"
                                                  IsCheckable="True"
                                                  IsChecked="{Binding AutoLoginEnabled, Mode=OneWay}"
                                                  ToolTip="连接分身时自动填入 Windows 登录凭据。密码用 DPAPI 加密保存在本机，只有当前账户能解开；若凭据框仍出现，程序最多尝试自动填写两次，之后交回手动输入。" />
                                     <ui:MenuItem Command="{Binding SetAutoLoginPasswordCommand}"
-                                                 Header="设置登录密码…" />
+                                                 Header="{loc:Loc Menu.AutoLogin.SetPassword}" />
                                     <ui:MenuItem Command="{Binding ClearAutoLoginPasswordCommand}"
-                                                 Header="清除已保存的密码"
+                                                 Header="{loc:Loc Menu.AutoLogin.ClearPassword}"
                                                  IsEnabled="{Binding HasAutoLoginPassword}" />
                                     <Separator />
                                     <ui:MenuItem Command="{Binding OpenSystemAutoLoginSettingsCommand}"
-                                                 Header="打开系统自动登录设置…"
+                                                 Header="{loc:Loc Menu.AutoLogin.System}"
                                                  ToolTip="等同于 Win+R 输入 netplwiz。取消勾选「要使用本计算机，用户必须输入用户名和密码」，点应用后输入账户密码（不是 PIN），重启生效。注意这会让本机开机即进桌面。" />
                                 </ui:MenuItem>
                                 <Separator />
-                                <ui:MenuItem Header="诊断">
+                                <ui:MenuItem Header="{loc:Loc Menu.Diagnostics}">
                                     <ui:MenuItem Command="{Binding OpenDiagnosticsCommand}"
-                                                 Header="诊断与修复…"
-                                                 ToolTip="列出所有可能影响启动的环境问题，可自动修复的直接在面板里修。" />
+                                                 Header="{loc:Loc Menu.Diagnostics.Open}"
+                                                 ToolTip="{loc:Loc Menu.Diagnostics.Open.ToolTip}" />
                                     <Separator />
                                     <ui:MenuItem Command="{Binding CopyDiagnosticsCommand}"
-                                                 Header="复制环境信息"
+                                                 Header="{loc:Loc Menu.Diagnostics.CopyEnv}"
                                                  Icon="{ui:SymbolIcon Copy24}" />
                                     <ui:MenuItem Command="{Binding OpenLogFolderCommand}"
-                                                 Header="打开日志目录"
+                                                 Header="{loc:Loc Menu.Diagnostics.Logs}"
                                                  Icon="{ui:SymbolIcon DocumentText24}" />
                                     <ui:MenuItem Command="{Binding OpenSettingsFolderCommand}"
-                                                 Header="打开设置目录"
+                                                 Header="{loc:Loc Menu.Diagnostics.Settings}"
                                                  Icon="{ui:SymbolIcon Settings24}" />
                                     <Separator />
                                     <ui:MenuItem Command="{Binding DisableChildSessionsCommand}"
-                                                 Header="关闭 Child Sessions（恢复系统原状）"
+                                                 Header="{loc:Loc Menu.Diagnostics.DisableChildSessions}"
                                                  Icon="{ui:SymbolIcon ArrowReset24}" />
                                 </ui:MenuItem>
                             </ContextMenu>
@@ -459,19 +460,19 @@
                                         Visibility="{Binding IsSessionClosing, Converter={StaticResource BooleanToVisibilityRevertConverter}}">
                                 <ui:Button MinWidth="132"
                                            Command="{Binding StartCommand}"
-                                           Content="启动并连接"
+                                           Content="{loc:Loc Startup.Connect}"
                                            Icon="{ui:SymbolIcon Play24}" />
                                 <ui:HyperlinkButton Margin="16,0,0,0"
                                                     Padding="8,6"
                                                     Command="{Binding CopyDiagnosticsCommand}"
-                                                    Content="复制环境信息"
+                                                    Content="{loc:Loc Startup.CopyDiagnostics}"
                                                     Cursor="Hand" />
                             </StackPanel>
 
                             <TextBlock Margin="0,22,0,0"
                                        HorizontalAlignment="Center"
                                        Foreground="#CCFFFFFF"
-                                       Text="请稍候，关闭完成后窗口会自动隐藏。"
+                                       Text="{loc:Loc Startup.Closing}"
                                        TextAlignment="Center"
                                        Visibility="{Binding IsSessionClosing, Converter={StaticResource BooleanToVisibilityConverter}}" />
 
@@ -480,20 +481,20 @@
                                 <TextBlock HorizontalAlignment="Center"
                                            Foreground="#80FFFFFF"
                                            FontSize="11"
-                                           Text="连接成功后，此处会自动切换为分身桌面画面。"
+                                           Text="{loc:Loc Startup.Hint.Switch}"
                                            TextAlignment="Center" />
                                 <TextBlock Margin="0,6,0,0"
                                            HorizontalAlignment="Center"
                                            Foreground="#80FFFFFF"
                                            FontSize="11"
-                                           Text="第一次连接会显示 Windows 登录界面，请用当前账户登录；本地账户没有密码时请先设置密码。"
+                                           Text="{loc:Loc Startup.Hint.FirstLogin}"
                                            TextAlignment="Center"
                                            TextWrapping="Wrap" />
                                 <TextBlock Margin="0,6,0,0"
                                            HorizontalAlignment="Center"
                                            Foreground="#80FFFFFF"
                                            FontSize="11"
-                                           Text="关闭窗口会注销分身会话，其中的程序都会被关闭。"
+                                           Text="{loc:Loc Startup.Hint.Close}"
                                            TextAlignment="Center"
                                            TextWrapping="Wrap" />
                             </StackPanel>
@@ -521,18 +522,18 @@
                                    VerticalAlignment="Center"
                                    FontWeight="SemiBold"
                                    Foreground="White"
-                                   Text="桌面分身" />
+                                   Text="{loc:Loc Fullscreen.Title}" />
                         <ui:Button Width="36"
                                    Height="30"
                                    Click="OnFullscreenMinimizeClicked"
                                    Content="—"
-                                   ToolTip="最小化" />
+                                   ToolTip="{loc:Loc Fullscreen.Minimize}" />
                         <ui:Button Width="52"
                                    Height="30"
                                    Margin="6,0,0,0"
                                    Click="OnFullscreenRestoreClicked"
-                                   Content="还原"
-                                   ToolTip="退出全屏，回到窗口模式" />
+                                   Content="{loc:Loc Fullscreen.Restore}"
+                                   ToolTip="{loc:Loc Fullscreen.Restore.ToolTip}" />
                         <ui:Button Width="36"
                                    Height="30"
                                    Margin="6,0,0,0"
@@ -546,7 +547,7 @@
                                    Width="36"
                                    Height="30"
                                    Click="OnFullscreenTogglePinClicked"
-                                   ToolTip="固定显示这条工具栏（会记住）">
+                                   ToolTip="{loc:Loc Fullscreen.Pin}">
                             <ui:Button.Icon>
                                 <ui:SymbolIcon FontSize="14" Symbol="Pin24" />
                             </ui:Button.Icon>
@@ -555,7 +556,7 @@
                                    Width="36"
                                    Height="30"
                                    Click="OnFullscreenTogglePinClicked"
-                                   ToolTip="取消固定（会记住）"
+                                   ToolTip="{loc:Loc Fullscreen.Unpin}"
                                    Visibility="Collapsed">
                             <ui:Button.Icon>
                                 <ui:SymbolIcon FontSize="14" Symbol="PinOff24" />

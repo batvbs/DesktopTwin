@@ -9,6 +9,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using DesktopTwin.Localization;
 using DesktopTwin.Models;
 using DesktopTwin.Services;
 using DesktopTwin.View;
@@ -44,7 +45,7 @@ public partial class MainWindowViewModel : ObservableObject
     private string _connectionStatusToolTip = "桌面分身未启动";
 
     [ObservableProperty]
-    private string _connectionStatusTitle = "桌面分身尚未启动";
+    private string _connectionStatusTitle = Locale.Get("Main.Status.NotStarted");
 
     [ObservableProperty]
     private string _connectionStatusDescription =
@@ -610,8 +611,8 @@ public partial class MainWindowViewModel : ObservableObject
         void Notify()
         {
             ShowNotification(
-                "UU 串流已恢复",
-                "串流端已经重新拉起，在手机上重新连接一次即可进桌面。",
+                Locale.Get("Uu.Recovered.Title"),
+                Locale.Get("Uu.Recovered.Message"),
                 InfoBarSeverity.Success,
                 TimeSpan.FromSeconds(8));
         }
@@ -679,13 +680,15 @@ public partial class MainWindowViewModel : ObservableObject
     /// UU 视角切换菜单文本。
     /// </summary>
     public string UuViewSwitchMenuHeader => UuViewSwitchEnabled
-        ? $"UU 视角切换（已启用 · {UuHotkeyText}）"
-        : "UU 视角切换";
+        ? Locale.Format("Menu.UuSwitch.Enabled", UuHotkeyText)
+        : Locale.Get("Menu.UuSwitch.Disabled");
 
     /// <summary>
     /// 自动登录菜单文本。
     /// </summary>
-    public string AutoLoginMenuHeader => AutoLoginEnabled ? "自动登录分身（已启用）" : "自动登录分身";
+    public string AutoLoginMenuHeader => AutoLoginEnabled
+        ? Locale.Get("Menu.AutoLogin.Enabled")
+        : Locale.Get("Menu.AutoLogin.Disabled");
 
     /// <summary>
     /// 当前 UU 切换热键的可读文本。
@@ -736,15 +739,17 @@ public partial class MainWindowViewModel : ObservableObject
         try
         {
             ShowNotification(
-                "正在修复 UU 串流",
-                "正在重启 UU 服务…",
+                Locale.Get("Uu.Repair.Title"),
+                Locale.Get("Uu.Repair.Message"),
                 InfoBarSeverity.Informational,
                 TimeSpan.FromSeconds(30));
 
             var result = await _uuViewSwitchService.RestartStreamerServiceAsync(CancellationToken.None);
             AppLog.Info($"UU 串流修复：{(result.Success ? "成功" : "失败")} —— {result.Message}");
             ShowNotification(
-                result.Success ? "UU 串流已修复" : "UU 串流修复失败",
+                result.Success
+                    ? Locale.Get("Uu.Repair.Done")
+                    : Locale.Get("Uu.Repair.Failed"),
                 result.Message,
                 result.Success ? InfoBarSeverity.Success : InfoBarSeverity.Warning,
                 TimeSpan.FromSeconds(10));
@@ -773,8 +778,8 @@ public partial class MainWindowViewModel : ObservableObject
             // 可能长达 30 秒）。之前只显示 3 秒，窗口还原进全屏时提示早就没了，
             // 用户看到的是「无任何提示直接进全屏」。
             ShowNotification(
-                "正在切换视角",
-                "正在调整会话落点，请稍候…",
+                Locale.Get("Uu.Switching.Title"),
+                Locale.Get("Uu.Switching.Message"),
                 InfoBarSeverity.Informational,
                 TimeSpan.FromSeconds(35));
 
@@ -786,7 +791,9 @@ public partial class MainWindowViewModel : ObservableObject
                 $"视角切换结束：{(result.Success ? "成功" : "失败")} —— {result.Message}");
 
             ShowNotification(
-                result.Success ? "视角切换完成" : "视角切换失败",
+                result.Success
+                    ? Locale.Get("Uu.Done.Title")
+                    : Locale.Get("Uu.Failed.Title"),
                 result.Message,
                 result.Success ? InfoBarSeverity.Success : InfoBarSeverity.Warning,
                 TimeSpan.FromSeconds(8));
@@ -797,7 +804,9 @@ public partial class MainWindowViewModel : ObservableObject
             if (!_childSessionService.IsDesktopVisible)
             {
                 App.ShowTrayBalloon(
-                    result.Success ? "视角切换完成" : "视角切换失败",
+                    result.Success
+                        ? Locale.Get("Uu.Done.Title")
+                        : Locale.Get("Uu.Failed.Title"),
                     result.Message);
             }
         }
@@ -1818,7 +1827,7 @@ public partial class MainWindowViewModel : ObservableObject
         else
         {
             ConnectionStatusBrush = Brushes.Red;
-            ConnectionStatusTitle = "桌面分身尚未启动";
+            ConnectionStatusTitle = Locale.Get("Main.Status.NotStarted");
             ConnectionStatusDescription =
                 "点击“启动并连接”，程序会创建一个独立的 Windows 桌面，并把画面嵌到这个窗口里。";
         }
@@ -1838,7 +1847,9 @@ public partial class MainWindowViewModel : ObservableObject
 
     private static string BuildTargetProgramText(string? path)
     {
-        return string.IsNullOrWhiteSpace(path) ? "未选择" : Path.GetFileName(path);
+        return string.IsNullOrWhiteSpace(path)
+            ? Locale.Get("Menu.TargetProgram.None")
+            : Path.GetFileName(path);
     }
 
     private static void ShowError(Exception exception)
