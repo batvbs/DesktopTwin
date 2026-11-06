@@ -179,6 +179,9 @@ dotnet publish src/DesktopTwin -c Release -r win-x64 --self-contained false -o p
 - 格式：UTF-8 纯文本，`键=值`，`#` 或 `;` 开头是注释；
 - 回退：文件里没写、或者值为空的键，用内置中文；键名写错不影响启动，只是那一条不生效。
 
+现成的译文和完整的制作流程见 [`Localization/`](Localization/README.md)
+（含英文 481 条满译）。
+
 **生成翻译模板**（译者入口，不启动界面）：
 
 ```bat
