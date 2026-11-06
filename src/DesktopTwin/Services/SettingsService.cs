@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using System.Threading;
@@ -131,6 +132,39 @@ public sealed class SettingsService : IDisposable
         }
     }
 
+    /// <summary>
+    /// 反序列化出来的密码表换成「不区分大小写」的字典。
+    ///
+    /// System.Text.Json 重建 Dictionary 时用的是默认比较器，属性上声明的
+    /// OrdinalIgnoreCase 只对「新建的实例」有效——从文件读回来的那份会变成区分大小写，
+    /// 于是「存的是 batvb、查的是 Batvb」就取不到密码。这里读出来就统一换掉。
+    /// </summary>
+    private static void NormalizePasswordTable(AppSettings settings)
+    {
+        var source = settings.Automation?.AutoLoginPasswords;
+        if (source is null)
+        {
+            if (settings.Automation is not null)
+            {
+                settings.Automation.AutoLoginPasswords = new Dictionary<string, string>(
+                    StringComparer.OrdinalIgnoreCase);
+            }
+
+            return;
+        }
+
+        var normalized = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in source)
+        {
+            if (!string.IsNullOrWhiteSpace(pair.Key))
+            {
+                normalized[pair.Key] = pair.Value;
+            }
+        }
+
+        settings.Automation!.AutoLoginPasswords = normalized;
+    }
+
     private AppSettings Load()
     {
         try
@@ -144,6 +178,7 @@ public sealed class SettingsService : IDisposable
             var settings = JsonSerializer.Deserialize<AppSettings>(json, SerializerOptions)
                 ?? new AppSettings { SettingsVersion = AppSettings.CurrentVersion };
 
+            NormalizePasswordTable(settings);
             _migrated = Migrate(settings);
             return settings;
         }

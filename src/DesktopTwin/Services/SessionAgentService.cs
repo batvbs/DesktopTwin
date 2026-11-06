@@ -108,8 +108,6 @@ internal sealed class SessionAgentService : IDisposable
                 // 代理换了，正在跑的还是旧版（或者压根没在跑），下次连上时要重启一次。
                 NeedsRestart = true;
             }
-
-            CleanupLegacyScriptFiles();
         }
         catch (Exception exception) when (exception is IOException
                                               or UnauthorizedAccessException
@@ -468,21 +466,6 @@ internal sealed class SessionAgentService : IDisposable
         }
 
         return true;
-    }
-
-    /// <summary>
-    /// 清掉 0.2.3 及更早版本留下的 PowerShell 脚本与缓存。
-    ///
-    /// 这些文件已经不用了；留着只会干扰排障（用户/支持者会打开一份过时的脚本找问题），
-    /// 而那个 powershell 代理进程还占着分身里的热键——由分身端自己负责收掉。
-    /// </summary>
-    private void CleanupLegacyScriptFiles()
-    {
-        TryDelete(Path.Combine(_dataDirectory, "session-agent.ps1"));
-        TryDelete(Path.Combine(_dataDirectory, "session-agent-source.txt"));
-        TryDelete(Path.Combine(_dataDirectory, "session-agent.dll"));
-        TryDelete(Path.Combine(_dataDirectory, "session-agent-script.txt"));
-        TryDelete(Path.Combine(_dataDirectory, "session-agent-hud.log"));
     }
 
     private static void WriteRunKey(string commandLine)

@@ -102,7 +102,10 @@ internal sealed class AutoLoginService : IDisposable
     public bool IsEnabled => _settings.Current.Automation.AutoLoginEnabled;
 
     /// <summary>
-    /// 是否已经存了密码（且能解开）。
+    /// 是否已经存了「当前账户」的密码（且能解开）。
+    ///
+    /// 多账户：本机可能用不同账户登录桌面分身，每个账户的密码单独存一份，
+    /// 这里只回答「当前这次连接要用的那个账户，有没有存过密码」。
     /// </summary>
     public bool HasStoredPassword => !string.IsNullOrEmpty(ReadPassword());
 
@@ -119,12 +122,48 @@ internal sealed class AutoLoginService : IDisposable
     }
 
     /// <summary>
+    /// 当前账户在密码表里的键。用户名不区分大小写。
+    /// </summary>
+    public string AccountKey => UserName.ToLowerInvariant();
+
+    /// <summary>
     /// 自动登录使用的域。本地账户就是机器名。
     /// </summary>
     public string Domain => Environment.UserDomainName;
 
     /// <summary>
-    /// 保存密码（DPAPI 加密后写进设置）。
+    /// 已经存过密码的账户列表（用于设置界面展示，不含任何密码信息）。
+    /// </summary>
+    public IReadOnlyList<string> StoredAccountNames
+    {
+        get
+        {
+            var passwords = _settings.Current.Automation.AutoLoginPasswords;
+            var names = new List<string>(passwords.Count);
+            foreach (var pair in passwords)
+            {
+                if (!string.IsNullOrWhiteSpace(pair.Key))
+                {
+                    names.Add(pair.Key);
+                }
+            }
+
+            names.Sort(StringComparer.OrdinalIgnoreCase);
+            return names;
+        }
+    }
+
+    /// <summary>
+    /// 指定账户是否存过密码。
+    /// </summary>
+    /// <param name="userName">账户名（不区分大小写）。</param>
+    public bool HasStoredPasswordFor(string userName)
+    {
+        return FindAccountKey(userName) is not null;
+    }
+
+    /// <summary>
+    /// 保存密码（DPAPI 加密后写进设置）。只影响当前账户，不动其它账户的记录。
     /// </summary>
     /// <returns>加密失败时返回 false。</returns>
     public bool SavePassword(string plainText)
@@ -136,19 +175,53 @@ internal sealed class AutoLoginService : IDisposable
             return false;
         }
 
-        _settings.Current.Automation.AutoLoginPassword = protectedValue;
+        var passwords = _settings.Current.Automation.AutoLoginPasswords;
+
+        // 同一个账户可能以不同大小写存在过（账户名改过大小写、或从旧文件读回来），
+        // 先删掉忽略大小写等价的那一条，避免同一个账户堆出两份密码。
+        var existing = FindAccountKey(AccountKey);
+        if (existing is not null)
+        {
+            passwords.Remove(existing);
+        }
+
+        passwords[UserName] = protectedValue;
         _settings.SaveSoon();
         return true;
     }
 
     /// <summary>
-    /// 清除已保存的密码。
+    /// 清除「当前账户」已保存的密码；其它账户的记录保留。
     /// </summary>
     public void ClearPassword()
     {
         ThrowIfDisposed();
-        _settings.Current.Automation.AutoLoginPassword = null;
-        _settings.SaveSoon();
+        var existing = FindAccountKey(AccountKey);
+        if (existing is not null && _settings.Current.Automation.AutoLoginPasswords.Remove(existing))
+        {
+            _settings.SaveSoon();
+        }
+    }
+
+    /// <summary>
+    /// 在密码表里找与给定账户名忽略大小写相等的键。
+    /// </summary>
+    private string? FindAccountKey(string userName)
+    {
+        if (string.IsNullOrWhiteSpace(userName))
+        {
+            return null;
+        }
+
+        foreach (var key in _settings.Current.Automation.AutoLoginPasswords.Keys)
+        {
+            if (string.Equals(key, userName.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                return key;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -729,10 +802,15 @@ internal sealed class AutoLoginService : IDisposable
 
     private string? ReadPassword()
     {
-        var protectedValue = _settings.Current.Automation.AutoLoginPassword;
-        return string.IsNullOrWhiteSpace(protectedValue)
-            ? null
-            : DpapiProtector.Unprotect(protectedValue);
+        var passwords = _settings.Current.Automation.AutoLoginPasswords;
+        var key = FindAccountKey(AccountKey);
+        if (key is null || !passwords.TryGetValue(key, out var protectedValue)
+            || string.IsNullOrWhiteSpace(protectedValue))
+        {
+            return null;
+        }
+
+        return DpapiProtector.Unprotect(protectedValue);
     }
 
     private void ThrowIfDisposed()

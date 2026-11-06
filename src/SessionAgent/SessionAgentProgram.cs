@@ -273,8 +273,6 @@ namespace DesktopTwinSessionAgent
         /// </summary>
         private static void KillStaleAgents()
         {
-            KillLegacyScriptAgents();
-
             try
             {
                 string self = Process.GetCurrentProcess().MainModule.FileName;
@@ -310,67 +308,6 @@ namespace DesktopTwinSessionAgent
             catch (Exception ex)
             {
                 Log("清理旧代理失败: " + ex.Message);
-            }
-        }
-
-        /// <summary>
-        /// 收掉 0.2.3 及更早版本留下的 PowerShell 代理（session-agent.ps1）。
-        ///
-        /// 它们同样在这个会话里注册了热键，而且 PowerShell 宿主的控制台窗口会一直挂在
-        /// 分身桌面上——不清理的话，新代理注册不上热键，用户还会继续看到那个窗口。
-        /// </summary>
-        private static void KillLegacyScriptAgents()
-        {
-            try
-            {
-                int mySession = Process.GetCurrentProcess().SessionId;
-                int killed = 0;
-
-                using (var searcher = new System.Management.ManagementObjectSearcher(
-                    "SELECT ProcessId, CommandLine FROM Win32_Process WHERE Name='powershell.exe'"))
-                {
-                    foreach (System.Management.ManagementObject item in searcher.Get())
-                    {
-                        try
-                        {
-                            object commandLine = item["CommandLine"];
-                            if (commandLine == null || !commandLine.ToString().Contains("session-agent.ps1"))
-                            {
-                                continue;
-                            }
-
-                            int pid = Convert.ToInt32(item["ProcessId"]);
-                            Process process = Process.GetProcessById(pid);
-                            try
-                            {
-                                if (process.SessionId == mySession)
-                                {
-                                    process.Kill();
-                                    killed++;
-                                }
-                            }
-                            finally
-                            {
-                                process.Dispose();
-                            }
-                        }
-                        catch (Exception)
-                        {
-                            // 单个进程读不到/杀不掉：继续下一个。
-                        }
-                    }
-                }
-
-                if (killed > 0)
-                {
-                    Log("收掉 " + killed + " 个旧版 PowerShell 代理");
-                    // 给旧进程留出退出和释放热键的时间。
-                    Thread.Sleep(800);
-                }
-            }
-            catch (Exception ex)
-            {
-                Log("清理旧版代理失败: " + ex.Message);
             }
         }
 

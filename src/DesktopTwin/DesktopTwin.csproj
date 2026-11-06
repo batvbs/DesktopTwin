@@ -63,7 +63,7 @@
 		<Error Condition="!Exists('$(SessionAgentCompiler)')"
 		       Text="找不到 .NET Framework 的编译器，无法构建分身端代理。" />
 		<MakeDir Directories="$(IntermediateOutputPath)" />
-		<Exec Command="&quot;$(SessionAgentCompiler)&quot; /nologo /target:winexe /optimize+ /win32manifest:&quot;$(SessionAgentManifest)&quot; /win32icon:&quot;$(SessionAgentIcon)&quot; /out:&quot;$(SessionAgentOutput)&quot; /reference:System.dll /reference:System.Core.dll /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Management.dll &quot;$(SessionAgentSource)&quot;" />
+		<Exec Command="&quot;$(SessionAgentCompiler)&quot; /nologo /target:winexe /optimize+ /win32manifest:&quot;$(SessionAgentManifest)&quot; /win32icon:&quot;$(SessionAgentIcon)&quot; /out:&quot;$(SessionAgentOutput)&quot; /reference:System.dll /reference:System.Core.dll /reference:System.Windows.Forms.dll /reference:System.Drawing.dll &quot;$(SessionAgentSource)&quot;" />
 
 		<ItemGroup>
 			<EmbeddedResource Include="$(SessionAgentOutput)" LogicalName="DesktopTwin.Agent.exe" />

@@ -1176,17 +1176,34 @@ public sealed class ChildSessionService : IDisposable
                 var launch = _settings.Current.Launch;
                 if (!string.IsNullOrWhiteSpace(launch.TargetPath))
                 {
-                    if (launch.RunAsAdministrator || !IsLeastPrivilegeEnforced())
+                    if (launch.RunAsAdministrator)
                     {
-                        // 安全边界：自动启动 + 提权 = 只要有人改了 settings.json 就能在管理员上下文里执行任意程序。
-                        // 因此提权启动永远不自动执行，改为提示用户手动确认一次。
-                        //
-                        // 注意这里判断的是「实际会不会降权」而不是 RunAsAdministrator 标志：
-                        // UAC 关闭时 TASK_RUNLEVEL_LUA 不降权，RunAsAdministrator=false 的目标程序
-                        // 仍然以高完整性运行，只看标志会被绕过去。
-                        RefreshState(launch.RunAsAdministrator
-                            ? "已跳过自动启动：管理员权限启动需要手动确认"
-                            : "已跳过自动启动：当前系统未启用 UAC，普通权限无法真正降权");
+                        // 自动 + 提权：必须有「用户针对这个目标程序亲自确认过」的授权。
+                        // 授权与路径/参数绑定，改了目标就得重新确认——不能只凭 settings.json
+                        // 里的一个 true 就在管理员上下文里执行任意程序。
+                        if (ElevatedLaunchConsent.IsValid(
+                                launch.ElevatedAutoLaunchConsent,
+                                launch.TargetPath,
+                                launch.TargetArguments))
+                        {
+                            await LaunchProgramCoreAsync(
+                                launch.TargetPath,
+                                launch.TargetArguments,
+                                runAsAdministrator: true,
+                                isAutomatic: true);
+                        }
+                        else
+                        {
+                            RefreshState("已跳过自动启动：管理员权限启动需要先在菜单里确认一次");
+                            AutoLaunchSkipped?.Invoke(this, EventArgs.Empty);
+                        }
+                    }
+                    else if (!IsLeastPrivilegeEnforced())
+                    {
+                        // 安全边界：UAC 关闭时 TASK_RUNLEVEL_LUA 不降权，普通权限的目标程序
+                        // 仍然以高完整性运行，等于变相提权。这里判断的是「实际会不会降权」
+                        // 而不是 RunAsAdministrator 标志，只看标志会被绕过去。
+                        RefreshState("已跳过自动启动：当前系统未启用 UAC，普通权限无法真正降权");
                         AutoLaunchSkipped?.Invoke(this, EventArgs.Empty);
                     }
                     else

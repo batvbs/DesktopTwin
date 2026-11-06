@@ -177,6 +177,9 @@ public partial class MainWindowViewModel : ObservableObject
         _sessionAgent = new SessionAgentService(Dispatcher.CurrentDispatcher);
         _sessionAgent.SwitchRequested += OnSessionAgentSwitchRequested;
 
+        // 切换后串流端被自动恢复成功时告诉用户一声，免得用户以为得手动重连。
+        _uuViewSwitchService.StreamerRecovered += OnStreamerRecovered;
+
         _notificationTimer = new DispatcherTimer(DispatcherPriority.Background)
         {
             Interval = TimeSpan.FromSeconds(5)
@@ -336,12 +339,91 @@ public partial class MainWindowViewModel : ObservableObject
     {
         _settings.Current.Launch.AutoLaunchOnConnect = value;
         _settings.SaveSoon();
+
+        // 打开自动启动时如果已经开着「管理员权限」，要补一次明确授权
+        // （用户可能是先勾了提权、再勾自动启动）。
+        if (value && _settings.Current.Launch.RunAsAdministrator)
+        {
+            _ = EnsureElevatedAutoLaunchConsentAsync(revertAutoLaunch: true);
+        }
     }
 
     partial void OnRunAsAdministratorChanged(bool value)
     {
         _settings.Current.Launch.RunAsAdministrator = value;
         _settings.SaveSoon();
+
+        // 「自动启动 + 提权」= 每次连上分身都会以管理员权限跑这个程序。
+        // 这是一条需要用户明确点头的路径，所以在这里要一次确认，
+        // 确认结果与目标程序绑定后存下来，后面就不再拦。
+        if (value && _settings.Current.Launch.AutoLaunchOnConnect)
+        {
+            _ = EnsureElevatedAutoLaunchConsentAsync(revertAutoLaunch: false);
+        }
+        else if (!value)
+        {
+            // 关掉提权就不需要这份授权了，顺手清掉，避免以后误用。
+            _settings.Current.Launch.ElevatedAutoLaunchConsent = null;
+            _settings.SaveSoon();
+        }
+    }
+
+    /// <summary>
+    /// 为「自动启动 + 管理员权限」取得一次性授权。
+    ///
+    /// 授权与当前目标程序的路径、参数绑定：之后换了目标程序就要重新确认。
+    /// 没选过目标程序时先不弹（等选了目标再说），避免弹一个没有对象的确认框。
+    /// </summary>
+    /// <param name="revertAutoLaunch">用户拒绝时，是否把「自动启动」开关退回关闭。</param>
+    private async Task EnsureElevatedAutoLaunchConsentAsync(bool revertAutoLaunch)
+    {
+        var launch = _settings.Current.Launch;
+        if (string.IsNullOrWhiteSpace(launch.TargetPath))
+        {
+            ShowNotification(
+                "还需要选择目标程序",
+                "「自动启动 + 管理员权限」需要一个明确的目标程序。选好之后会再确认一次。",
+                InfoBarSeverity.Informational);
+            return;
+        }
+
+        if (ElevatedLaunchConsent.IsValid(
+                launch.ElevatedAutoLaunchConsent,
+                launch.TargetPath,
+                launch.TargetArguments))
+        {
+            return;
+        }
+
+        var confirmed = await Dialogs.ConfirmAsync(
+            $"已同时勾选「连接成功后自动启动」和「以管理员权限启动目标程序」。\n\n"
+            + $"目标程序：{launch.TargetPath}"
+            + (string.IsNullOrWhiteSpace(launch.TargetArguments)
+                ? string.Empty
+                : $"\n参数：{launch.TargetArguments}")
+            + "\n\n这表示每次连接上桌面分身，都会以管理员权限自动运行它。"
+            + "如果换一个目标程序，程序会再问你一次。是否继续？",
+            "确认自动以管理员权限启动");
+
+        if (!confirmed)
+        {
+            if (revertAutoLaunch)
+            {
+                AutoLaunchOnConnect = false;
+            }
+            else
+            {
+                RunAsAdministrator = false;
+            }
+
+            return;
+        }
+
+        launch.ElevatedAutoLaunchConsent = ElevatedLaunchConsent.Issue(
+            launch.TargetPath,
+            launch.TargetArguments);
+        _settings.SaveSoon();
+        AppLog.Info($"已授权「自动以管理员权限启动」：{launch.TargetPath}");
     }
 
     /// <summary>
@@ -486,6 +568,44 @@ public partial class MainWindowViewModel : ObservableObject
             "已选择目标程序",
             $"{Path.GetFileName(path)} 将在下次连接成功后自动启动。",
             InfoBarSeverity.Success);
+
+        // 换了目标程序，之前那份「自动以管理员权限启动」的授权就作废了
+        // （它是和路径绑定的），这里重新确认一次；不确认就退化成「跳过并提示」。
+        if (launch.RunAsAdministrator && launch.AutoLaunchOnConnect)
+        {
+            launch.ElevatedAutoLaunchConsent = null;
+            _settings.SaveSoon();
+            _ = EnsureElevatedAutoLaunchConsentAsync(revertAutoLaunch: false);
+        }
+    }
+
+    /// <summary>
+    /// 串流端被后台恢复循环成功拉起。
+    /// </summary>
+    private void OnStreamerRecovered(object? sender, EventArgs e)
+    {
+        void Notify()
+        {
+            ShowNotification(
+                "UU 串流已恢复",
+                "串流端已经重新拉起，在手机上重新连接一次即可进桌面。",
+                InfoBarSeverity.Success,
+                TimeSpan.FromSeconds(8));
+        }
+
+        var dispatcher = Application.Current?.Dispatcher;
+        if (dispatcher is null)
+        {
+            return;
+        }
+
+        if (!dispatcher.CheckAccess())
+        {
+            _ = dispatcher.BeginInvoke(new Action(Notify));
+            return;
+        }
+
+        Notify();
     }
 
     /// <summary>
@@ -570,6 +690,7 @@ public partial class MainWindowViewModel : ObservableObject
         _globalHotkey = null;
         _sessionAgent.SwitchRequested -= OnSessionAgentSwitchRequested;
         _sessionAgent.Dispose();
+        _uuViewSwitchService.StreamerRecovered -= OnStreamerRecovered;
         _uuViewSwitchService.Dispose();
     }
 
@@ -920,7 +1041,10 @@ public partial class MainWindowViewModel : ObservableObject
             return false;
         }
 
-        if (await PasswordDialog.ShowAsync(autoLogin.UserName) is not { } password)
+        if (await PasswordDialog.ShowAsync(
+                autoLogin.UserName,
+                "保存并验证",
+                autoLogin.StoredAccountNames) is not { } password)
         {
             return false;
         }
@@ -1557,10 +1681,12 @@ public partial class MainWindowViewModel : ObservableObject
             {
                 ShowNotification(
                     "已跳过自动启动",
-                    "自动启动已被跳过：目标程序要求管理员权限，或当前系统（UAC 未启用）无法真正降权。"
-                    + "出于安全考虑不会自动执行，请用「控制中心 → 立即在分身中启动」手动确认一次。",
+                    "自动启动已被跳过：目标程序要求管理员权限但还没有确认过，"
+                    + "或当前系统（UAC 未启用）无法真正降权。\n"
+                    + "如果是第一种：把「连接成功后自动启动」和「以管理员权限启动目标程序」都勾上，"
+                    + "确认一次后以后就会自动以管理员权限运行；也可以点「控制中心 → 立即在分身中启动」手动启动。",
                     InfoBarSeverity.Warning,
-                    TimeSpan.FromSeconds(10));
+                    TimeSpan.FromSeconds(12));
             }));
     }
 

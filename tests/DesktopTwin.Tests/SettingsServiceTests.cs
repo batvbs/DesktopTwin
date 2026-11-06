@@ -41,7 +41,11 @@ public sealed class SettingsServiceTests : IDisposable
         Assert.False(settings.Automation.UuViewSwitchEnabled);
         Assert.False(settings.Automation.AutoLoginEnabled);
         Assert.Equal("Ctrl+Alt+U", settings.Automation.UuViewSwitchHotkey);
-        Assert.Null(settings.Automation.AutoLoginPassword);
+
+        // 密码表默认是空的，且按键不区分大小写（多账户各存一份）
+        Assert.Empty(settings.Automation.AutoLoginPasswords);
+        settings.Automation.AutoLoginPasswords["SomeUser"] = "x";
+        Assert.True(settings.Automation.AutoLoginPasswords.ContainsKey("someuser"));
 
         // 全屏顶栏默认不固定：只在鼠标到顶端时出现
         Assert.False(settings.Window.FullscreenBarPinned);
@@ -98,6 +102,46 @@ public sealed class SettingsServiceTests : IDisposable
         using var reader = new SettingsService(_directory);
         Assert.Equal(2, reader.Current.Launch.RecentTargets.Count);
         Assert.Equal(@"C:\a.exe", reader.Current.Launch.RecentTargets[0]);
+    }
+
+    [Fact]
+    public void 自动登录密码表按账户分别保存且不区分大小写()
+    {
+        using (var writer = new SettingsService(_directory))
+        {
+            writer.Current.Automation.AutoLoginPasswords["batvb"] = "enc-1";
+            writer.Current.Automation.AutoLoginPasswords["OtherUser"] = "enc-2";
+            writer.Flush();
+        }
+
+        using var reader = new SettingsService(_directory);
+        var passwords = reader.Current.Automation.AutoLoginPasswords;
+
+        // 两个账户各存一份，互不覆盖
+        Assert.Equal(2, passwords.Count);
+
+        // 从文件读回来后仍然是忽略大小写的字典（反序列化会重建字典，比较器要补回来）
+        Assert.True(passwords.ContainsKey("BATVB"));
+        Assert.True(passwords.ContainsKey("otheruser"));
+        Assert.Equal("enc-2", passwords["OTHERUSER"]);
+    }
+
+    [Fact]
+    public void 提权自动启动的授权与目标程序绑定()
+    {
+        var path = @"C:\Games\game.exe";
+        var consent = ElevatedLaunchConsent.Issue(path, "--windowed");
+
+        Assert.NotNull(consent);
+        Assert.True(ElevatedLaunchConsent.IsValid(consent, path, "--windowed"));
+
+        // 路径大小写不影响判定
+        Assert.True(ElevatedLaunchConsent.IsValid(consent, @"C:\games\GAME.EXE", "--windowed"));
+
+        // 换程序或换参数，授权立即失效——不能靠改 settings.json 让别的程序被提权执行
+        Assert.False(ElevatedLaunchConsent.IsValid(consent, @"C:\Games\other.exe", "--windowed"));
+        Assert.False(ElevatedLaunchConsent.IsValid(consent, path, "--fullscreen"));
+        Assert.False(ElevatedLaunchConsent.IsValid(null, path, "--windowed"));
     }
 
     public void Dispose()

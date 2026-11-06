@@ -37,6 +37,8 @@ internal sealed class UuViewSwitchService : IDisposable
 
     private readonly ChildSessionService _childSessionService;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private CancellationTokenSource? _streamRecoveryCancellation;
+    private bool _killedStreamersInLastSwitch;
     private bool _disposed;
 
     /// <summary>
@@ -47,6 +49,11 @@ internal sealed class UuViewSwitchService : IDisposable
     {
         _childSessionService = childSessionService;
     }
+
+    /// <summary>
+    /// 串流端在我们结束它之后迟迟没有回来、又被自动恢复成功。
+    /// </summary>
+    public event EventHandler? StreamerRecovered;
 
     /// <summary>
     /// 一次切换的结果，用于界面提示。
@@ -71,6 +78,10 @@ internal sealed class UuViewSwitchService : IDisposable
 
         try
         {
+            // 新的切换开始：停掉上一轮的后台恢复，避免两个流程同时动 UU 服务。
+            StopStreamerRecovery();
+            _killedStreamersInLastSwitch = false;
+
             var consoleSession = ChildSessionNativeMethods.TryGetConsoleSessionId();
             var streamerSessions = GetStreamerSessionIds();
             var childSession = ChildSessionNativeMethods.TryGetChildSessionId();
@@ -119,6 +130,132 @@ internal sealed class UuViewSwitchService : IDisposable
             {
                 // 切换进行中窗口被关掉，服务已释放；此时放行信号量已无意义。
             }
+
+            // 这一次切换里如果真的结束过串流端，而它迟迟没回来，就交给后台持续重试：
+            // UU 服务在短时间内被连续结束时会进入重启退避，之后不再拉起串流端，
+            // 手机上看到的就是「设备离线」，等多久也不会自愈。
+            ScheduleStreamerRecovery();
+        }
+    }
+
+    /// <summary>
+    /// 串流端是否正在被自动恢复（供界面显示状态）。
+    /// </summary>
+    public bool IsStreamerRecoveryRunning => _streamRecoveryCancellation is not null;
+
+    /// <summary>
+    /// 启动（或重启）串流端的后台恢复循环。
+    ///
+    /// 只在「这次切换确实结束过串流端」时才启动：手机没连着的时候本来就没有串流端，
+    /// 那种情况下重启 UU 服务纯属添乱。
+    /// </summary>
+    private void ScheduleStreamerRecovery()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        StopStreamerRecovery();
+
+        if (!_killedStreamersInLastSwitch || GetStreamerSessionIds().Count > 0)
+        {
+            return;
+        }
+
+        var cancellation = new CancellationTokenSource();
+        _streamRecoveryCancellation = cancellation;
+        _ = Task.Run(() => RecoverStreamerAsync(cancellation.Token));
+    }
+
+    /// <summary>
+    /// 停止后台恢复循环（切换开始时、退出时调用）。
+    /// </summary>
+    public void StopStreamerRecovery()
+    {
+        var cancellation = _streamRecoveryCancellation;
+        _streamRecoveryCancellation = null;
+        if (cancellation is null)
+        {
+            return;
+        }
+
+        try
+        {
+            cancellation.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
+
+        cancellation.Dispose();
+    }
+
+    /// <summary>
+    /// 后台恢复循环：定时检查串流端，没回来就尝试拉起 UU 服务，直到成功或被取消。
+    ///
+    /// 节奏：先等 15 秒（手机端重连通常几秒内完成），之后逐步拉长到 60 秒；
+    /// 每 4 次做一次完整的「停止 + 启动」，其余时候只发 start（服务在跑时是空操作）。
+    /// 不设总时长上限——用户的要求是「直到成功」；但频率被压到最低，不会成为负担。
+    /// </summary>
+    private async Task RecoverStreamerAsync(CancellationToken cancellationToken)
+    {
+        var attempt = 0;
+        var delay = TimeSpan.FromSeconds(15);
+
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+                delay = TimeSpan.FromSeconds(Math.Min(60, delay.TotalSeconds + 10));
+                attempt++;
+
+                if (GetStreamerSessionIds().Count > 0)
+                {
+                    AppLog.Info($"UU 串流端已恢复（自动恢复第 {attempt} 次检查时发现）。");
+                    _streamRecoveryCancellation = null;
+                    RaiseStreamerRecovered();
+                    return;
+                }
+
+                AppLog.Warn($"UU 串流端仍未拉起，第 {attempt} 次尝试恢复 UU 服务。");
+
+                if (attempt % 4 == 0)
+                {
+                    // 服务本身在跑但不再拉起串流端，说明它退避了：完整重启一次。
+                    await RunServiceCommandAsync("stop", cancellationToken).ConfigureAwait(false);
+                    await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken).ConfigureAwait(false);
+                    await RunServiceCommandAsync("start", cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    await RunServiceCommandAsync("start", cancellationToken).ConfigureAwait(false);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // 切换开始或程序退出：正常结束。
+        }
+        catch (Exception exception) when (exception is InvalidOperationException
+                                              or Win32Exception
+                                              or ObjectDisposedException)
+        {
+            AppLog.Warn("UU 串流自动恢复循环异常结束。", exception);
+        }
+    }
+
+    private void RaiseStreamerRecovered()
+    {
+        try
+        {
+            StreamerRecovered?.Invoke(this, EventArgs.Empty);
+        }
+        catch (Exception exception) when (exception is InvalidOperationException
+                                              or ObjectDisposedException)
+        {
+            AppLog.Warn("通知「串流已恢复」失败。", exception);
         }
     }
 
@@ -131,6 +268,7 @@ internal sealed class UuViewSwitchService : IDisposable
         }
 
         _disposed = true;
+        StopStreamerRecovery();
         _gate.Dispose();
     }
 
@@ -257,6 +395,8 @@ internal sealed class UuViewSwitchService : IDisposable
         }
 
         var killed = KillStreamers();
+        // 记下来：如果它之后没回来，后台恢复循环据此决定是否重试拉起。
+        _killedStreamersInLastSwitch = killed > 0;
         if (killed == 0)
         {
             // 手机没连着的时候本来就没有串流端，分身已经断开，目的已经达到。
@@ -272,7 +412,7 @@ internal sealed class UuViewSwitchService : IDisposable
 
         if (!settled)
         {
-            return new Result(false, "UU 串流端没能落到主桌面，再按一次热键重试。");
+            return new Result(false, "UU 串流端没能落到主桌面。程序会在后台自动重试拉起 UU 服务，也可以稍后在手机上重连一次。");
         }
 
         // 串流端已经在主桌面上了，这时候把分身挂回后台不会影响 UU 的选择；
@@ -348,6 +488,8 @@ internal sealed class UuViewSwitchService : IDisposable
         // 4) 弹掉串流端，让服务落到分身。这一步不能因为「已连接」而跳过：
         //    连接只代表本机能看到画面，UU 那边还挂在 Console 上。
         var killed = KillStreamers();
+        // 记下来：如果它之后没回来，后台恢复循环据此决定是否重试拉起。
+        _killedStreamersInLastSwitch = killed > 0;
         if (killed == 0)
         {
             return new Result(true, "已切回「桌面分身」。当前没有 UU 串流端，下次连入即是游戏桌面。");
@@ -360,7 +502,7 @@ internal sealed class UuViewSwitchService : IDisposable
 
         return settled
             ? new Result(true, "已切回「桌面分身」，重新连一下 UU 就进游戏桌面。")
-            : new Result(false, "UU 串流端没能落到分身，再按一次热键重试。");
+            : new Result(false, "UU 串流端还没落到分身。程序会在后台自动重试拉起 UU 服务，稍候在手机上重连一次即可。");
     }
 
     /// <summary>

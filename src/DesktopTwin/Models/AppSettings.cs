@@ -150,6 +150,16 @@ public sealed class LaunchSettings
     public bool RunAsAdministrator { get; set; }
 
     /// <summary>
+    /// 「连接成功后自动启动 + 以管理员权限启动」的一次性授权凭据（DPAPI 加密的 Base64）。
+    ///
+    /// 自动 + 提权等于「只要改一下 settings.json 就能在本机管理员上下文里执行任意程序」，
+    /// 所以默认不自动执行。但这两个开关同时勾选本身就是用户的明确意图——
+    /// 于是改成「用户在界面上确认一次，程序记住这次授权」：授权与目标路径、参数绑定，
+    /// 之后改了目标程序就要重新确认，不会变成一张可以随 settings.json 一起改的白条。
+    /// </summary>
+    public string? ElevatedAutoLaunchConsent { get; set; }
+
+    /// <summary>
     /// 最近使用过的目标程序路径，最新的排在最前。
     /// </summary>
     public List<string> RecentTargets { get; set; } = [];
@@ -213,9 +223,18 @@ public sealed class AutomationSettings
     public string? AutoLoginUserName { get; set; }
 
     /// <summary>
-    /// 自动登录密码，DPAPI 加密后的 Base64。只能被同一个 Windows 账户解开。
+    /// 各账户的自动登录密码：键是用户名（不区分大小写），值是 DPAPI 加密后的 Base64。
+    ///
+    /// 为什么是字典而不是单个密码：本机的「桌面分身」可以换不同账户登录
+    /// （例如主号挂游戏、小号跑脚本）。每个账户的密码都要单独存一份，
+    /// 连接时按「当前要登录的账户」取对应那一份——否则换账户后要么登录失败，
+    /// 要么被迫把上一个账户的密码覆盖掉。
+    ///
+    /// DPAPI 是 CurrentUser 作用域：这份数据只有当前 Windows 账户能解开，
+    /// 拷到别的机器或别的账户下都无效。
     /// </summary>
-    public string? AutoLoginPassword { get; set; }
+    public Dictionary<string, string> AutoLoginPasswords { get; set; } =
+        new(StringComparer.OrdinalIgnoreCase);
 }
 
 /// <summary>

@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -24,8 +26,12 @@ internal static class PasswordDialog
     /// </summary>
     /// <param name="userName">将要使用的账户名，用于说明文案。</param>
     /// <param name="confirmText">主按钮文字，默认「保存并验证」。</param>
+    /// <param name="storedAccounts">已经保存过密码的账户（不区分大小写）。</param>
     /// <returns>确认时返回密码，取消返回 null。</returns>
-    internal static Task<string?> ShowAsync(string userName, string confirmText = "保存并验证")
+    internal static Task<string?> ShowAsync(
+        string userName,
+        string confirmText = "保存并验证",
+        IReadOnlyList<string>? storedAccounts = null)
     {
         var completion = new TaskCompletionSource<string?>(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -86,6 +92,35 @@ internal static class PasswordDialog
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 8, 0, 0)
         });
+
+        // 多账户：本机换账户登录分身时，每个账户各存一份密码。
+        // 这里把「已经存过谁」说清楚，用户才不会以为新密码会覆盖旧账户。
+        if (storedAccounts is { Count: > 0 })
+        {
+            var others = new List<string>(storedAccounts.Count);
+            foreach (var account in storedAccounts)
+            {
+                if (!string.Equals(account, userName, StringComparison.OrdinalIgnoreCase))
+                {
+                    others.Add(account);
+                }
+            }
+
+            var hint = others.Count == 0
+                ? $"已保存密码的账户：{userName}（本次会更新这一个）。"
+                : $"已保存密码的账户：{string.Join("、", storedAccounts)}。"
+                  + "每个账户的密码分开保存，本次只修改当前账户，不影响其它账户。";
+
+            panel.Children.Add(new TextBlock
+            {
+                Text = hint,
+                Opacity = 0.7,
+                FontSize = 12,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 6, 0, 0)
+            });
+        }
+
         panel.Children.Add(passwordBox);
         panel.Children.Add(errorText);
         panel.Children.Add(buttons);
