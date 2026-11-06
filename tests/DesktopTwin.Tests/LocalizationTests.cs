@@ -106,4 +106,23 @@ public sealed class LocalizationTests
 
         Assert.Equal(Strings.Count, seen.Count);
     }
+
+    [Fact]
+    public void 值的空白一律保留()
+    {
+        // 行首空白：Notify.RdpFailed.Suffix 以空格开头，拼在错误信息后面用；
+        // 全角空格：界面用它做缩进（「　　1. 点下面的…」），string.Trim 会一并吃掉；
+        // 行尾空格：英文的列表分隔符是 ", "，裁掉就变成 ","。
+        Locale.Load(
+            """
+            Test.Suffix= tail
+            Test.FullWidthIndent=　　缩进过的文字
+            Test.TrailingSpace=, 
+            """);
+
+        Assert.Equal(" tail", Locale.Get("Test.Suffix"));
+        Assert.Equal("　　缩进过的文字", Locale.Get("Test.FullWidthIndent"));
+        Assert.Equal(", ", Locale.Get("Test.TrailingSpace"));
+    }
+
 }

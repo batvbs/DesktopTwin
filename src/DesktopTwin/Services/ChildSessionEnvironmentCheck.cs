@@ -156,7 +156,6 @@ public static class ChildSessionEnvironmentCheck
             string inactiveDetailKey,
             object? summaryValue,
             object? detailValue,
-            bool blocking,
             bool CanAutoFix)
         {
             if (active.TryGetValue(id, out var found))
@@ -173,7 +172,10 @@ public static class ChildSessionEnvironmentCheck
                     Locale.Format(summaryKey, summaryValue)),
                 Locale.Format(inactiveDetailKey, detailValue),
                 Severity.Inactive,
-                blocking,
+
+                // IsBlocking 描述的是「这一项触发时有多严重」，未触发就没有意义，
+                // 统一给 false；界面也不会拿未触发项去做阻塞判定。
+                IsBlocking: false,
                 CanAutoFix: false));
         }
 
@@ -186,7 +188,6 @@ public static class ChildSessionEnvironmentCheck
                 ?? Locale.Get("Check.Unknown"),
             ReadString(RegistryHive.LocalMachine, CurrentVersionRegistryPath, "EditionID")
                 ?? Locale.Get("Check.Unknown"),
-            blocking: false,
             CanAutoFix: false);
 
         Add(
@@ -196,7 +197,6 @@ public static class ChildSessionEnvironmentCheck
             "Check.OldSystem.InactiveDetail",
             Environment.OSVersion.VersionString,
             Environment.OSVersion.VersionString,
-            blocking: true,
             CanAutoFix: false);
 
         var (serviceState, serviceStartType) = QueryTermService();
@@ -208,7 +208,6 @@ public static class ChildSessionEnvironmentCheck
             "Check.TermDisabled.InactiveDetail",
             serviceStartType,
             serviceStartType,
-            blocking: true,
             CanAutoFix: true);
 
         Add(
@@ -218,7 +217,6 @@ public static class ChildSessionEnvironmentCheck
             "Check.TermStopped.InactiveDetail",
             serviceState,
             serviceState,
-            blocking: true,
             CanAutoFix: true);
 
         Add(
@@ -244,7 +242,6 @@ public static class ChildSessionEnvironmentCheck
                 TerminalServerRegistryPath,
                 "fDenyTSConnections")?.ToString()
             ?? Locale.Get("Check.NotSet"),
-            blocking: true,
             CanAutoFix: true);
 
         Add(
@@ -262,7 +259,6 @@ public static class ChildSessionEnvironmentCheck
                 PasswordLessRegistryPath,
                 "DevicePasswordLessBuildVersion")?.ToString()
             ?? Locale.Get("Check.NotSet"),
-            blocking: true,
             CanAutoFix: true);
 
         Add(
@@ -272,7 +268,6 @@ public static class ChildSessionEnvironmentCheck
             "Check.Wrapper.InactiveDetail",
             Path.GetFileName(ReadServiceDll() ?? string.Empty),
             ReadServiceDll() ?? Locale.Get("Check.ReadFailed"),
-            blocking: true,
             CanAutoFix: true);
 
         return all;

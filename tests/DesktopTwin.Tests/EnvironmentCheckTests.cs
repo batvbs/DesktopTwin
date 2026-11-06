@@ -143,18 +143,24 @@ public sealed class EnvironmentCheckTests
     }
 
     [Fact]
-    public void 未触发项不影响阻塞判定()
+    public void 未触发项不参与阻塞判定()
     {
+        // 未触发项一律不是阻塞项：IsBlocking 描述的是「触发时有多严重」，
+        // 没触发就不该让 HasBlockingIssue 变真，否则一切正常时也会拦下启动。
         var all = ChildSessionEnvironmentCheck.CollectAll();
-        var onlyInactive = new System.Collections.Generic.List<ChildSessionEnvironmentCheck.Issue>();
+        var inactive = new System.Collections.Generic.List<ChildSessionEnvironmentCheck.Issue>();
         foreach (var issue in all)
         {
-            if (issue.IssueSeverity == ChildSessionEnvironmentCheck.Severity.Inactive)
+            if (issue.IssueSeverity != ChildSessionEnvironmentCheck.Severity.Inactive)
             {
-                onlyInactive.Add(issue);
+                continue;
             }
+
+            Assert.False(issue.IsBlocking);
+            inactive.Add(issue);
         }
 
-        Assert.False(ChildSessionEnvironmentCheck.HasBlockingIssue(onlyInactive));
+        // 未触发项构成的列表（完整列表里去掉已触发项）不应被判为有阻塞
+        Assert.False(ChildSessionEnvironmentCheck.HasBlockingIssue(inactive));
     }
 }

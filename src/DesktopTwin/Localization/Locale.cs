@@ -182,8 +182,16 @@ internal static class Locale
                 continue;
             }
 
-            // 只裁前导空白：值末尾的空格是有意义的（例如英文的列表分隔符「, 」）。
-            var value = Unescape(line.Substring(separator + 1).TrimStart());
+            // 什么都不裁——空白属于内容本身：
+            //
+            // - 值末尾：英文的列表分隔符是「, 」，裁掉就成了「,」；
+            // - 值开头：有的文案紧跟在别的文字后面，靠开头的空格分开
+            //   （Notify.RdpFailed.Suffix 就是「 已打开诊断面板…」）；
+            //   界面上用全角空格（U+3000）做的缩进同理，而且 string.Trim 会
+            //   把它按 Unicode 空白一并吃掉。
+            //
+            // 行尾的 '\r' 已在上面的 TrimEnd('\r') 去掉，这里不裁任何东西。
+            var value = Unescape(line.Substring(separator + 1));
             if (value.Length == 0)
             {
                 // 空值当作「没翻译」：直接删掉，回退到内置中文。
@@ -226,6 +234,7 @@ internal static class Locale
 
         return builder.ToString();
     }
+
 
     /// <summary>
     /// 把一段文字写成单行形式（反转义规则）。
