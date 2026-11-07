@@ -76,10 +76,18 @@ public static partial class ChildSessionEnvironmentCheck
                     }
                     catch (Exception exception) when (exception is IOException
                                                           or UnauthorizedAccessException
+                                                          or SecurityException
                                                           or InvalidOperationException
                                                           or System.ComponentModel.Win32Exception)
                     {
                         AppLog.Warn("校验 termsrv.dll 失败。", exception);
+                        result = new TermsrvFileState(File.Exists(termsrvPath), false, false, backups);
+                    }
+                    catch (Exception exception)
+                    {
+                        // 没预料到的异常也要把「校验中」放下：否则 _termsrvVerifyRunning 会一直为 true，
+                        // 这一项就永久停在「未验证」，再也不会出结论。
+                        AppLog.Error("校验 termsrv.dll 出现未预期异常。", exception);
                         result = new TermsrvFileState(File.Exists(termsrvPath), false, false, backups);
                     }
 
@@ -90,6 +98,14 @@ public static partial class ChildSessionEnvironmentCheck
                         _termsrvVerifyRunning = false;
                     }
                 });
+            }
+
+            if (_termsrvVerifyRunning)
+            {
+                // 校验正在进行（首次校验，或 5 分钟 TTL 到期后的重新校验）：手上这份结论
+                // 已经不是当前系统的事实了，不能当成新结论交出去——否则面板会先按缓存渲染
+                // 一条问题，等校验完成再把它撤掉。
+                return new TermsrvFileState(File.Exists(termsrvPath), false, false, _termsrvState.Backups);
             }
 
             if (_termsrvState.Exists || _termsrvState.Verified)
