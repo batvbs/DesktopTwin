@@ -1,10 +1,12 @@
-# 启动失败原因：自动修复可行性验证
+﻿# 启动失败原因：自动修复可行性验证
 
 本文记录「桌面分身启动失败」各类原因的**可自动化程度**验证结果，供后续实现「一键诊断与修复」功能时参考。
 
-> 状态：**已部分落地**（v0.2.0）。诊断面板与三项自动修复已实现：
-> 远程桌面被关闭、TermService 被补丁接管、TermService 被禁用/未运行。
-> 本文保留为设计依据与「为什么某些项只能手动」的记录。
+> 状态：**已落地**（v0.2.0 起步，v0.2.4 补齐）。
+> v0.2.0：远程桌面被关闭、TermService 被补丁接管、TermService 被禁用/未运行。
+> v0.2.4：又补 5 项——ServiceDll 值类型写坏、TermService 服务键被整键覆盖、
+> 破解工具的持久化项（开机任务 / Run 自启项）、RDP-Tcp 安全参数被调低、termsrv.dll 被直接打补丁。
+> 诊断项合计 12 项。本文保留为设计依据与「为什么某些项只能手动」的记录。
 
 ## 一、结论总览
 
@@ -127,17 +129,18 @@ whoami /upn            : 报错「登录的用户不是域用户」
 - **根因**（issue #3409 已确认）：补丁工具把 `TermService\Parameters\ServiceDll` 指向 `rdpwrap.dll` /
   `superrdp.dll`，劫持 TermService 以解锁多用户并发。桌面分身走的是原生 `termsrv.dll` 的 Child Session，
   同一时刻 `ServiceDll` 只能指一个，**两者互斥**。
-- **当前实现的漏检**：`ChildSessionNativeMethods.IsRdpWrapperEnabled()` 只判断路径里是否含 `rdpwrap.dll`，
-  但实际补丁名还有 `superrdp.dll`、`RDPWrappers.dll`（不同工具、不同版本）。
-  **正确判定应是「不等于原生 termsrv.dll 就算被劫持」**，而不是黑名单匹配。
+- **判定方式（已修正）**：早期实现只判断路径里是否含 `rdpwrap.dll`，漏掉了 `superrdp.dll`、`RDPWrappers.dll`。
+  现在按「**不等于原生 termsrv.dll 就算被劫持**」判定，不看名字。
 - **自动修复（可逆）**：
   1. 备份当前 `ServiceDll` 值；
   2. 优先调用补丁自带的卸载器 `%ProgramFiles%\RDP Wrapper\RDPWInst.exe -u`（issue 评论里也推荐这条，
      比自己改注册表更可靠）；
   3. 没有卸载器时，直接写回 `C:\Windows\System32\termsrv.dll`；
   4. 重启 TermService；
-  5. **停用计划任务 `RDP Wrapper Autoupdate`**（实测该任务由 `autoupdate.bat -taskadd` 以
-     `/sc ONSTART /ru SYSTEM` 创建），否则开机后会被重新写回补丁 DLL。
+  5. **清理持久化项**（v0.2.4 起）：不再只认死的任务名 `RDP Wrapper Autoupdate`，而是扫描
+     计划任务 XML 全文与 Run/RunOnce 自启项里的 `rdpwrap` / `superrdp` / `autoupdate.bat` 等特征，
+     命中项先导出备份再删除。改个任务名就漏检的写法在这里不可接受——它们唯一的作用就是
+     开机把 ServiceDll 改回去，不清掉的话用户看到的是「修好了，重启又坏」。
 - **必须手动**：无（前提是用户确认重启服务）；若同时装了多套补丁工具，可能需要用户自己判断保留哪个。
 - **注意**：还原后 RDP Wrapper 的多用户能力就没了，这是用户的取舍，必须在确认框里说清楚。
 

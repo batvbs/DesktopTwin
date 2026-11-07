@@ -21,14 +21,8 @@ namespace DesktopTwin.Services;
 /// 3. 重启服务之前检查有没有活动会话，有就先拒绝，避免把用户正在用的分身打断；
 /// 4. 需要重启才生效的修复，必须在返回消息里说清楚。
 /// </summary>
-public static class EnvironmentFixer
+public static partial class EnvironmentFixer
 {
-    /// <summary>
-    /// RDP 补丁自动更新任务名。实测由 autoupdate.bat -taskadd 以
-    /// <c>/sc ONSTART /ru SYSTEM</c> 创建，不停用的话开机会把补丁写回去。
-    /// </summary>
-    private const string RdpWrapperUpdateTaskName = "RDP Wrapper Autoupdate";
-
     /// <summary>
     /// 修复结果。
     /// </summary>
@@ -64,6 +58,21 @@ public static class EnvironmentFixer
 
             case "hello-only":
                 return FixHelloOnly();
+
+            case "termservice-dll-type":
+                return FixServiceDllType(cancellationToken);
+
+            case "termservice-key-broken":
+                return FixServiceKey(cancellationToken);
+
+            case "rdp-tool-persistence":
+                return FixToolPersistence();
+
+            case "rdp-security-downgraded":
+                return FixRdpSecurity();
+
+            case "termsrv-dll-tampered":
+                return FixTermsrvDll(cancellationToken);
 
             default:
                 return new Result(false, Locale.Get("Fix.NoAutoFix"));
@@ -170,7 +179,9 @@ public static class EnvironmentFixer
             return new Result(false, Locale.Get("Fix.RegistryStillForeignDll"));
         }
 
-        var taskDisabled = TryDisableRdpWrapperUpdateTask(out var taskMessage);
+        // 先断持久化再重启服务：这类工具的开机任务会在下次启动时把 DLL 写回去，
+        // 不清理它们，这次修复看起来成功了，用户重启后又是坏的。
+        var persistence = FixToolPersistence();
         var restart = RestartTermService(cancellationToken);
 
         if (!restart.Success)
@@ -179,9 +190,7 @@ public static class EnvironmentFixer
         }
 
         var message = Locale.Get("Fix.RestoredNative");
-        message += taskDisabled
-            ? Locale.Format("Fix.TaskDisabled", RdpWrapperUpdateTaskName)
-            : Locale.Format("Fix.TaskNote", taskMessage);
+        message += " " + persistence.Message;
         message += backupPath is null
             ? string.Empty
             : Locale.Format("Fix.BackupSaved", backupPath);
@@ -271,39 +280,6 @@ public static class EnvironmentFixer
         }
 
         return false;
-    }
-
-    /// <summary>
-    /// 停用 RDP 补丁的自动更新任务。
-    /// </summary>
-    /// <param name="message">失败原因或「任务不存在」的说明。</param>
-    private static bool TryDisableRdpWrapperUpdateTask(out string message)
-    {
-        message = string.Empty;
-
-        var schtasks = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.System),
-            "schtasks.exe");
-
-        if (!File.Exists(schtasks))
-        {
-            message = Locale.Get("Fix.SchtasksMissing");
-            return false;
-        }
-
-        if (!RunSchtasks(schtasks, $"/Query /TN \"{RdpWrapperUpdateTaskName}\"", out _))
-        {
-            message = Locale.Get("Fix.TaskNotFound");
-            return true;
-        }
-
-        if (!RunSchtasks(schtasks, $"/Change /TN \"{RdpWrapperUpdateTaskName}\" /DISABLE", out var error))
-        {
-            message = Locale.Format("Fix.TaskDisableFailed", error);
-            return false;
-        }
-
-        return true;
     }
 
     private static bool RunSchtasks(string executablePath, string arguments, out string output)

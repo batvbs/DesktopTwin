@@ -20,7 +20,7 @@ namespace DesktopTwin.Services;
 /// 本类只做检测；自动修复在 <see cref="EnvironmentFixer"/> 里，两者分开是为了让
 /// 「看」和「改」各自可以被独立测试与审查。
 /// </summary>
-public static class ChildSessionEnvironmentCheck
+public static partial class ChildSessionEnvironmentCheck
 {
     /// <summary>
     /// 「仅允许 Windows Hello 登录」设置所在路径。
@@ -123,6 +123,13 @@ public static class ChildSessionEnvironmentCheck
         CollectPasswordLessIssue(issues);
         CollectRdpWrapperIssue(issues);
 
+        // RDP 破解工具的残渣：放在最后，保证「服务起不来」这类根因结论排在前面。
+        CollectServiceDllTypeIssue(issues);
+        CollectServiceKeyIssue(issues);
+        CollectToolPersistenceIssue(issues);
+        CollectRdpSecurityIssue(issues);
+        CollectTermsrvIssue(issues);
+
         return issues;
     }
 
@@ -158,25 +165,10 @@ public static class ChildSessionEnvironmentCheck
             object? detailValue,
             bool CanAutoFix)
         {
-            if (active.TryGetValue(id, out var found))
-            {
-                all.Add(found);
-                return;
-            }
-
-            all.Add(new Issue(
-                id,
-                Locale.Get(titleKey),
-                Locale.Format(
-                    "Check.Inactive.Summary",
-                    Locale.Format(summaryKey, summaryValue)),
-                Locale.Format(inactiveDetailKey, detailValue),
-                Severity.Inactive,
-
-                // IsBlocking 描述的是「这一项触发时有多严重」，未触发就没有意义，
-                // 统一给 false；界面也不会拿未触发项去做阻塞判定。
-                IsBlocking: false,
-                CanAutoFix: false));
+            // 共用实现放在 Advanced 分部类里，两处生成未触发项时逻辑一致。
+            AddOrInactive(
+                all, active, id, titleKey, summaryKey, inactiveDetailKey,
+                summaryValue, detailValue, blocking: false);
         }
 
         Add(
@@ -269,6 +261,9 @@ public static class ChildSessionEnvironmentCheck
             Path.GetFileName(ReadServiceDll() ?? string.Empty),
             ReadServiceDll() ?? Locale.Get("Check.ReadFailed"),
             CanAutoFix: true);
+
+        // RDP 破解工具相关的五项
+        AppendAdvancedSpecs(all, active);
 
         return all;
     }

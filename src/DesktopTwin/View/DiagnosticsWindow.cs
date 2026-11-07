@@ -629,6 +629,11 @@ internal sealed class DiagnosticsWindow : FluentWindow
         "termservice-disabled" => Locale.Get("Diag.FixHint.TermServiceDisabled"),
         "termservice-stopped" => Locale.Get("Diag.FixHint.TermServiceStopped"),
         "hello-only" => Locale.Get("Diag.FixHint.HelloOnly"),
+        "termservice-dll-type" => Locale.Get("Diag.FixHint.DllType"),
+        "termservice-key-broken" => Locale.Get("Diag.FixHint.ServiceKey"),
+        "rdp-tool-persistence" => Locale.Get("Diag.FixHint.Persistence"),
+        "rdp-security-downgraded" => Locale.Get("Diag.FixHint.RdpSecurity"),
+        "termsrv-dll-tampered" => Locale.Get("Diag.FixHint.Termsrv"),
         _ => Locale.Get("Diag.FixHint.Default")
     };
 

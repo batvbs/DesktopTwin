@@ -120,8 +120,8 @@ public sealed class EnvironmentCheckTests
             Assert.True(ids.Add(issue.Id), $"全量检查项里出现重复 id：{issue.Id}");
         }
 
-        // 已知检查项固定 7 个，增减时要同步改这里
-        Assert.Equal(7, all.Count);
+        // 已知检查项固定 12 个，增减时要同步改这里
+        Assert.Equal(12, all.Count);
     }
 
     [Fact]
