@@ -15,7 +15,7 @@
 		<ApplicationIcon>Assets\DesktopTwin.ico</ApplicationIcon>
 		<!-- WPF 的 DPI 感知由 app.manifest 声明；WinForms 的 WFO0003 分析器不适用于本项目的混合场景 -->
 		<NoWarn>$(NoWarn);WFO0003</NoWarn>
-		<Version>0.2.4</Version>
+		<Version>0.2.5</Version>
 		<Product>DesktopTwin 桌面分身</Product>
 		<AssemblyTitle>DesktopTwin 桌面分身</AssemblyTitle>
 		<Description>把 Windows 自带的第二个桌面会话（RDP Child Session）变成桌面上的一个窗口。</Description>

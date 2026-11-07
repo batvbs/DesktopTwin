@@ -29,7 +29,6 @@ internal static class Strings
         Pair("Main.SwitchWindow.ToolTip", "向桌面分身发送 Win+Tab"),
         Pair("Main.ControlCenter", "控制中心"),
         Pair("Main.Status.NotStarted", "桌面分身尚未启动"),
-        Pair("Main.Status.NotStarted.Description", "点击“启动并连接”开始。"),
 
         // ---- 欢迎/连接引导 ----
         Pair("Startup.Connect", "启动并连接"),
@@ -54,7 +53,6 @@ internal static class Strings
         Pair("Menu.Resolution.Custom.ToolTip", "输入任意宽高。当前分辨率会在状态栏显示。"),
         Pair("Menu.Window", "窗口"),
         Pair("Menu.Adaptive", "自适应缩放"),
-        Pair("Menu.OneToOne", "1 : 1"),
         Pair("Menu.KeepAspectRatio", "保持宽高比"),
         Pair("Menu.Shortcuts", "快捷键"),
         Pair("Menu.SendSystemShortcuts", "系统组合键发送到桌面分身"),
@@ -77,7 +75,6 @@ internal static class Strings
         Pair("Menu.AutoLogin.Disabled", "自动登录分身"),
         Pair("Menu.TargetProgram.None", "未选择"),
         Pair("Menu.AutoLogin", "自动登录（{0}）"),
-        Pair("Menu.AutoLogin.Unnamed", "自动登录"),
         Pair("Menu.AutoLogin.Settings", "自动登录设置…"),
         Pair("Menu.AutoLogin.Settings.ToolTip", "在「本程序自动登录」与「Windows 系统自动登录」之间选择，并查看各自的步骤与影响范围。"),
         Pair("Menu.AutoLogin.Enable", "启用自动登录（本程序）"),
@@ -126,7 +123,6 @@ internal static class Strings
         Pair("Fullscreen.Minimize", "最小化"),
         Pair("Fullscreen.Restore", "还原"),
         Pair("Fullscreen.Restore.ToolTip", "退出全屏，回到窗口模式"),
-        Pair("Fullscreen.Close", "关闭"),
         Pair("Fullscreen.Pin", "固定显示这条工具栏（会记住）"),
         Pair("Fullscreen.Unpin", "取消固定（会记住）"),
 
@@ -139,7 +135,6 @@ internal static class Strings
         Pair("Tray.ToolTip.Hidden", "桌面分身（窗口已隐藏）"),
 
         // ---- 通用按钮 ----
-        Pair("Common.Ok", "确定"),
         Pair("Common.Apply", "应用"),
         Pair("Common.Continue", "继续"),
         Pair("Common.GotIt", "知道了"),
@@ -289,8 +284,6 @@ internal static class Strings
         Pair("Fix.RegistryStillForeignDll", "注册表写入后回读仍是第三方 DLL，修复未生效。"),
         Pair("Fix.RestoreFailed", "ServiceDll 已还原，但{0}"),
         Pair("Fix.RestoredNative", "已还原为原生 termsrv.dll 并重启远程桌面服务。"),
-        Pair("Fix.TaskDisabled", "同时已停用计划任务「{0}」。"),
-        Pair("Fix.TaskNote", "（{0}）"),
         Pair("Fix.BackupSaved", "原值已备份到 {0}。"),
         Pair("Fix.ConcurrentGone", "注意：多用户并发远程桌面的能力已随之失效。"),
         Pair("Fix.RegistryStillTwo", "注册表写入后回读仍是 2，修复未生效。"),
@@ -299,9 +292,6 @@ internal static class Strings
         Pair("Fix.StopFailed", "停止远程桌面服务失败：{0}"),
         Pair("Fix.RestartFailed", "服务已停止但重新启动失败：{0}"),
         Pair("Fix.ServiceRestarted", "远程桌面服务已重启。"),
-        Pair("Fix.SchtasksMissing", "找不到 schtasks.exe，请手动删除计划任务"),
-        Pair("Fix.TaskNotFound", "未发现该计划任务，无需停用"),
-        Pair("Fix.TaskDisableFailed", "停用计划任务失败：{0}"),
         Pair("Fix.RegistryOpenFailed", "无法打开注册表项 HKLM\\{0}（权限不足或路径不存在）。"),
         Pair("Fix.RegistryWriteFailed", "写入注册表失败：{0}"),
 

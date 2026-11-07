@@ -282,42 +282,6 @@ public static partial class EnvironmentFixer
         return false;
     }
 
-    private static bool RunSchtasks(string executablePath, string arguments, out string output)
-    {
-        output = string.Empty;
-
-        try
-        {
-            using var process = Process.Start(new ProcessStartInfo
-            {
-                FileName = executablePath,
-                Arguments = arguments,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            });
-
-            if (process is null)
-            {
-                return false;
-            }
-
-            var stdout = process.StandardOutput.ReadToEnd();
-            var stderr = process.StandardError.ReadToEnd();
-            process.WaitForExit(15000);
-
-            output = string.IsNullOrWhiteSpace(stderr) ? stdout : stderr;
-            return process.ExitCode == 0;
-        }
-        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception
-                                              or InvalidOperationException
-                                              or IOException)
-        {
-            output = exception.Message;
-            return false;
-        }
-    }
 
     /// <summary>
     /// 把当前的 ServiceDll 备份到设置目录。返回备份文件路径，失败返回 null。

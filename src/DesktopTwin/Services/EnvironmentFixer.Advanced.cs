@@ -563,15 +563,17 @@ public static partial class EnvironmentFixer
 
         try
         {
-            var xml = RunProcess(schtasks, $"/Query /TN \"{taskPath}\" /XML");
-            if (xml is not null)
+            var query = RunProcess(schtasks, $"/Query /TN \"{taskPath}\" /XML");
+            if (query.Output is not null)
             {
                 var fileName = taskPath.Trim('\\').Replace('\\', '_') + ".xml";
-                File.WriteAllText(Path.Combine(backupDirectory, fileName), xml, Encoding.UTF8);
+                File.WriteAllText(Path.Combine(backupDirectory, fileName), query.Output, Encoding.UTF8);
             }
 
-            RunProcess(schtasks, $"/Delete /TN \"{taskPath}\" /F");
-            return true;
+            // 删除必须看退出码：不看的话删失败也报「已清理」，面板刷新后问题还在，
+            // 用户会以为修复本身是坏的。备份失败不拦删除（XML 已经尽力导出了）。
+            var delete = RunProcess(schtasks, $"/Delete /TN \"{taskPath}\" /F");
+            return delete.ExitCode == 0;
         }
         catch (Exception exception) when (exception is InvalidOperationException
                                               or System.ComponentModel.Win32Exception
@@ -637,24 +639,51 @@ public static partial class EnvironmentFixer
         return builder.ToString();
     }
 
-    private static string? RunProcess(string fileName, string arguments)
+    /// <summary>
+    /// 跑一个外部命令，返回（标准输出，退出码）。跑不起来或超时返回退出码 -1。
+    /// </summary>
+    private static (string? Output, int ExitCode) RunProcess(string fileName, string arguments)
     {
-        using var process = Process.Start(new ProcessStartInfo
+        try
         {
-            FileName = fileName,
-            Arguments = arguments,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true
-        });
+            using var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = fileName,
+                Arguments = arguments,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true
+            });
 
-        if (process is null)
-        {
-            return null;
+            if (process is null)
+            {
+                return (null, -1);
+            }
+
+            var output = process.StandardOutput.ReadToEnd();
+            if (!process.WaitForExit(30_000))
+            {
+                try
+                {
+                    process.Kill(entireProcessTree: true);
+                }
+                catch (Exception exception) when (exception is InvalidOperationException
+                                                      or System.ComponentModel.Win32Exception)
+                {
+                    // 进程刚好退出。
+                }
+
+                return (output, -1);
+            }
+
+            return (output, process.ExitCode);
         }
-
-        var output = process.StandardOutput.ReadToEnd();
-        process.WaitForExit(30_000);
-        return output;
+        catch (Exception exception) when (exception is InvalidOperationException
+                                              or System.ComponentModel.Win32Exception
+                                              or IOException)
+        {
+            AppLog.Warn($"运行 {Path.GetFileName(fileName)} 失败。", exception);
+            return (null, -1);
+        }
     }
 }

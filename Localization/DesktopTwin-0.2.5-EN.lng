@@ -1,4 +1,4 @@
-# Desktop Twin · UI language file (English)
+﻿# Desktop Twin · UI language file (English)
 #
 # 481 entries · for Desktop Twin 0.2.4 · see Localization/README.md
 #
@@ -23,7 +23,6 @@ Main.SwitchWindow=Switch
 Main.SwitchWindow.ToolTip=Send Win+Tab to the twin desktop
 Main.ControlCenter=Control
 Main.Status.NotStarted=Desktop Twin is not running
-Main.Status.NotStarted.Description=Click "Start and connect" to begin.
 Startup.Connect=Start and connect
 Startup.CopyDiagnostics=Copy environment info
 Startup.Closing=Please wait. The window hides itself once closing finishes.
@@ -44,7 +43,6 @@ Menu.Resolution.Custom=Custom…
 Menu.Resolution.Custom.ToolTip=Enter any width and height. The current resolution is shown in the status bar.
 Menu.Window=Window
 Menu.Adaptive=Adaptive scaling
-Menu.OneToOne=1 : 1
 Menu.KeepAspectRatio=Keep aspect ratio
 Menu.Shortcuts=Shortcuts
 Menu.SendSystemShortcuts=Send system shortcuts to the twin desktop
@@ -63,7 +61,6 @@ Menu.AutoLogin.Enabled=Auto sign-in for the twin (enabled)
 Menu.AutoLogin.Disabled=Auto sign-in for the twin
 Menu.TargetProgram.None=Not selected
 Menu.AutoLogin=Auto sign-in ({0})
-Menu.AutoLogin.Unnamed=Auto sign-in
 Menu.AutoLogin.Settings=Auto sign-in settings…
 Menu.AutoLogin.Settings.ToolTip=Choose between "this app signs in" and "Windows signs in", and compare what each one changes.
 Menu.AutoLogin.Enable=Enable auto sign-in (this app)
@@ -106,7 +103,6 @@ Fullscreen.Title=Desktop Twin
 Fullscreen.Minimize=Minimize
 Fullscreen.Restore=Restore
 Fullscreen.Restore.ToolTip=Leave full screen and go back to windowed mode
-Fullscreen.Close=Close
 Fullscreen.Pin=Keep this toolbar visible (remembered)
 Fullscreen.Unpin=Stop keeping it visible (remembered)
 Tray.Show=Show main window
@@ -115,7 +111,6 @@ Tray.Fullscreen=Full screen
 Tray.Exit=Exit
 Tray.ToolTip.Visible=Desktop Twin (window shown)
 Tray.ToolTip.Hidden=Desktop Twin (window hidden)
-Common.Ok=OK
 Common.Apply=Apply
 Common.Continue=Continue
 Common.GotIt=Got it
@@ -250,8 +245,6 @@ Fix.AlreadyNativeDll=The stock termsrv.dll is already in place; nothing to fix.
 Fix.RegistryStillForeignDll=The registry value was written but still reads back as a third-party DLL, so the fix did not take effect.
 Fix.RestoreFailed=ServiceDll was restored, but {0}
 Fix.RestoredNative=Restored the stock termsrv.dll and restarted the Remote Desktop service.
-Fix.TaskDisabled=Also disabled the "{0}" scheduled task.
-Fix.TaskNote= ({0})
 Fix.BackupSaved=The original value was backed up to {0}.
 Fix.ConcurrentGone=Note: concurrent multi-user Remote Desktop no longer works.
 Fix.RegistryStillTwo=The registry value was written but still reads back as 2, so the fix did not take effect.
@@ -260,9 +253,6 @@ Fix.SessionsRunning=A twin (or Remote Desktop) session is still running. Close t
 Fix.StopFailed=Could not stop the Remote Desktop service: {0}
 Fix.RestartFailed=The service stopped but could not start again: {0}
 Fix.ServiceRestarted=The Remote Desktop service was restarted.
-Fix.SchtasksMissing=schtasks.exe not found; delete the scheduled task manually
-Fix.TaskNotFound=That scheduled task does not exist, nothing to disable
-Fix.TaskDisableFailed=Could not disable the scheduled task: {0}
 Fix.RegistryOpenFailed=Could not open registry key HKLM\\{0} (access denied or path missing).
 Fix.RegistryWriteFailed=Could not write the registry value: {0}
 Svc.Status.Starting=Starting Desktop Twin
