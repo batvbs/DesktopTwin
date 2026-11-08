@@ -1,5 +1,7 @@
 using System;
+using System.Diagnostics;
 using System.IO;
+using System.Text;
 using System.Threading;
 using System.Windows.Threading;
 using DesktopTwin.Interop;
@@ -52,12 +54,43 @@ internal sealed class SessionAgentService : IDisposable
     /// </summary>
     private static readonly TimeSpan LaunchGracePeriod = TimeSpan.FromSeconds(60);
 
+    /// <summary>
+    /// 心跳超过这个年龄就当代理卡住了。代理每 2 秒写一次，容错 15 次。
+    /// </summary>
+    private static readonly TimeSpan HeartbeatFreshWindow = TimeSpan.FromSeconds(30);
+
+    /// <summary>
+    /// 心跳最多每 2 秒读一次：状态轮询是 500ms 一次，每次开文件既浪费又增加冲突概率。
+    /// </summary>
+    private static readonly TimeSpan HeartbeatCheckInterval = TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// 连续读不到心跳多少次才认定离线。单次失败只记日志、按「未知」跳过。
+    /// </summary>
+    private const int HeartbeatReadFailureLimit = 3;
+
+    /// <summary>
+    /// 进程探测结果的缓存时长。枚举进程约 1~3ms，没必要每 500ms 做一次。
+    /// </summary>
+    private static readonly TimeSpan AgentProbeInterval = TimeSpan.FromSeconds(3);
+
     private readonly string _dataDirectory;
     private readonly Dispatcher _dispatcher;
     private DispatcherTimer? _pollTimer;
     private DateTime _lastRequestSeen = DateTime.MinValue;
     private long _lastLaunchTickCount = -1;
     private string _hotkeyArgument = "Ctrl+Alt+U";
+
+    /// <summary>连续读心跳失败的次数；成功一次就清零。</summary>
+    private int _consecutiveHeartbeatReadFailures;
+
+    /// <summary>心跳读取结果缓存（2 秒）。</summary>
+    private long _lastHeartbeatCheckTicks = -100_000;
+    private bool _lastHeartbeatFresh;
+
+    /// <summary>进程探测结果缓存（3 秒）。</summary>
+    private long _lastAgentProbeTicks = -100_000;
+    private bool _lastAgentProbeResult;
     private bool _disposed;
 
     public SessionAgentService(Dispatcher dispatcher, string? dataDirectory = null)
@@ -170,6 +203,15 @@ internal sealed class SessionAgentService : IDisposable
             return false;
         }
 
+        // 已经有一个活着的分身端就不要重复拉起：每次拉起都会新建进程、抢一次热键，
+        // 然后因为互斥体被占立刻退出——日志里那几十次「重新拉起」就是这样空转的。
+        // NeedsRestart 为真时是例外：那说明代理文件更新过，需要新进程去替换旧的。
+        if (!NeedsRestart && HasLiveAgentProcess())
+        {
+            AppLog.Info("分身端已在运行，跳过本次拉起。");
+            return false;
+        }
+
         var ok = ChildSessionProcessLauncher.RunInSession(
             sessionId.Value,
             AgentPath,
@@ -200,7 +242,14 @@ internal sealed class SessionAgentService : IDisposable
     public bool NeedsRestart { get; private set; }
 
     /// <summary>
-    /// 分身端是否在线（心跳在 20 秒内，或刚拉起还在启动宽限期内）。
+    /// 分身端是否在线。
+    ///
+    /// 两道判断，各管一件事：
+    /// 1. 先看**进程**在不在（同会话）——它回答「代理有没有被启动或被收掉」；
+    /// 2. 进程在再看**心跳**——它回答「代理还活着在干活，还是卡住了」。
+    ///
+    /// 只看心跳会把「读文件失败」误判成掉线（历史上一天误报 60 多次）；
+    /// 只看进程又发现不了卡死，所以两者缺一不可。
     /// </summary>
     public bool IsAgentOnline()
     {
@@ -216,34 +265,119 @@ internal sealed class SessionAgentService : IDisposable
             }
         }
 
+        if (!HasLiveAgentProcess())
+        {
+            return false;
+        }
+
         return IsHeartbeatFresh();
     }
 
     /// <summary>
-    /// 只看心跳文件判断分身端是否在线（不含启动宽限）。
+    /// 分身会话里是否已经有分身端进程。
+    ///
+    /// 不能靠互斥体判断：代理用的是 <c>Local\</c> 命名空间，会话内可见，
+    /// 主程序所在的父会话根本打不开它。改成 <c>Global\</c> 又会让多个分身会话互相打架。
+    ///
+    /// 必须按会话过滤：控制台登录时自启项也会跑一次代理，那个进程会立刻退出，
+    /// 不过滤就会把它当成「分身端还活着」。
     /// </summary>
-    private bool IsHeartbeatFresh()
+    public bool HasLiveAgentProcess()
     {
-        try
+        var now = Environment.TickCount64;
+        if (now - _lastAgentProbeTicks < (long)AgentProbeInterval.TotalMilliseconds)
         {
-            if (!File.Exists(HeartbeatPath))
-            {
-                return false;
-            }
-
-            var text = File.ReadAllText(HeartbeatPath).Trim();
-            if (!long.TryParse(text, out var unixSeconds))
-            {
-                return false;
-            }
-
-            var age = DateTimeOffset.UtcNow - DateTimeOffset.FromUnixTimeSeconds(unixSeconds);
-            return age >= TimeSpan.Zero && age < TimeSpan.FromSeconds(20);
+            return _lastAgentProbeResult;
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+
+        _lastAgentProbeTicks = now;
+        _lastAgentProbeResult = ProbeAgentProcess();
+        return _lastAgentProbeResult;
+    }
+
+    private bool ProbeAgentProcess()
+    {
+        var sessionId = ChildSessionNativeMethods.TryGetChildSessionId();
+        if (sessionId is null)
         {
             return false;
         }
+
+        var processName = Path.GetFileNameWithoutExtension(AgentFileName);
+        foreach (var process in Process.GetProcessesByName(processName))
+        {
+            try
+            {
+                if ((uint)process.SessionId == sessionId.Value)
+                {
+                    return true;
+                }
+            }
+            catch (Exception exception) when (exception is InvalidOperationException
+                                                  or System.ComponentModel.Win32Exception
+                                                  or NotSupportedException)
+            {
+                // 进程刚好退出或无权读取：跳过，不是错误。
+            }
+            finally
+            {
+                process.Dispose();
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 只看心跳文件判断分身端是否还在写心跳（不含启动宽限）。
+    ///
+    /// 读文件时会撞上代理正在写：两边都用 <see cref="FileShare.ReadWrite"/> 打开就不会互斥。
+    /// 即便这样仍可能失败（杀软扫描等），因此**单次失败不算掉线**：
+    /// 连续 <see cref="HeartbeatReadFailureLimit"/> 次读不到才认，中间那次按「未知」跳过。
+    /// </summary>
+    private bool IsHeartbeatFresh()
+    {
+        var now = Environment.TickCount64;
+        if (now - _lastHeartbeatCheckTicks < (long)HeartbeatCheckInterval.TotalMilliseconds)
+        {
+            return _lastHeartbeatFresh;
+        }
+
+        _lastHeartbeatCheckTicks = now;
+        _lastHeartbeatFresh = ProbeHeartbeat();
+        return _lastHeartbeatFresh;
+    }
+
+    private bool ProbeHeartbeat()
+    {
+        long unixSeconds;
+        try
+        {
+            using var stream = new FileStream(
+                HeartbeatPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            if (!long.TryParse(reader.ReadToEnd().Trim(), out unixSeconds))
+            {
+                _consecutiveHeartbeatReadFailures = 0;
+                return false;
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            _consecutiveHeartbeatReadFailures++;
+
+            // 单次冲突不当掉线：这一轮按「未知」处理，留给下一轮再确认。
+            AppLog.Info($"读取分身端心跳失败（第 {_consecutiveHeartbeatReadFailures} 次）：{exception.Message}");
+            return _consecutiveHeartbeatReadFailures < HeartbeatReadFailureLimit;
+        }
+
+        _consecutiveHeartbeatReadFailures = 0;
+
+        var age = DateTimeOffset.UtcNow - DateTimeOffset.FromUnixTimeSeconds(unixSeconds);
+        return age >= TimeSpan.Zero && age < HeartbeatFreshWindow;
     }
 
     /// <summary>

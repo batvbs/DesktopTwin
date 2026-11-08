@@ -43,6 +43,15 @@ internal sealed class DiagnosticsWindow : FluentWindow
 
     /// <summary>是否显示未触发的检查项。按 Shift 打开时为 true。</summary>
     private readonly bool _showAll;
+
+    /// <summary>是否补一条「密码可能不正确」的运行时结论。</summary>
+    private bool _credentialHint;
+
+    /// <summary>最近一次渲染的结论，供「反馈问题」拼标题用。</summary>
+    private IReadOnlyList<ChildSessionEnvironmentCheck.Issue> _lastIssues = [];
+
+    /// <summary>「启动失败」横幅：说明这次是被启动失败带进来的。</summary>
+    private readonly StackPanel _startupBanner;
     private readonly TextBlock _statusText;
     private readonly DispatcherTimer _refreshTimer;
 
@@ -79,9 +88,17 @@ internal sealed class DiagnosticsWindow : FluentWindow
     /// true 时额外列出当前没有触发的检查项。用于核对文案（含翻译），
     /// 由「按住 Shift 打开诊断与修复」触发。
     /// </param>
-    public DiagnosticsWindow(bool showAll)
+    /// <param name="startupFailure">
+    /// true 时在顶部显示「启动失败」横幅——面板是被启动失败带出来的，而不是用户主动打开的。
+    /// </param>
+    /// <param name="credentialHint">
+    /// true 时补一条「密码可能不正确」的运行时结论。只有「刚连接失败」的现场才该带上：
+    /// 它描述的是上一次尝试，不属于环境状态。
+    /// </param>
+    public DiagnosticsWindow(bool showAll, bool startupFailure = false, bool credentialHint = false)
     {
         _showAll = showAll;
+        _credentialHint = credentialHint;
 
         Title = Locale.Get("Diag.Title");
         Width = 760;
@@ -98,6 +115,22 @@ internal sealed class DiagnosticsWindow : FluentWindow
         _noticeSection = CreateSection();
         _resolvedSection = CreateSection();
         _inactiveSection = CreateSection();
+
+        // 「启动失败」时才显示的一行标题：说明这次不是用户主动打开的面板。
+        _startupBanner = new StackPanel
+        {
+            Margin = new Thickness(0, 0, 0, 12),
+            Visibility = startupFailure ? Visibility.Visible : Visibility.Collapsed
+        };
+        _startupBanner.Children.Add(new TextBlock
+        {
+            Text = Locale.Get("Diag.StartupFailed.Title"),
+            FontSize = 18,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = new SolidColorBrush(WarningColor),
+            TextWrapping = TextWrapping.Wrap
+        });
+
         _statusText = new TextBlock
         {
             Text = Locale.Get("Diag.Checking"),
@@ -139,6 +172,39 @@ internal sealed class DiagnosticsWindow : FluentWindow
     /// </summary>
     internal void RefreshNow() => Refresh();
 
+    /// <summary>
+    /// 把已打开的面板标成「启动失败」：显示顶部横幅并置前。
+    /// 用户先手动打开过面板、随后点启动被拒时会走到这里。
+    /// </summary>
+    internal void MarkStartupFailure()
+    {
+        _startupBanner.Visibility = Visibility.Visible;
+        Activate();
+    }
+
+    /// <summary>
+    /// 打开 / 收起「密码可能不正确」这条运行时结论，并立即重绘。
+    /// 用户在这里重设密码成功后调用 false，让那条提示跟着消失。
+    /// </summary>
+    internal void SetCredentialHint(bool value)
+    {
+        if (_credentialHint == value)
+        {
+            return;
+        }
+
+        _credentialHint = value;
+        Refresh();
+    }
+
+    /// <summary>
+    /// 「用自带自动登录修复」被点击。
+    ///
+    /// 这一项不是注册表修复，需要弹密码框、改设置里的开关，都是 UI 动作，
+    /// 因此交给宿主处理；面板只负责发起。
+    /// </summary>
+    internal event EventHandler? PasswordSetupRequested;
+
     private UIElement BuildLayout()
     {
         var root = new Grid { Margin = new Thickness(20, 16, 20, 16) };
@@ -147,6 +213,7 @@ internal sealed class DiagnosticsWindow : FluentWindow
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
         var header = new StackPanel { Margin = new Thickness(0, 0, 0, 12) };
+        header.Children.Add(_startupBanner);
         header.Children.Add(new TextBlock
         {
             Text = Locale.Get("Diag.Intro"),
@@ -236,8 +303,18 @@ internal sealed class DiagnosticsWindow : FluentWindow
         };
         restartButton.Click += async (_, _) => await RestartComputerAsync();
 
+        var feedbackButton = new Wpf.Ui.Controls.Button
+        {
+            Content = Locale.Get("Diag.Button.Feedback"),
+            MinWidth = 92,
+            Margin = new Thickness(0, 0, 8, 0),
+            ToolTip = Locale.Get("Diag.Button.Feedback.ToolTip")
+        };
+        feedbackButton.Click += (_, _) => OpenFeedbackPage();
+
         buttons.Children.Add(closeButton);
         buttons.Children.Add(refreshButton);
+        buttons.Children.Add(feedbackButton);
         buttons.Children.Add(restartButton);
 
         Grid.SetColumn(buttons, 1);
@@ -271,8 +348,8 @@ internal sealed class DiagnosticsWindow : FluentWindow
         try
         {
             issues = _showAll
-                ? ChildSessionEnvironmentCheck.CollectAll()
-                : ChildSessionEnvironmentCheck.Collect();
+                ? ChildSessionEnvironmentCheck.CollectAll(_credentialHint)
+                : ChildSessionEnvironmentCheck.Collect(_credentialHint);
         }
         catch (Exception exception) when (exception is InvalidOperationException
                                               or System.ComponentModel.Win32Exception)
@@ -282,6 +359,10 @@ internal sealed class DiagnosticsWindow : FluentWindow
         }
 
         var currentIds = new HashSet<string>(StringComparer.Ordinal);
+
+        // 留一份给「反馈问题」：标题直接带上当前最主要的问题，省得用户再描述一遍。
+        _lastIssues = issues;
+
         foreach (var issue in issues)
         {
             if (issue.IssueSeverity == ChildSessionEnvironmentCheck.Severity.Inactive)
@@ -502,7 +583,10 @@ internal sealed class DiagnosticsWindow : FluentWindow
         {
             var fixButton = new Wpf.Ui.Controls.Button
             {
-                Content = Locale.Get("Diag.Button.Fix"),
+                // 这一项的动作是「设置密码 + 打开自动登录」，写成「修复」太含糊。
+                Content = issue.Id == "credential-rejected"
+                    ? Locale.Get("Diag.Button.SetPassword")
+                    : Locale.Get("Diag.Button.Fix"),
                 Appearance = ControlAppearance.Primary,
                 MinWidth = 72,
                 VerticalAlignment = VerticalAlignment.Top,
@@ -581,6 +665,15 @@ internal sealed class DiagnosticsWindow : FluentWindow
     {
         if (_fixInProgress)
         {
+            return;
+        }
+
+        // 「用自带自动登录修复」不碰注册表：打开密码设置窗口由宿主完成。
+        // 也因此不需要「会修改系统设置」那个确认框，直接交给用户输入密码即可。
+        if (issue.Id == "credential-rejected")
+        {
+            _statusText.Text = Locale.Get("Diag.Status.PasswordSetup");
+            PasswordSetupRequested?.Invoke(this, EventArgs.Empty);
             return;
         }
 
@@ -671,5 +764,71 @@ internal sealed class DiagnosticsWindow : FluentWindow
         {
             _statusText.Text = Locale.Format("Diag.Status.RebootFailed", exception.GetBaseException().Message);
         }
+    }
+
+    /// <summary>
+    /// 打开 GitHub 的新建 Issue 页面，并顺手把环境快照放进剪贴板。
+    ///
+    /// 仓库用的是 issue form（带表单字段的 yml 模板），正文没法用 URL 预填，
+    /// 所以这里只预填标题；用户到了页面把快照粘进「环境信息」一栏即可。
+    /// 先复制再开页面：万一浏览器没起来，剪贴板里至少还有能贴的内容。
+    /// </summary>
+    private void OpenFeedbackPage()
+    {
+        var copied = true;
+        try
+        {
+            Clipboard.SetText(ChildSessionEnvironmentCheck.BuildDiagnosticSnapshot());
+        }
+        catch (Exception exception) when (exception is System.Runtime.InteropServices.ExternalException
+                                              or InvalidOperationException)
+        {
+            // 剪贴板被别的程序占着不算致命：页面照样打开，用户还能从菜单里再复制一次。
+            copied = false;
+            AppLog.Warn("复制环境信息失败，继续打开反馈页面。", exception);
+        }
+
+        var title = $"[Bug] {BuildFeedbackTitle()}";
+
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo
+            {
+                FileName = AppLinks.NewIssue(title),
+                UseShellExecute = true
+            });
+
+            _statusText.Text = Locale.Get(copied
+                ? "Diag.Status.FeedbackOpened"
+                : "Diag.Status.FeedbackOpenedNoCopy");
+        }
+        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception
+                                              or InvalidOperationException)
+        {
+            _statusText.Text = Locale.Format("Diag.Status.FeedbackFailed", AppLinks.Issues);
+        }
+    }
+
+    /// <summary>
+    /// 反馈标题里带的问题名：优先取当前触发的警告，没有就用提示，都没有就写启动失败。
+    /// </summary>
+    private string BuildFeedbackTitle()
+    {
+        string? firstNotice = null;
+
+        foreach (var issue in _lastIssues)
+        {
+            if (issue.IssueSeverity == ChildSessionEnvironmentCheck.Severity.Warning)
+            {
+                return issue.Title;
+            }
+
+            if (issue.IssueSeverity == ChildSessionEnvironmentCheck.Severity.Notice && firstNotice is null)
+            {
+                firstNotice = issue.Title;
+            }
+        }
+
+        return firstNotice ?? Locale.Get("Diag.Feedback.DefaultTitle");
     }
 }

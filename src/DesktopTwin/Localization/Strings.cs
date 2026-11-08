@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 
 namespace DesktopTwin.Localization;
 
@@ -76,7 +76,7 @@ internal static class Strings
         Pair("Menu.TargetProgram.None", "未选择"),
         Pair("Menu.AutoLogin", "自动登录（{0}）"),
         Pair("Menu.AutoLogin.Settings", "自动登录设置…"),
-        Pair("Menu.AutoLogin.Settings.ToolTip", "在「本程序自动登录」与「Windows 系统自动登录」之间选择，并查看各自的步骤与影响范围。"),
+        Pair("Menu.AutoLogin.Settings.ToolTip", "在「本程序自动登录」与「Windows 系统自动登录」之间选择，并查看各自的步骤与影响范围；已启用本程序的自动登录时，会直接打开设置密码。"),
         Pair("Menu.AutoLogin.Enable", "启用自动登录（本程序）"),
         Pair("Menu.AutoLogin.Enable.ToolTip", "连接分身时自动填入 Windows 登录凭据。密码用 DPAPI 加密保存在本机，只有当前账户能解开；若凭据框仍出现，程序最多尝试自动填写两次，之后交回手动输入。"),
         Pair("Menu.AutoLogin.SetPassword", "设置登录密码…"),
@@ -151,6 +151,7 @@ internal static class Strings
         Pair("Password.Accounts.Single", "已保存密码的账户：{0}（本次会更新这一个）。"),
         Pair("Password.Accounts.Many", "已保存密码的账户：{0}。每个账户的密码分开保存，本次只修改当前账户，不影响其它账户。"),
         Pair("Password.Error.Empty", "密码不能为空。"),
+        Pair("Password.Verifying", "正在验证…（微软账户会联网校验，可能需要几秒）"),
 
         // ---- 分辨率对话框 ----
         Pair("Resolution.Title", "自定义分辨率"),
@@ -195,6 +196,7 @@ internal static class Strings
         Pair("Uu.Result.ServiceRestartFailed", "重启 UU 服务失败（停止{0}、启动失败）。请在服务管理器里手动重启 GameViewerService。"),
         // ---- 诊断与修复面板 ----
         Pair("Diag.Title", "诊断与修复"),
+        Pair("Diag.StartupFailed.Title", "启动失败"),
         Pair("Diag.Checking", "正在检查…"),
         Pair("Diag.Intro", "桌面分身依赖 Windows 的远程桌面与子会话能力。下面列出当前环境里可能影响启动的问题。"),
         Pair("Diag.Hint", "点任意一行可展开完整说明与手动修复步骤；能自动修复的会在右侧显示「修复」按钮。"),
@@ -205,6 +207,10 @@ internal static class Strings
         Pair("Diag.Button.Reboot", "重启电脑"),
         Pair("Diag.Button.RebootNow", "立即重启"),
         Pair("Diag.Button.Fix", "修复"),
+        Pair("Diag.Button.SetPassword", "设置自动登录…"),
+        Pair("Diag.Button.Feedback", "反馈问题…"),
+        Pair("Diag.Button.Feedback.ToolTip", "打开 GitHub 新建 Issue 页面，并把环境信息复制到剪贴板。"),
+        Pair("Diag.Feedback.DefaultTitle", "桌面分身问题反馈"),
         Pair("Diag.Empty.Warning", "没有发现会阻止启动的问题。"),
         Pair("Diag.Empty.Notice", "没有提示项。"),
         Pair("Diag.Empty.Resolved", "还没有已解决的问题。修好之后会自动移到这里。"),
@@ -212,6 +218,10 @@ internal static class Strings
         Pair("Diag.Status.Clean", "环境检查完成：没有阻塞项。"),
         Pair("Diag.Status.Summary", "环境检查完成：{0} 个警告，{1} 个提示。"),
         Pair("Diag.Status.Fixing", "正在修复…"),
+        Pair("Diag.Status.PasswordSetup", "请在弹出的窗口里输入密码，验证通过后自动登录就会生效。"),
+        Pair("Diag.Status.FeedbackOpened", "已打开反馈页面，环境信息已复制到剪贴板——粘到「环境信息」一栏即可。"),
+        Pair("Diag.Status.FeedbackOpenedNoCopy", "已打开反馈页面。剪贴板被占用，环境信息没复制成功，请先用「更多 → 复制环境信息」。"),
+        Pair("Diag.Status.FeedbackFailed", "打不开浏览器。请手动访问 {0} 并附上环境信息。"),
         Pair("Diag.Status.FixFailed", "修复失败：{0}"),
         Pair("Diag.Status.RebootRequested", "已请求重启，5 秒后关机。"),
         Pair("Diag.Status.RebootFailed", "无法发起重启：{0}。请手动重启。"),
@@ -233,6 +243,15 @@ internal static class Strings
         Pair("Check.NotSet", "未设置"),
         Pair("Check.ReadFailed", "读取失败"),
         Pair("Check.None", "无"),
+        Pair("Check.Yes", "是"),
+        Pair("Check.No", "否"),
+
+        // 运行时结论：不是环境问题，只在「刚连接失败」的现场补进来。
+        Pair("Check.Credential.Title", "密码输入错误，或 Microsoft 帐户凭证已过期"),
+        Pair("Check.Credential.Summary", "系统拒绝了本次登录，但没有给出具体原因"),
+        Pair("Check.Credential.Detail", "Windows 只回报「连接被断开」，没给具体原因——密码输错，和本机缓存的 Microsoft 帐户凭证与云端不一致，表现完全一样，程序无法区分。\n\n用自带的「自动登录」可以避免每次手输：保存一次密码，之后连接时自动填入。保存时程序会用交互式登录做一次在线校验：\n· 验证通过 = 密码正确，本机缓存也会被刷新成最新；\n· 提示密码不正确 = 先到 account.microsoft.com 确认密码，改完再回来设置一次。"),
+        Pair("Check.Credential.InactiveDetail", "本次连接没有出现凭据被拒。"),
+
         Pair("Check.Home.Title", "当前系统为家庭版"),
         Pair("Check.Home.Summary", "家庭版不带远程桌面主机，桌面分身属于「不受支持」状态"),
         Pair("Check.Home.Detail", "检测到系统版本为 {0}（家庭版）。微软官方文档说明家庭版不包含远程桌面主机，桌面分身在该版本上属于「不受支持」状态。\n实测大部分家庭版系统仍可正常建立分身会话，因此这里不做阻止——如果启动后一直连不上，再考虑升级。\n\n升级到专业版的方法（仅切换版本，**不会激活系统**，激活需要你自己另行处理）：\n1. 断开网络；\n2. 打开「设置」→ 搜索「激活」→ 点「更改产品密钥」；\n3. 输入通用密钥 VK7JG-NPHTM-C97JM-9MPGT-3V66T；\n4. 按提示确认并重启，重启后即为专业版。\n\n也可以输入你自己从其他途径获得的产品密钥，效果相同。"),
@@ -254,9 +273,11 @@ internal static class Strings
         Pair("Check.HelloOnly.Detail", "系统已开启「为了提高安全性，仅允许对此设备上的 Microsoft 帐户使用 Windows Hello 登录」，此时 Microsoft 帐户在本机没有可用的密码凭据，桌面分身的登录会一直提示凭据无效，无论输入什么密码都会失败。\n\n可以点右侧的「修复」把该开关关掉，但**改完必须注销或重启才生效**——凭据提供程序在登录时就已确定，不重新登录不会刷新。\n也可以手动在「设置 → 帐户 → 登录选项」中关闭同名选项。"),
         Pair("Check.Wrapper.Title", "TermService 被第三方补丁接管"),
         Pair("Check.Wrapper.Summary", "ServiceDll 指向 {0}，与分身互斥"),
-        Pair("Check.Wrapper.Detail", "系统 TermService 的 ServiceDll 指向了非原生的 DLL（当前：{0}）。RDP Wrapper、SuperRDP 这类工具就是靠替换这个值来解锁多用户并发远程桌面，而桌面分身走的是原生 termsrv.dll 的 Child Session——同一个值只能指向一个 DLL，两者互斥。\n\n修复会做三件事：备份当前值 → 改回原生 termsrv.dll → 停用计划任务「RDP Wrapper Autoupdate」（不停用的话它会在开机时把补丁写回去）→ 重启远程桌面服务。\n代价是：还原后多用户并发远程桌面的能力就没有了，需要重新安装补丁工具才能恢复。"),
+        Pair("Check.Wrapper.Detail", "系统 TermService 的 ServiceDll 指向了非原生的 DLL（当前：{0}）。RDP Wrapper、SuperRDP 这类工具就是靠替换这个值来解锁多用户并发远程桌面，而桌面分身走的是原生 termsrv.dll 的 Child Session——同一个值只能指向一个 DLL，两者互斥。\n\n修复会做三件事：备份并改回原生 termsrv.dll → 停用计划任务「RDP Wrapper Autoupdate」（不停用的话它会在开机时把补丁写回去）→ 重启远程桌面服务。\n代价是：还原后多用户并发远程桌面的能力就没有了，需要重新安装补丁工具才能恢复。"),
 
         // ---- 环境快照（复制环境信息） ----
+        Pair("Check.Snapshot.AppVersion", "DesktopTwin 版本：{0}（运行时：{1}）"),
+        Pair("Check.Snapshot.Elevated", "以管理员身份运行：{0}"),
         Pair("Check.Snapshot.OsVersion", "系统版本：{0}（64 位进程：{1}）"),
         Pair("Check.Snapshot.WindowsVersion", "Windows 版本：{0}"),
         Pair("Check.Snapshot.Build", "系统内部版本：{0}"),
@@ -269,6 +290,9 @@ internal static class Strings
         Pair("Check.Snapshot.ChildSessions", "Child Sessions 已启用：{0}"),
         Pair("Check.Snapshot.CurrentSession", "当前分身会话：{0}"),
         Pair("Check.Snapshot.ChildSessionFailed", "读取 Child Session 状态失败：{0}"),
+        Pair("Check.Snapshot.LastFailure", "上次连接失败：{0}"),
+        Pair("Check.Snapshot.LastFailureValue", "{0}（错误 {1}，扩展 {2}）"),
+        Pair("Check.Snapshot.LogDirectory", "日志目录：{0}"),
         Pair("Check.Snapshot.Header", "环境预检结论："),
 
         // ---- 一键修复的结果提示 ----
@@ -331,7 +355,13 @@ internal static class Strings
         Pair("Svc.Conn.Connected", "已连接"),
         Pair("Svc.Conn.Connecting", "正在连接"),
         Pair("Svc.Conn.Unknown", "未知连接状态 {0}"),
-        Pair("Svc.Status.Bar", "{0} | RDP：{1} | 分身会话：{2} | 功能已启用：{3}"),
+        Pair("Svc.Status.Bar", "{0} | RDP：{1} | 分身会话：{2} | 子会话：{3}"),
+
+        // 服务异常时追加在状态栏末尾；正常时不显示这一段。
+        Pair("Svc.Status.TermStopped", " | TermService：未启动"),
+        Pair("Svc.Status.TermDisabled", " | TermService：已禁用"),
+        Pair("Svc.Status.On", "开"),
+        Pair("Svc.Status.Off", "关"),
         Pair("Svc.Status.ReadyAutoLaunching", "分身已就绪，正在自动启动 {0}"),
         Pair("Svc.Status.Launching", "正在启动 {0}"),
         Pair("Svc.Status.Launched", "已在分身（会话 {0}）中启动 {1}"),
@@ -346,10 +376,11 @@ internal static class Strings
         Pair("Svc.Status.RdpReconnectRetrying", "RDP 自动重连暂未成功，{0} 秒后重试（{1}/{2}）"),
         Pair("Svc.Status.RdpReconnectRetryNow", "正在重试 RDP 自动连接（{0}/{1}）"),
         Pair("Svc.Error.RdpReconnectFailed", "RDP 自动重新连接失败：{0}"),
-        Pair("Svc.Status.InitialRetrying", "分身首次初始化尚未完成，{0} 秒后自动重试（{1}/{2}）"),
+        Pair("Svc.Status.InitialRetrying", "连接失败，{0} 秒后自动重试（{1}/{2}）"),
         Pair("Svc.Status.InitialRetryNow", "正在重试分身连接（{0}/{1}）"),
         Pair("Svc.Error.InitialRetryFailed", "重试分身连接失败：{0}"),
         Pair("Svc.Error.Timeout", "分身连接及登录初始化未能在 {0} 秒内完成。"),
+        Pair("Svc.Error.TermServiceStartTimeout", "远程桌面服务没有在 {0} 秒内进入运行状态。"),
         Pair("Svc.Error.Timeout.NoDetail", "{0}\n\nRDP ActiveX 未报告更具体的失败原因。"),
         Pair("Svc.Error.Timeout.LastReport", "{0}\n\nRDP ActiveX 最后报告：\n{1}"),
         Pair("Svc.Diag.NoSession", "诊断：当前没有可用的分身会话，说明 Windows 未能建立 RDP 会话。该状态本身无法确定原因——系统无法创建会话与凭据未通过验证都会得到这个结果，请结合上面的 RDP ActiveX 错误信息一并判断。"),
@@ -469,18 +500,14 @@ internal static class Strings
         Pair("Notify.UuEnabled.Message", "按 {0} 可在「整台电脑」与「桌面分身」之间切换。"),
         Pair("Notify.UuEnabled.Message.Agent", "按 {0} 可在「整台电脑」与「桌面分身」之间切换。分身画面内由分身端接管，同样有效。"),
         Pair("AutoLogin.Verify.Unknown", "无法校验这组凭据（错误 {0}）。请确认账户类型后重试。"),
-        Pair("AutoLogin.Verify.BadPassword", "用户名或密码错误（错误 {0}）。如果密码确实是对的，可能是本机缓存的微软账户凭据已过期，用下面这条命令刷新一次再重试："),
+        Pair("AutoLogin.Verify.BadPassword", "密码不正确，或 Microsoft 帐户密码未同步（网络问题）。"),
+        Pair("AutoLogin.Verify.AccountLocked", "该账户已被锁定（连续输错次数过多）。请等待解锁后再试，期间不要反复尝试。"),
+        Pair("AutoLogin.Verify.MustChangePassword", "该账户必须先修改密码才能登录，请在「设置 → 帐户」里改密后再设置。"),
         Pair("AutoLogin.Verify.AccountRestricted", "账户受限：可能是空密码、登录时段或工作站限制。请给账户设置密码后再试。"),
         Pair("AutoLogin.Verify.PasswordExpired", "账户密码已过期，请先修改密码再重新设置。"),
         Pair("AutoLogin.Verify.AccountDisabled", "该 Windows 账户已被禁用，无法用于登录。请先启用账户。"),
-        Pair("AutoLogin.VerifyFailed.Title", "密码校验未通过"),
         Pair("AutoLogin.VerifyOk.Title", "验证通过"),
-        Pair("AutoLogin.VerifyOk.Message", "凭据有效，自动填充也已生效。下次重连分身时会直接使用这组密码。"),
-        Pair("AutoLogin.VerifyIncomplete.Title", "验证未完成"),
-        Pair("AutoLogin.VerifyCanceled.Title", "已取消验证"),
-        Pair("AutoLogin.VerifyCanceled.Message", "密码已保存，但没有验证。可以稍后再点一次「设置登录密码…」。"),
-        Pair("AutoLogin.Verifying.Title", "正在验证"),
-        Pair("AutoLogin.Verifying.Message", "即将弹出 Windows 凭据框，程序会自动填入刚保存的密码并提交。"),
+        Pair("AutoLogin.VerifyOk.Message", "凭据有效。下次重连分身时会直接使用这组密码。"),
         Pair("AutoLogin.SaveFailed.Title", "保存失败"),
         Pair("AutoLogin.SaveFailed.Message", "无法加密保存密码，请查看日志。自动登录不会启用。"),
         Pair("AutoLogin.Cleared.Title", "已清除密码"),

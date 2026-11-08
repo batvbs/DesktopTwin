@@ -127,7 +127,7 @@ namespace DesktopTwinSessionAgent
             }
 
             var beat = new System.Windows.Forms.Timer();
-            beat.Interval = 5000;
+            beat.Interval = 2000;
             beat.Tick += delegate { WriteHeartbeat(); };
             beat.Start();
 
@@ -316,7 +316,18 @@ namespace DesktopTwinSessionAgent
             try
             {
                 long now = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds;
-                File.WriteAllText(_heartbeatPath, now.ToString(), new UTF8Encoding(false));
+                byte[] payload = new UTF8Encoding(false).GetBytes(now.ToString());
+
+                // 用 FileShare.ReadWrite 打开：主程序那边同时可能在读，
+                // 默认共享模式（FileShare.Read）会把「读」挡在外面，反之亦然。
+                using (FileStream stream = new FileStream(
+                           _heartbeatPath,
+                           FileMode.Create,
+                           FileAccess.Write,
+                           FileShare.ReadWrite | FileShare.Delete))
+                {
+                    stream.Write(payload, 0, payload.Length);
+                }
             }
             catch (Exception ex)
             {

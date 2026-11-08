@@ -27,7 +27,24 @@ namespace DesktopTwin.Services;
 public sealed class ChildSessionService : IDisposable
 {
     private static readonly TimeSpan ConnectionTimeout = TimeSpan.FromSeconds(60);
-    private const int InitialConnectionRetryCount = 3;
+
+    /// <summary>
+    /// 连接失败后等多久再试一次。
+    ///
+    /// 凭据被拒时 Windows 会直接把 RDP 断开，只有重新连接才会再次弹出凭据框，
+    /// 所以「再给用户一次机会」在实现上就是「等几秒重连一次」。
+    /// 4 秒给用户留出看清提示、重新输入的时间。
+    /// </summary>
+    private static readonly TimeSpan ConnectionRetryDelay = TimeSpan.FromSeconds(4);
+
+    /// <summary>
+    /// 一次启动最多再重试几次。
+    ///
+    /// 只留 1 次：每次重试都会再试一次密码，失败一次就消耗一次账户的锁定配额
+    /// （默认阈值 10 次）。两次足够覆盖手滑，再多就是在拿用户账户冒险。
+    /// </summary>
+    private const int ConnectionRetryCount = 1;
+
     private const int RdpSettingsReconnectRetryCount = 2;
     private const int ErrorTimeout = 1460;
 
@@ -62,6 +79,26 @@ public sealed class ChildSessionService : IDisposable
     private ChildSessionConnectionFailedEventArgs? _lastConnectionFailure;
     private int _initialConnectionRetriesRemaining;
     private bool _connectionRetryInProgress;
+
+    /// <summary>
+    /// 当前这一次连接尝试的超时截止时刻（<see cref="Environment.TickCount64"/>）。
+    /// 重试会重新计算，否则总超时会把刚开始的重试直接掐掉。
+    /// </summary>
+    private long _attemptDeadlineTick;
+
+    /// <summary>
+    /// 最近一次连接失败像是「凭据被拒」。成功登录或开始新一轮尝试时清掉。
+    /// </summary>
+    private bool _credentialFailureSuspected;
+
+    /// <summary>
+    /// 本轮尝试是否不自动填凭据弹窗。
+    ///
+    /// 重试的唯一目的是让用户自己再输一次密码，自动填会把同一份密码再提交一遍——
+    /// 错的还是错，只是又消耗一次失败登录。注意只关「填弹窗」这一路，
+    /// 直接交给 RDP 的凭据（<see cref="ProvideAutoLoginCredential"/>）保持不动。
+    /// </summary>
+    private bool _suppressCredentialDialogFill;
     private RdpSettingChange _pendingRdpSettingChanges;
     private int _rdpSettingsReconnectRetriesRemaining;
     private bool _rdpSettingsReconnectRetryInProgress;
@@ -216,6 +253,18 @@ public sealed class ChildSessionService : IDisposable
         ChildSessionEnvironmentCheck.HasBlockingIssue(_environmentIssues);
 
     /// <summary>
+    /// 最近一次失败是否像是「凭据被拒」。
+    ///
+    /// 诊断面板据此补一条「密码可能不正确」的结论；成功登录或开始新一轮尝试后自动作废。
+    /// </summary>
+    public bool CredentialFailureSuspected => _credentialFailureSuspected;
+
+    /// <summary>
+    /// 作废「凭据被拒」的推断。用户重设密码后调用，避免面板上那条提示赖着不走。
+    /// </summary>
+    public void ClearCredentialFailureSuspected() => _credentialFailureSuspected = false;
+
+    /// <summary>
     /// 最近一次启动前环境预检的结论文本，供界面提示与问题排查使用。
     /// </summary>
     public string EnvironmentIssueSummary =>
@@ -280,6 +329,11 @@ public sealed class ChildSessionService : IDisposable
                 TaskCreationOptions.RunContinuationsAsynchronously);
             _connectionAttemptCompletionSource = completionSource;
             _lastConnectionFailure = null;
+            _credentialFailureSuspected = false;
+
+            // 先给整次启动一个超时预算：ConnectCore 里可能压根没有发起连接
+            //（窗口已处于连接状态），那种情况下没有这一步就会立刻判超时。
+            MarkAttemptStarted();
 
             try
             {
@@ -297,19 +351,7 @@ public sealed class ChildSessionService : IDisposable
 
         try
         {
-            await completionSource.Task.WaitAsync(
-                ConnectionTimeout,
-                _disposeCancellationTokenSource.Token);
-        }
-        catch (TimeoutException)
-        {
-            if (!completionSource.Task.IsCompleted)
-            {
-                _autoLaunchPending = false;
-                _initialConnectionRetriesRemaining = 0;
-                CompleteConnectionFailure(CreateConnectionTimeoutFailure());
-                TryDisconnectRdpHost();
-            }
+            await WaitForConnectionAttemptAsync(completionSource);
         }
         finally
         {
@@ -319,6 +361,46 @@ public sealed class ChildSessionService : IDisposable
             }
         }
     }
+
+    /// <summary>
+    /// 等本次启动出结果。
+    ///
+    /// 超时按**单次尝试**计算：重试会把截止时刻推后，否则用户在第一轮慢慢输入密码，
+    /// 重试刚开始就被总超时掐掉，日志还会误报成「连接超时」。
+    /// 超时属于外部原因（会话没响应），不再重试——直接按失败处理。
+    /// </summary>
+    private async Task WaitForConnectionAttemptAsync(TaskCompletionSource<bool> completionSource)
+    {
+        while (!completionSource.Task.IsCompleted)
+        {
+            var remainingMilliseconds = _attemptDeadlineTick - Environment.TickCount64;
+            if (remainingMilliseconds <= 0)
+            {
+                _autoLaunchPending = false;
+                _initialConnectionRetriesRemaining = 0;
+                CompleteConnectionFailure(CreateConnectionTimeoutFailure());
+                TryDisconnectRdpHost();
+                return;
+            }
+
+            try
+            {
+                await completionSource.Task.WaitAsync(
+                    TimeSpan.FromMilliseconds(remainingMilliseconds),
+                    _disposeCancellationTokenSource.Token);
+            }
+            catch (TimeoutException)
+            {
+                // 回到循环顶部重新读截止时刻：可能刚被重试推后了。
+            }
+        }
+    }
+
+    /// <summary>
+    /// 标记一次新的连接尝试开始，重置单次尝试的超时截止时刻。
+    /// </summary>
+    private void MarkAttemptStarted() =>
+        _attemptDeadlineTick = Environment.TickCount64 + (long)ConnectionTimeout.TotalMilliseconds;
 
     /// <summary>
     /// 显示分身窗口。窗口不存在时创建。
@@ -820,9 +902,12 @@ public sealed class ChildSessionService : IDisposable
             };
             var sessionText = ChildSessionId?.ToString() ?? Locale.Get("Check.None");
             var mainText = _lastOperationMessage ?? connectionText;
+            var enabledText = enabled ? Locale.Get("Svc.Status.On") : Locale.Get("Svc.Status.Off");
 
-            StatusText =
-            Locale.Format("Svc.Status.Bar", mainText, connectionText, sessionText, enabled);
+            // 服务正常时不占用状态栏；只有「没启动」或「被禁用」才追加一段，
+            // 让用户在点启动之前就能看出是环境问题、而不是连接问题。
+            StatusText = Locale.Format("Svc.Status.Bar", mainText, connectionText, sessionText, enabledText)
+                         + DescribeTermServiceForStatus();
         }
         catch (Exception exception) when (IsExpectedChildSessionException(exception))
         {
@@ -830,6 +915,65 @@ public sealed class ChildSessionService : IDisposable
         }
 
         StateChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// 状态栏里描述远程桌面服务的那一段：正常返回空串，异常时返回「 | TermService：未启动/已禁用」。
+    /// </summary>
+    private static string DescribeTermServiceForStatus()
+    {
+        var (state, startType) = ChildSessionEnvironmentCheck.QueryTermService();
+
+        if (startType == "Disabled")
+        {
+            return Locale.Get("Svc.Status.TermDisabled");
+        }
+
+        return state is "Stopped" or "StopPending" ? Locale.Get("Svc.Status.TermStopped") : string.Empty;
+    }
+
+    /// <summary>
+    /// 用户点「启动」时，把「已停止」的远程桌面服务拉起来。
+    ///
+    /// 只处理「启动类型正常、但服务没在运行」这一种情况：被禁用的服务不在这里动，
+    /// 那需要改启动类型，属于用户的显式选择，交给诊断面板处理。
+    /// 服务本来就在运行（或已禁用）时返回 false，调用方据此决定要不要重新预检。
+    /// </summary>
+    /// <param name="error">启动失败的原因；没做事或成功时为空。</param>
+    /// <returns>本次是否真的把服务启动起来了。</returns>
+    public bool TryStartTermServiceIfStopped(out string error)
+    {
+        error = string.Empty;
+
+        var (state, startType) = ChildSessionEnvironmentCheck.QueryTermService();
+        if (startType == "Disabled" || state is not ("Stopped" or "StopPending"))
+        {
+            return false;
+        }
+
+        if (!ServiceNativeMethods.TryStart("TermService", out var startError))
+        {
+            error = startError;
+            AppLog.Warn($"启动远程桌面服务失败：{startError}");
+            return false;
+        }
+
+        // 服务启动是异步的：等它真的进入 Running，调用方才能据此重新预检。
+        const int timeoutSeconds = 5;
+        for (var elapsed = 0; elapsed < timeoutSeconds * 5; elapsed++)
+        {
+            if (ServiceNativeMethods.TryQueryState("TermService", out var current) && current == 4)
+            {
+                AppLog.Info("远程桌面服务已自动启动。");
+                return true;
+            }
+
+            Thread.Sleep(200);
+        }
+
+        error = Locale.Format("Svc.Error.TermServiceStartTimeout", timeoutSeconds);
+        AppLog.Warn(error);
+        return false;
     }
 
     /// <summary>
@@ -918,9 +1062,11 @@ public sealed class ChildSessionService : IDisposable
             _autoLaunchPending = existingSessionId is null
                                  && _settings.Current.Launch.AutoLaunchOnConnect
                                  && !string.IsNullOrWhiteSpace(_settings.Current.Launch.TargetPath);
-            _initialConnectionRetriesRemaining = existingSessionId is null
-                ? InitialConnectionRetryCount
-                : 0;
+            // 重试与「连接后自动启动目标程序」无关：输错密码的用户往往根本没开那个开关，
+            // 而重连一次正是唯一能让他再输一次密码的途径。
+            _initialConnectionRetriesRemaining = ConnectionRetryCount;
+            _suppressCredentialDialogFill = false;
+            MarkAttemptStarted();
             window.RdpHost.ConnectToChildSession(DesktopSize);
         }
 
@@ -989,7 +1135,11 @@ public sealed class ChildSessionService : IDisposable
 
             // 连接中且开了自动登录：开始盯着可能出现的凭据弹窗。
             // 放在状态轮询里而不是每个连接入口各写一遍，重连、重试、设置变更全覆盖。
-            if (ConnectedState == 2 && _autoLogin is { IsEnabled: true })
+            // 重试这一轮例外：它的意义就是让用户重新输一次，自动填会把同一份（很可能
+            // 已经失效的）密码再提交一遍，白白多一次失败登录。
+            if (ConnectedState == 2
+                && _autoLogin is { IsEnabled: true }
+                && !_suppressCredentialDialogFill)
             {
                 _autoLogin.StartWatching();
             }
@@ -1112,8 +1262,7 @@ public sealed class ChildSessionService : IDisposable
             _pendingRdpSettingChanges = RdpSettingChange.None;
         }
 
-        if (_autoLaunchPending
-            && _initialConnectionRetriesRemaining > 0
+        if (_initialConnectionRetriesRemaining > 0
             && !_connectionRetryInProgress)
         {
             RetryInitialConnectionAsync(e);
@@ -1130,6 +1279,10 @@ public sealed class ChildSessionService : IDisposable
         _lastConnectionFailure = null;
         _initialConnectionRetriesRemaining = 0;
         _connectionRetryInProgress = false;
+        _credentialFailureSuspected = false;
+        // 登录成功之后一切照旧：下一次连接该自动填还是自动填。
+        _suppressCredentialDialogFill = false;
+        ChildSessionEnvironmentCheck.ClearConnectionFailure();
         _connectionAttemptCompletionSource?.TrySetResult(true);
 
         // 登录已经完成，再盯着凭据弹窗只会误填下一个（比如用户手动打开的安全对话框）。
@@ -1291,12 +1444,18 @@ public sealed class ChildSessionService : IDisposable
     {
         _connectionRetryInProgress = true;
         ChildSessionConnectionFailedEventArgs? retryFailure = null;
-        var retryNumber = InitialConnectionRetryCount - _initialConnectionRetriesRemaining + 1;
+
+        // 这一轮不自动填弹窗：留空的凭据框等用户自己输。要在等待之前就置位，
+        // 否则断开过程中状态还是「连接中」，轮询可能抢先把监听重新挂上。
+        _suppressCredentialDialogFill = true;
+
+        var retryNumber = ConnectionRetryCount - _initialConnectionRetriesRemaining + 1;
         _initialConnectionRetriesRemaining--;
-        var retryDelay = TimeSpan.FromSeconds(1 << (retryNumber - 1));
+        var retryDelay = ConnectionRetryDelay;
 
         AppLog.Warn(
-            $"分身首次初始化连接失败，将在 {retryDelay.TotalSeconds:0} 秒后进行第 {retryNumber} 次重试。"
+            $"分身 RDP 连接失败，将在 {retryDelay.TotalSeconds:0} 秒后重试"
+            + $"（第 {retryNumber} 次，共 {ConnectionRetryCount} 次）。"
             + $"错误：{firstFailure.Message}，错误代码：{firstFailure.ErrorCode}，"
             + $"扩展错误代码：{firstFailure.ExtendedErrorCode}");
         RefreshState(
@@ -1304,12 +1463,14 @@ public sealed class ChildSessionService : IDisposable
                 "Svc.Status.InitialRetrying",
                 retryDelay.TotalSeconds,
                 retryNumber,
-                InitialConnectionRetryCount));
+                ConnectionRetryCount));
 
         try
         {
             await Task.Delay(retryDelay, _disposeCancellationTokenSource.Token);
-            if (_disposed || !_autoLaunchPending)
+            if (_disposed
+                || _connectionAttemptCompletionSource is null
+                || _connectionAttemptCompletionSource.Task.IsCompleted)
             {
                 return;
             }
@@ -1321,8 +1482,10 @@ public sealed class ChildSessionService : IDisposable
             }
 
             RefreshState(
-                Locale.Format("Svc.Status.InitialRetryNow", retryNumber, InitialConnectionRetryCount));
+                Locale.Format("Svc.Status.InitialRetryNow", retryNumber, ConnectionRetryCount));
             _connectionRetryInProgress = false;
+            // 新的一次尝试有自己的超时预算，否则总超时会把刚开始的重试掐掉。
+            MarkAttemptStarted();
             // OnLogonError 触发后 ActiveX 可能仍处于连接状态，必须先断开再重连。
             // 否则这里直接退出会丢失已捕获的真实错误，最终只剩外层连接超时。
             _desktopWindow.RdpHost.ReconnectToChildSession(DesktopSize);
@@ -1365,12 +1528,45 @@ public sealed class ChildSessionService : IDisposable
         _lastConnectionFailure = diagnosed;
         _autoLaunchPending = false;
         _initialConnectionRetriesRemaining = 0;
+        _credentialFailureSuspected = IsLikelyCredentialFailure(diagnosed);
+
+        // 留给「复制环境信息」：环境全绿却连不上时，这一行通常才是关键。
+        // 用 e.Message 而不是 diagnosed.Message：后者带上了整段环境诊断，不适合塞进一行。
+        ChildSessionEnvironmentCheck.RecordConnectionFailure(
+            e.ErrorCode,
+            e.ExtendedErrorCode,
+            e.Message);
+
         _connectionAttemptCompletionSource?.TrySetResult(false);
         AppLog.Error(
             $"分身 RDP 连接失败：{diagnosed.Message}，错误代码：{diagnosed.ErrorCode}，"
             + $"扩展错误代码：{diagnosed.ExtendedErrorCode}");
         RefreshState(diagnosed.Message);
         ConnectionFailed?.Invoke(this, diagnosed);
+    }
+
+    /// <summary>
+    /// 这次失败像不像「凭据被拒」。
+    ///
+    /// RDP 在凭据被拒时只回报「发生了内部错误」(1) 并把连接断开，没有专用错误码；
+    /// 反过来说，超时、客户端致命错误（内存不足 / 窗口创建失败 / 无效状态等）
+    /// 和「取消登录」这类事件都能明确排除。剩下的一律按「可能」，措辞上也留了余地。
+    /// </summary>
+    private static bool IsLikelyCredentialFailure(ChildSessionConnectionFailedEventArgs e)
+    {
+        // 2 内存不足、3 窗口创建失败、5 无效状态、6/7 不可恢复、100 套接字初始化失败。
+        if (e.ErrorCode is 2 or 3 or 5 or 6 or 7 or 100 or ErrorTimeout)
+        {
+            return false;
+        }
+
+        // 负数来自 OnLogonError：-3 及以下是取消/无权限一类的交互事件，不是密码问题。
+        if (e.ErrorCode <= -3)
+        {
+            return false;
+        }
+
+        return true;
     }
 
     /// <summary>

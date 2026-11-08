@@ -464,12 +464,22 @@ public partial class MainWindowViewModel : ObservableObject
         {
             _childSessionService.RefreshEnvironmentCheck();
 
+            // 服务只是「没启动」时先替用户拉一次：状态栏已经写着「TermService：未启动」，
+            // 用户点「启动」即视为同意。被禁用或启动失败的情况不在这里处理，
+            // 照常走下面的拦截提示，由用户到诊断面板里修。
+            if (_childSessionService.HasBlockingEnvironmentIssue
+                && await Task.Run(() => _childSessionService.TryStartTermServiceIfStopped(out _)))
+            {
+                _childSessionService.RefreshEnvironmentCheck();
+                _childSessionService.RefreshState();
+            }
+
             // 阻塞项（例如缺少 RDP 主机）直接拒绝，避免用户白等 60 秒超时。
+            // 不再弹一个只有「我知道了」的框——那是个死胡同；直接把诊断面板推到用户面前，
+            // 他下一步要做的事（修复）就在那里。
             if (_childSessionService.HasBlockingEnvironmentIssue)
             {
-                await Dialogs.ErrorAsync(
-                    _childSessionService.EnvironmentIssueSummary,
-                    Locale.Get("Startup.Blocked.Title"));
+                ShowDiagnostics(showAll: false, startupFailure: true);
                 return;
             }
 
@@ -905,10 +915,25 @@ public partial class MainWindowViewModel : ObservableObject
     /// 不带 [RelayCommand]：它需要参数，由菜单项的 Click 事件直接调用。
     /// </summary>
     /// <param name="showAll">是否列出未触发的检查项。</param>
-    internal void ShowDiagnostics(bool showAll)
+    /// <param name="startupFailure">
+    /// true 表示这次是被「启动失败」带进来的：面板顶部会显示「启动失败」与下一步引导。
+    /// </param>
+    /// <param name="credentialHint">
+    /// true 表示补一条「密码可能不正确」的运行时结论。只有连接失败后的现场才传 true。
+    /// </param>
+    internal void ShowDiagnostics(
+        bool showAll,
+        bool startupFailure = false,
+        bool credentialHint = false)
     {
         if (_diagnosticsWindow is { IsLoaded: true } existing)
         {
+            if (startupFailure)
+            {
+                existing.MarkStartupFailure();
+            }
+
+            existing.SetCredentialHint(credentialHint);
             existing.RefreshNow();
             if (existing.WindowState == WindowState.Minimized)
             {
@@ -919,7 +944,8 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        var window = new DiagnosticsWindow(showAll);
+        var window = new DiagnosticsWindow(showAll, startupFailure, credentialHint);
+        window.PasswordSetupRequested += OnPasswordSetupRequested;
         window.Closed += (_, _) => _diagnosticsWindow = null;
         _diagnosticsWindow = window;
         Dialogs.Show(window);
@@ -927,6 +953,10 @@ public partial class MainWindowViewModel : ObservableObject
 
     /// <summary>
     /// 打开「自动登录方式」对话框：让用户在本程序自动登录与 Windows 系统自动登录之间自己选。
+    ///
+    /// 已经启用本程序的自动登录时不再弹这个对话框：里面那个「启用自动登录」按钮
+    /// 对着已经启用的用户是废话，用户点进来通常就是想换密码——直接复用
+    /// 「设置登录密码」的弹窗。（系统自动登录有单独的菜单项，不受影响。）
     /// </summary>
     [RelayCommand]
     private async Task ShowAutoLoginOptionsAsync()
@@ -935,6 +965,12 @@ public partial class MainWindowViewModel : ObservableObject
         if (autoLogin is null)
         {
             ShowNotification(Locale.Get("AutoLogin.Unavailable.Title"), Locale.Get("AutoLogin.Unavailable.Message"), InfoBarSeverity.Warning);
+            return;
+        }
+
+        if (AutoLoginEnabled)
+        {
+            await TrySaveAndVerifyPasswordAsync();
             return;
         }
 
@@ -1065,13 +1101,15 @@ public partial class MainWindowViewModel : ObservableObject
     }
 
     /// <summary>
-    /// 弹出密码框、加密保存，并立即验证一次。
+    /// 弹出密码框，在**弹窗内**完成校验，验证通过才保存。
     ///
-    /// 验证方式：用 <c>CredUIPromptForWindowsCredentials</c> 弹一个**独立的**
-    /// 「Windows 安全中心」凭据框（不碰分身会话），自动填充后校验提交上来的那组凭据。
-    /// 这样既验证了密码本身，也验证了自动填充这条链路——而且不会打断正在用的分身。
+    /// 校验用 <c>LogonUser</c> 的交互式登录（LOGON32_LOGON_INTERACTIVE）：不弹系统框、
+    /// 不创建进程；对微软账户会先比对本机缓存，不匹配时联网校验并回写缓存，
+    /// 因此云端改密后也能直接得到真实结论，顺带把缓存修好。
+    ///
+    /// 失败时窗口保持打开、显示原因，密码不落盘——避免把错密码存进去覆盖原来的正确密码。
     /// </summary>
-    /// <returns>验证通过返回 true。</returns>
+    /// <returns>验证通过并保存成功返回 true。</returns>
     private async Task<bool> TrySaveAndVerifyPasswordAsync()
     {
         var autoLogin = _childSessionService.AutoLogin;
@@ -1080,122 +1118,68 @@ public partial class MainWindowViewModel : ObservableObject
             return false;
         }
 
-        if (await PasswordDialog.ShowAsync(
-                autoLogin.UserName,
-                confirmText: null,
-                autoLogin.StoredAccountNames) is not { } password)
-        {
-            return false;
-        }
+        var result = await PasswordDialog.ShowAsync(
+            autoLogin.UserName,
+            confirmText: null,
+            autoLogin.StoredAccountNames,
+            async password =>
+            {
+                var (check, errorCode) = await Task.Run(() =>
+                {
+                    var outcome = autoLogin.VerifyPassword(password, out var code);
+                    return (outcome, code);
+                });
 
-        if (!autoLogin.SavePassword(password))
+                if (check != AutoLoginService.PasswordCheckResult.Valid)
+                {
+                    return PasswordValidationResult.Fail(BuildVerifyFailureMessage(check, errorCode));
+                }
+
+                // 只有验证通过才落盘；失败时原有密码保持不变。
+                return autoLogin.SavePassword(password)
+                    ? PasswordValidationResult.Ok()
+                    : PasswordValidationResult.Fail(Locale.Get("AutoLogin.SaveFailed.Message"));
+            });
+
+        if (result is null)
         {
-            ShowNotification(
-                Locale.Get("AutoLogin.SaveFailed.Title"),
-                Locale.Get("AutoLogin.SaveFailed.Message"),
-                InfoBarSeverity.Error);
             return false;
         }
 
         HasAutoLoginPassword = true;
 
         ShowNotification(
-                Locale.Get("AutoLogin.Verifying.Title"),
-                Locale.Get("AutoLogin.Verifying.Message"),
-            InfoBarSeverity.Informational,
-            TimeSpan.FromSeconds(4));
-
-        // 强制开启监听：此刻自动登录开关可能还没打开，但同样需要自动填充。
-        autoLogin.StartWatching(force: true);
-        CredentialPromptService.PromptResult prompt;
-        try
-        {
-            prompt = await CredentialPromptService.PromptAsync(
-                GetOwnerWindowHandle(),
-                TimeSpan.FromSeconds(90),
-                CancellationToken.None);
-        }
-        finally
-        {
-            autoLogin.StopWatching();
-        }
-
-        if (prompt.Canceled)
-        {
-            ShowNotification(
-                Locale.Get("AutoLogin.VerifyCanceled.Title"),
-                Locale.Get("AutoLogin.VerifyCanceled.Message"),
-                InfoBarSeverity.Informational,
-                TimeSpan.FromSeconds(6));
-            return false;
-        }
-
-        if (!prompt.Success)
-        {
-            ShowNotification(Locale.Get("AutoLogin.VerifyIncomplete.Title"), prompt.Message, InfoBarSeverity.Warning, TimeSpan.FromSeconds(10));
-            return false;
-        }
-
-        var check = autoLogin.VerifyPassword(
-            prompt.UserName,
-            prompt.Domain,
-            prompt.Password,
-            out var errorCode);
-
-        if (check == AutoLoginService.PasswordCheckResult.Valid)
-        {
-            ShowNotification(
-                Locale.Get("AutoLogin.VerifyOk.Title"),
-                Locale.Get("AutoLogin.VerifyOk.Message"),
-                InfoBarSeverity.Success,
-                TimeSpan.FromSeconds(7));
-            return true;
-        }
-
-        ShowNotification(
-                Locale.Get("AutoLogin.VerifyFailed.Title"),
-            BuildVerifyFailureMessage(check, errorCode, autoLogin),
-            InfoBarSeverity.Warning,
-            TimeSpan.FromSeconds(14));
-        return false;
+            Locale.Get("AutoLogin.VerifyOk.Title"),
+            Locale.Get("AutoLogin.VerifyOk.Message"),
+            InfoBarSeverity.Success,
+            TimeSpan.FromSeconds(7));
+        return true;
     }
 
     /// <summary>
-    /// 取主窗口句柄，用作凭据框的父窗口。窗口尚未创建时返回 0。
-    /// </summary>
-    private IntPtr GetOwnerWindowHandle()
-    {
-        var window = _childSessionService.Window;
-        if (window is null)
-        {
-            return IntPtr.Zero;
-        }
-
-        var handle = new System.Windows.Interop.WindowInteropHelper(window).Handle;
-        return handle;
-    }
-
-    /// <summary>
-    /// 把校验失败翻译成可执行的说明。
+    /// 把校验失败翻译成一句可执行的话，显示在密码框下面。
     ///
-    /// 特别注意 1326 不能直接断言「密码错了」：微软账户的本机凭据缓存过期时，
-    /// 即使密码是新的也会返回同一个错误，两者必须一起提示。
+    /// 1326 已用交互式登录校验过（会对微软账户联网验证），所以「密码错」与「网络不通」
+    /// 会得到同一个错误码，文案把这两种可能一起说清楚，而不是断言密码错了。
     /// </summary>
     private static string BuildVerifyFailureMessage(
         AutoLoginService.PasswordCheckResult result,
-        int errorCode,
-        AutoLoginService autoLogin)
+        int errorCode)
     {
         return result switch
         {
             AutoLoginService.PasswordCheckResult.AccountDisabled =>
                         Locale.Get("AutoLogin.Verify.AccountDisabled"),
+            AutoLoginService.PasswordCheckResult.AccountLocked =>
+                        Locale.Get("AutoLogin.Verify.AccountLocked"),
+            AutoLoginService.PasswordCheckResult.PasswordMustChange =>
+                        Locale.Get("AutoLogin.Verify.MustChangePassword"),
             AutoLoginService.PasswordCheckResult.PasswordExpired =>
                         Locale.Get("AutoLogin.Verify.PasswordExpired"),
             AutoLoginService.PasswordCheckResult.AccountRestricted =>
                         Locale.Get("AutoLogin.Verify.AccountRestricted"),
             AutoLoginService.PasswordCheckResult.InvalidPassword =>
-                        Locale.Format("AutoLogin.Verify.BadPassword", errorCode),
+                        Locale.Get("AutoLogin.Verify.BadPassword"),
             _ =>
                         Locale.Format("AutoLogin.Verify.Unknown", errorCode)
         };
@@ -1661,9 +1645,17 @@ public partial class MainWindowViewModel : ObservableObject
         }
 
         _lastAgentStartTicks = now;
+
+        // 进程还在就别再拉一个：新代理抢不到互斥体会立刻退出，除了多一条日志什么也做不到。
+        if (!_sessionAgent.NeedsRestart && _sessionAgent.HasLiveAgentProcess())
+        {
+            AppLog.Info("分身端进程仍在（心跳停滞），跳过重启以免多开。");
+            return;
+        }
+
         AppLog.Info(_sessionAgent.NeedsRestart
             ? "分身端脚本已更新，拉起新代理替换旧的。"
-            : "分身端心跳超时（代理已掉线），重新拉起。");
+            : "分身端未在运行，重新拉起。");
         _ = _sessionAgent.TryStartInChildSession();
     }
 
@@ -1686,8 +1678,34 @@ public partial class MainWindowViewModel : ObservableObject
 
                 // 连接失败时自动弹诊断面板：RDP ActiveX 只会回报「发生内部错误」，
                 // 真正的原因几乎都在环境检查里，让用户自己去菜单里找太绕。
-                OpenDiagnostics();
+                // 打上「启动失败」横幅并带上「密码可能不正确」的推断——两者都是这次失败的一部分。
+                ShowDiagnostics(
+                    showAll: false,
+                    startupFailure: true,
+                    credentialHint: _childSessionService.CredentialFailureSuspected);
             }));
+    }
+
+    /// <summary>
+    /// 面板上「设置自动登录…」被点击：输入并验证密码，通过后启用本程序的自动登录。
+    ///
+    /// 「密码可能不正确」这条结论只有用户把密码重设一次才算处理掉，
+    /// 所以成功之后要一并作废推断，让面板上的那条跟着消失。
+    /// </summary>
+    private async void OnPasswordSetupRequested(object? sender, EventArgs e)
+    {
+        if (!await TrySaveAndVerifyPasswordAsync())
+        {
+            return;
+        }
+
+        if (!AutoLoginEnabled)
+        {
+            EnableAppAutoLogin();
+        }
+
+        _childSessionService.ClearCredentialFailureSuspected();
+        _diagnosticsWindow?.SetCredentialHint(false);
     }
 
     private void OnSystemShortcutsReconnectCompleted(object? sender, EventArgs e)
@@ -1791,6 +1809,14 @@ public partial class MainWindowViewModel : ObservableObject
         IsAudioMuted = _childSessionService.AudioMuted;
         IsRdpConnected = connectedState == 1;
         IsConnectionPromptVisible = IsSessionClosing || (connectedState == 0 && !_startRequested);
+
+        // 连上了说明凭据是对的：这次失败的推断作废，面板上那条提示跟着撤掉。
+        // 只在确实还挂着推断时才动手，避免每轮轮询都写一次。
+        if (IsRdpConnected && _childSessionService.CredentialFailureSuspected)
+        {
+            _childSessionService.ClearCredentialFailureSuspected();
+            _diagnosticsWindow?.SetCredentialHint(false);
+        }
 
         if (IsSessionClosing)
         {

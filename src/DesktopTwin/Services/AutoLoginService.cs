@@ -57,7 +57,7 @@ internal sealed class AutoLoginService : IDisposable
     private const string MicrosoftAccountPropertiesPath =
         @"Software\Microsoft\IdentityCRL\UserExtendedProperties";
 
-    private const int Logon32LogonNetwork = 3;
+    private const int Logon32LogonInteractive = 2;
     private const int Logon32ProviderDefault = 0;
 
     [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -78,7 +78,7 @@ internal sealed class AutoLoginService : IDisposable
     /// 一次连接最多自动填几次。凭据框反复出现通常意味着密码本身就是错的，
     /// 继续填只会把账户往锁定策略上推。
     /// </summary>
-    private const int MaxFillAttempts = 2;
+    private const int MaxFillAttempts = 1;
 
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(600);
     private static readonly TimeSpan WatchDuration = TimeSpan.FromSeconds(60);
@@ -245,6 +245,12 @@ internal sealed class AutoLoginService : IDisposable
         /// <summary>账户限制（空密码、登录时段、工作站限制）。</summary>
         AccountRestricted,
 
+        /// <summary>账户已被锁定（连续失败次数过多）。</summary>
+        AccountLocked,
+
+        /// <summary>必须先修改密码才能登录。</summary>
+        PasswordMustChange,
+
         /// <summary>无法判定（权限不足或未知错误）。</summary>
         Unknown
     }
@@ -252,8 +258,13 @@ internal sealed class AutoLoginService : IDisposable
     /// <summary>
     /// 校验一组凭据当前是否有效。
     ///
-    /// 用 <c>LogonUser</c> 做一次网络登录验证，不产生界面、不创建进程。
-    /// 错误码能把「密码错了」和「账户被禁用 / 密码过期」区分开，比让用户反复试密码有用。
+    /// 用 <c>LogonUser</c> 做一次**交互式**登录验证（LOGON32_LOGON_INTERACTIVE）：
+    /// 不产生界面、不创建进程、不加载用户配置文件。
+    ///
+    /// 为什么不用网络登录（NETWORK）：那只比对 LSA 里的本地验证器。微软账户在云端改密后，
+    /// 本机缓存仍是旧密码，网络登录会对新密码返回 1326——看起来像密码错了。
+    /// 交互式登录会先比对缓存、不匹配则**联网校验并回写缓存**，实测改密后走这条路
+    /// 既能得到真实结论，顺手把缓存也修好了。
     /// </summary>
     /// <param name="password">待校验的密码。</param>
     /// <param name="errorCode">Win32 错误码，成功时为 0。</param>
@@ -264,10 +275,10 @@ internal sealed class AutoLoginService : IDisposable
     }
 
     /// <summary>
-    /// 用指定的用户名/域校验凭据。用于校验「凭据框里实际提交的那一组」。
+    /// 用指定的用户名/域校验凭据。
     /// </summary>
     /// <param name="userName">用户名。</param>
-    /// <param name="domain">域；本地账户留空即可。</param>
+    /// <param name="domain">域；本地账户留空即可，微软账户用 MicrosoftAccount。</param>
     /// <param name="password">密码。</param>
     /// <param name="errorCode">Win32 错误码，成功时为 0。</param>
     public PasswordCheckResult VerifyPassword(
@@ -282,7 +293,7 @@ internal sealed class AutoLoginService : IDisposable
                 userName,
                 domain,
                 password,
-                Logon32LogonNetwork,
+                Logon32LogonInteractive,
                 Logon32ProviderDefault,
                 out var token))
         {
@@ -298,6 +309,8 @@ internal sealed class AutoLoginService : IDisposable
         return errorCode switch
         {
             1326 => PasswordCheckResult.InvalidPassword,
+            1909 => PasswordCheckResult.AccountLocked,
+            1907 => PasswordCheckResult.PasswordMustChange,
             1331 => PasswordCheckResult.AccountDisabled,
             1330 => PasswordCheckResult.PasswordExpired,
             1327 or 1385 => PasswordCheckResult.AccountRestricted,
@@ -341,22 +354,6 @@ internal sealed class AutoLoginService : IDisposable
         }
 
         return false;
-    }
-
-    /// <summary>
-    /// 生成「刷新本机凭据缓存」的命令，供用户复制执行。
-    ///
-    /// 对应社区做法：<c>runas /u:MicrosoftAccount\&lt;邮箱&gt; winver</c>，
-    /// 用新密码登录一次，让 Windows 把本地缓存的凭据验证器更新过来。
-    /// 输入密码时命令行不会有任何提示，属正常现象。
-    /// </summary>
-    public string BuildPasswordSyncCommand()
-    {
-        var identity = TryGetMicrosoftAccountEmail(out var email)
-            ? $@"MicrosoftAccount\{email}"
-            : $@"{Environment.MachineName}\{Environment.UserName}";
-
-        return $"runas /u:{identity} winver";
     }
 
     /// <summary>

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
 using System.Security;
 using System.Text;
 using DesktopTwin.Interop;
@@ -112,7 +113,12 @@ public static partial class ChildSessionEnvironmentCheck
     /// <summary>
     /// 收集当前系统的环境结论。读取失败（键或值不存在、无权限）时跳过该项，不抛异常。
     /// </summary>
-    public static IReadOnlyList<Issue> Collect()
+    /// <param name="includeCredentialHint">
+    /// true 时补一条「密码可能不正确」的运行时结论。只在「刚连接失败过」的现场传 true：
+    /// 它不是环境问题，平时带上会把一台干净的系统误标成有问题，也会在启动前的预检里
+    /// 多弹一个确认框。
+    /// </param>
+    public static IReadOnlyList<Issue> Collect(bool includeCredentialHint = false)
     {
         var issues = new List<Issue>();
 
@@ -130,7 +136,38 @@ public static partial class ChildSessionEnvironmentCheck
         CollectRdpSecurityIssue(issues);
         CollectTermsrvIssue(issues);
 
+        // 运行时结论放在最后：它依赖上面那些项有没有已经能解释失败的原因。
+        CollectCredentialIssue(issues, includeCredentialHint);
+
         return issues;
+    }
+
+    /// <summary>
+    /// 「密码输入错误，或 Microsoft 帐户凭证已过期」。
+    ///
+    /// 这一项和环境无关，是**运行时结论**：凭据被拒时 RDP 只回报「发生了内部错误 /
+    /// 连接被断开」，不给具体原因——密码输错和本机缓存的 Microsoft 帐户凭证过期
+    /// 表现完全一样，程序无法区分，所以文案把两种可能并列。
+    ///
+    /// 两个前提：只在对的现场补（<paramref name="include"/> 为 true），并且没有别的阻塞项。
+    /// 服务没起来、远程桌面被关、DLL 被换这些都能解释失败，此时再说「密码可能错」
+    /// 只会把用户引到错误的方向。
+    /// </summary>
+    private static void CollectCredentialIssue(List<Issue> issues, bool include)
+    {
+        if (!include || HasBlockingIssue(issues))
+        {
+            return;
+        }
+
+        issues.Add(new Issue(
+            "credential-rejected",
+            Locale.Get("Check.Credential.Title"),
+            Locale.Get("Check.Credential.Summary"),
+            Locale.Get("Check.Credential.Detail"),
+            Severity.Notice,
+            IsBlocking: false,
+            CanAutoFix: true));
     }
 
     /// <summary>
@@ -146,10 +183,10 @@ public static partial class ChildSessionEnvironmentCheck
     /// 不参与 <see cref="HasBlockingIssue"/> 之类的判定——未触发项一律
     /// <see cref="Severity.Inactive"/>，界面上分开放。
     /// </summary>
-    public static IReadOnlyList<Issue> CollectAll()
+    public static IReadOnlyList<Issue> CollectAll(bool includeCredentialHint = false)
     {
         var active = new Dictionary<string, Issue>(StringComparer.Ordinal);
-        foreach (var issue in Collect())
+        foreach (var issue in Collect(includeCredentialHint))
         {
             active[issue.Id] = issue;
         }
@@ -265,6 +302,16 @@ public static partial class ChildSessionEnvironmentCheck
         // RDP 破解工具相关的五项
         AppendAdvancedSpecs(all, active);
 
+        // 始终列出（未触发时显示为「未触发」），这样「全部检查项」视图里也能核这条的文案。
+        Add(
+            "credential-rejected",
+            "Check.Credential.Title",
+            "Check.Credential.Summary",
+            "Check.Credential.InactiveDetail",
+            null,
+            null,
+            CanAutoFix: true);
+
         return all;
     }
 
@@ -312,6 +359,21 @@ public static partial class ChildSessionEnvironmentCheck
     public static string BuildDiagnosticSnapshot()
     {
         var builder = new StringBuilder();
+
+        // 版本放第一行：反馈问题时维护者第一眼就要知道「这是哪个版本、跑在哪个运行时上」，
+        // 免得来回问一轮。运行时也带上——本程序是框架依赖发布，运行时缺失/不匹配
+        // 是一个真实的启动失败原因。
+        builder.AppendLine(Locale.Format(
+            "Check.Snapshot.AppVersion",
+            DescribeAppVersion(),
+            System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription));
+
+        // 提权与否直接决定两件事：注册表/服务的读写能不能成功，
+        // 以及 termsrv.dll 那一项的 sfc 校验能不能出结论。不写清楚很容易被当成程序 bug。
+        builder.AppendLine(Locale.Format(
+            "Check.Snapshot.Elevated",
+            IsElevated() ? Locale.Get("Check.Yes") : Locale.Get("Check.No")));
+
         builder.AppendLine(Locale.Format("Check.Snapshot.OsVersion", Environment.OSVersion.VersionString, Environment.Is64BitProcess));
         builder.AppendLine(Locale.Format("Check.Snapshot.WindowsVersion", ReadString(RegistryHive.LocalMachine, CurrentVersionRegistryPath, "DisplayVersion") ?? Locale.Get("Check.Unknown")));
         builder.AppendLine(Locale.Format("Check.Snapshot.Build", ReadString(RegistryHive.LocalMachine, CurrentVersionRegistryPath, "CurrentBuild") ?? Locale.Get("Check.Unknown")));
@@ -332,12 +394,74 @@ public static partial class ChildSessionEnvironmentCheck
             builder.AppendLine(Locale.Format("Check.Snapshot.ChildSessionFailed", exception.Message));
         }
 
+        // 上一次失败的原因往往比「当前环境」更有用：环境全绿但连不上，看的就是这一行。
+        builder.AppendLine(Locale.Format(
+            "Check.Snapshot.LastFailure",
+            _lastConnectionFailureSummary ?? Locale.Get("Check.None")));
+        builder.AppendLine(Locale.Format("Check.Snapshot.LogDirectory", AppLog.LogDirectory));
+
         var issues = Collect();
         builder.AppendLine();
         builder.AppendLine(Locale.Get("Check.Snapshot.Header"));
         builder.AppendLine(issues.Count == 0 ? Locale.Get("Check.NoIssues") : BuildSummary(issues));
         return builder.ToString();
     }
+
+    /// <summary>
+    /// 本程序的版本号。优先取 InformationalVersion（如 <c>0.2.5</c>），取不到再退到程序集版本。
+    /// </summary>
+    private static string DescribeAppVersion()
+    {
+        var assembly = typeof(ChildSessionEnvironmentCheck).Assembly;
+        var informational = assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion;
+
+        if (!string.IsNullOrWhiteSpace(informational))
+        {
+            // 构建里可能带 +<commit> 后缀，快照里不需要。
+            var plus = informational.IndexOf('+');
+            return plus > 0 ? informational[..plus] : informational;
+        }
+
+        return assembly.GetName().Version?.ToString(3) ?? Locale.Get("Check.Unknown");
+    }
+
+    /// <summary>
+    /// 最近一次连接失败的一行摘要。成功登录或重新开始一次尝试时清空。
+    /// </summary>
+    private static string? _lastConnectionFailureSummary;
+
+    /// <summary>
+    /// 记下最近一次连接失败，供环境快照使用。
+    ///
+    /// 只留第一行：完整信息通常在日志里，快照里塞多行反而难读。
+    /// </summary>
+    internal static void RecordConnectionFailure(int errorCode, int? extendedErrorCode, string message)
+    {
+        var summary = message;
+        var newline = summary.IndexOfAny(['\r', '\n']);
+        if (newline > 0)
+        {
+            summary = summary[..newline];
+        }
+
+        if (summary.Length > 160)
+        {
+            summary = summary[..160] + "…";
+        }
+
+        _lastConnectionFailureSummary = Locale.Format(
+            "Check.Snapshot.LastFailureValue",
+            summary,
+            errorCode,
+            extendedErrorCode?.ToString() ?? Locale.Get("Check.None"));
+    }
+
+    /// <summary>
+    /// 清空「上次连接失败」。登录成功后调用。
+    /// </summary>
+    internal static void ClearConnectionFailure() => _lastConnectionFailureSummary = null;
 
     /// <summary>
     /// 读 TermService 的 ServiceDll。读不到返回 null。

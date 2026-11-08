@@ -7,7 +7,7 @@ body:
     attributes:
       value: |
         这个功能完全建立在 Windows 的 RDP / 子会话能力之上，**「在我这台机器上不行」不等于「程序有 bug」**。
-        提交前请先过一遍 [排查手册](https://github.com/OWNER/desktop-twin/blob/main/docs/troubleshooting.md)。
+        提交前请先过一遍 [排查手册](https://github.com/batvbs/DesktopTwin/blob/main/docs/troubleshooting.md)。
 
   - type: textarea
     id: symptom
