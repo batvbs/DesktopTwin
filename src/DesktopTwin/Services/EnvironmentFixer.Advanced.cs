@@ -143,10 +143,10 @@ public static partial class EnvironmentFixer
     /// </summary>
     private static Result FixToolPersistence()
     {
-        var hits = ChildSessionEnvironmentCheck.GetToolPersistenceHits();
-
-        // 清缓存会把「扫描不完整」标记一起复位，所以先记下来。
-        var scanIncomplete = ChildSessionEnvironmentCheck.IsTaskScanIncomplete();
+        // 命中项和「扫没扫全」必须来自同一次扫描：分两次取的话，中间要是有人点了
+        // 重新检测（会清缓存并把标记复位），这里就会拿一份「扫全了、没命中」的结论
+        // 去报「没有需要清理的项」，而实际上漏掉的是读不到的目录。
+        var hits = ChildSessionEnvironmentCheck.GetToolPersistenceHits(out var scanIncomplete);
         if (hits.Count == 0)
         {
             // 扫不完整时「没有命中」不等于「没有」：任务藏在读不到的目录里时，

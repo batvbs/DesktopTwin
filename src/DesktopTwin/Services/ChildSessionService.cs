@@ -468,7 +468,8 @@ public sealed class ChildSessionService : IDisposable
             return;
         }
 
-        PublishEnvironmentIssuesIfCurrent(issues, environmentGeneration);
+        // 这里已经在 UI 线程上，发布是同步完成的。
+        _ = PublishEnvironmentIssuesIfCurrent(issues, environmentGeneration);
         EnsureChildSessionsEnabled();
         RefreshState();
 
@@ -1206,12 +1207,19 @@ public sealed class ChildSessionService : IDisposable
     /// <summary>
     /// 收集 Windows 环境结论，供界面在启动前提示用户，也供失败诊断使用。
     /// </summary>
-    public void RefreshEnvironmentCheck()
+    /// <summary>
+    /// 采集并发布一次环境预检。
+    ///
+    /// 返回的 Task 在结果**真正发布之后**才完成：调用方紧接着就要读
+    /// <see cref="HasBlockingEnvironmentIssue"/> 做启动决策，发布若只是排进队列
+    /// （BeginInvoke 立刻返回），读到的还是上一次的结论，可能漏掉新的阻塞项。
+    /// 采集本身很慢，所以仍由调用方放在后台线程（视图模型用 Task.Run 调进来）。
+    /// </summary>
+    public Task RefreshEnvironmentCheckAsync()
     {
         ThrowIfDisposed();
 
         // 代际在「开始采集」时就定下：晚开始的那一轮才算数。
-        // 允许在后台线程调用（采集本身很慢），发布时再切回 UI 线程。
         int generation;
         lock (_environmentGate)
         {
@@ -1219,7 +1227,7 @@ public sealed class ChildSessionService : IDisposable
         }
 
         var issues = ChildSessionEnvironmentCheck.Collect();
-        PublishEnvironmentIssuesIfCurrent(issues, generation);
+        return PublishEnvironmentIssuesIfCurrent(issues, generation);
     }
 
     /// <summary>
@@ -1228,13 +1236,13 @@ public sealed class ChildSessionService : IDisposable
     /// 两处都会调它：启动流程的预检、界面/切换流程的单独预检。没有代际的话，
     /// 一轮慢扫描回来会把更新的结论盖掉，界面据此做出错误的阻塞判断。
     /// </summary>
-    private void PublishEnvironmentIssuesIfCurrent(
+    private Task PublishEnvironmentIssuesIfCurrent(
         System.Collections.Generic.IReadOnlyList<ChildSessionEnvironmentCheck.Issue> issues,
         int generation)
     {
         if (_dispatcher.HasShutdownStarted || _dispatcher.HasShutdownFinished)
         {
-            return;
+            return Task.CompletedTask;
         }
 
         void Publish()
@@ -1259,11 +1267,27 @@ public sealed class ChildSessionService : IDisposable
         if (_dispatcher.CheckAccess())
         {
             Publish();
-            return;
+            return Task.CompletedTask;
         }
 
         // 走队列而不是同步 Invoke：调用方多半在池线程上等结果，没必要把它卡住。
-        _dispatcher.BeginInvoke(new Action(Publish));
+        // 但要给出一个「发布完成」的信号，否则调用方没法知道自己读到的是不是新结论。
+        var completion = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        _dispatcher.BeginInvoke(new Action(() =>
+        {
+            try
+            {
+                Publish();
+            }
+            finally
+            {
+                completion.TrySetResult(true);
+            }
+        }));
+
+        return completion.Task;
     }
 
     /// <summary>
