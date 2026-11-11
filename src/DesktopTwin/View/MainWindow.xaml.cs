@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.ComponentModel;
 using System.Threading.Tasks;
 using System.Windows;
@@ -51,6 +51,12 @@ public partial class MainWindow : FluentWindow
     private bool _smartSizingBeforeFullscreen;
     private DispatcherTimer? _barAutoHideTimer;
     private DispatcherTimer? _cursorWatchTimer;
+
+    /// <summary>
+    /// 有一条通知因为窗口隐藏没能重新打开，等可见时补上。
+    /// 排队回调里窗口若正好被隐藏，这个状态不能丢，否则通知就没了。
+    /// </summary>
+    private bool _notificationReopenPending;
     private HwndSource? _windowSource;
 
     /// <summary>
@@ -112,11 +118,11 @@ public partial class MainWindow : FluentWindow
     /// <inheritdoc />
     protected override void OnClosing(CancelEventArgs e)
     {
-        // 关闭时先收浮层：它是独立窗口，不跟着主窗口一起消失。
-        HideFullscreenBar();
-
         if (AllowClose || Dispatcher.HasShutdownStarted)
         {
+            // 确认要关了才收浮层：它是独立窗口，不跟着主窗口一起消失。
+            // 放在最前面的话，用户点「取消」后窗口还在全屏，工具栏却已经收起来了。
+            HideFullscreenBar();
             base.OnClosing(e);
             return;
         }
@@ -256,8 +262,31 @@ public partial class MainWindow : FluentWindow
     {
         if (IsVisible)
         {
+            // 隐藏时把轮询停了，回来要接上：全屏下工具栏只能靠光标轮询唤出。
+            if (_isFullscreen)
+            {
+                StartCursorWatch();
+            }
+
             ReopenPopupsAfterRestore();
+            return;
         }
+
+        // 窗口被隐藏（切视角时挂后台）：Popup 是独立 HWND，不会跟着宿主一起隐藏。
+        // 一个 pin 住的工具栏会孤零零留在屏幕上，而光标轮询还会按隐藏窗口的原坐标
+        // 把它重新唤出来。这里一并收掉，等窗口回来时由 ReopenPopupsAfterRestore 重开。
+        FullscreenBarPopup.IsOpen = false;
+        StopCursorWatch();
+
+        // 通知条也要收掉，否则它作为独立 HWND 会留在屏幕上。但「有通知」这件事要记住：
+        // 它的 IsOpen 是两向绑定，一关就把状态清掉了，窗口回来时只能靠这个标记补开
+        // （到期与否由视图模型的定时器判断）。
+        if (NotificationPopup.IsOpen)
+        {
+            _notificationReopenPending = true;
+        }
+
+        NotificationPopup.IsOpen = false;
     }
 
     /// <summary>
@@ -509,6 +538,14 @@ public partial class MainWindow : FluentWindow
     }
 
     /// <summary>
+    /// 通知是否还没过期。窗口隐藏期间它可能已经到时，那就别再翻出来了。
+    /// </summary>
+    private bool IsNotificationStillActive()
+    {
+        return DataContext is MainWindowViewModel viewModel && viewModel.IsNotificationActive;
+    }
+
+    /// <summary>
     /// 窗口从最小化还原后，把还开着的 Popup 关掉重开。
     ///
     /// Popup 在 WPF 里是独立 HWND，按 PlacementTarget 计算一次坐标后就不再跟随宿主。
@@ -520,13 +557,14 @@ public partial class MainWindow : FluentWindow
     /// </summary>
     private void ReopenPopupsAfterRestore()
     {
-        if (!NotificationPopup.IsOpen && !FullscreenBarPopup.IsOpen && !_isFullscreen)
+        if (!NotificationPopup.IsOpen && !FullscreenBarPopup.IsOpen && !_isFullscreen
+            && !_notificationReopenPending)
         {
             // 什么都没开着，也没有全屏工具栏要恢复：不用折腾。
             return;
         }
 
-        var notificationWasOpen = NotificationPopup.IsOpen;
+        var notificationWasOpen = NotificationPopup.IsOpen || _notificationReopenPending;
         var barWasOpen = FullscreenBarPopup.IsOpen;
 
         NotificationPopup.IsOpen = false;
@@ -538,12 +576,22 @@ public partial class MainWindow : FluentWindow
         _ = Dispatcher.BeginInvoke(
             new Action(() =>
             {
+                // 排队期间窗口可能又被隐藏（切视角时很常见）：这时候重开会把 Popup
+                // 留在屏幕外或盖在隐藏窗口上。记下待重开状态，等下次可见时补。
+                if (!IsVisible)
+                {
+                    _notificationReopenPending = notificationWasOpen;
+                    return;
+                }
+
+                _notificationReopenPending = false;
+
                 if (barWasOpen || _isFullscreen)
                 {
                     ShowFullscreenBar();
                 }
 
-                if (notificationWasOpen)
+                if (notificationWasOpen && IsNotificationStillActive())
                 {
                     NotificationPopup.IsOpen = true;
                 }

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.ComponentModel;
 using System.IO;
 using System.Reflection;
@@ -310,7 +310,25 @@ public sealed class ChildSessionService : IDisposable
     /// 启动桌面分身：先做一次环境预检，确保 Child Sessions 已启用，然后建立 RDP 连接并等待登录完成。
     /// 已经处于已连接状态时直接返回。
     /// </summary>
-    public async Task StartAsync()
+    public Task StartAsync()
+    {
+        ThrowIfDisposed();
+
+        // 和 ConnectDesktopInBackgroundAsync 同理：后台流程（UU 切回分身的重连兜底）
+        // 调过来时已经在池线程上，而下面要碰 RDP 控件和窗口。WPF 对象只认创建它的
+        // 线程，不切回去就直接抛 InvalidOperationException——兜底反而成了故障点。
+        if (_dispatcher.CheckAccess())
+        {
+            return StartCoreAsync();
+        }
+
+        return _dispatcher
+            .InvokeAsync(StartCoreAsync)
+            .Task
+            .Unwrap();
+    }
+
+    private async Task StartCoreAsync()
     {
         ThrowIfDisposed();
         RefreshEnvironmentCheck();
@@ -433,6 +451,17 @@ public sealed class ChildSessionService : IDisposable
     /// <returns>确实发起了断开返回 true。</returns>
     public bool DisconnectDesktopForSwitch()
     {
+        // 与 StartAsync 同理：切换流程在线程池上跑，这里要碰 RDP 控件。
+        if (!_dispatcher.CheckAccess())
+        {
+            return _dispatcher.Invoke(DisconnectDesktopForSwitchCore);
+        }
+
+        return DisconnectDesktopForSwitchCore();
+    }
+
+    private bool DisconnectDesktopForSwitchCore()
+    {
         ThrowIfDisposed();
         var window = _desktopWindow;
         if (window is null || window.RdpHost.ConnectedState == 0)
@@ -454,9 +483,27 @@ public sealed class ChildSessionService : IDisposable
     /// </summary>
     /// <param name="cancellationToken">取消标记。</param>
     /// <returns>连接成功返回 true。</returns>
-    public async Task<bool> EnsureDesktopConnectedAsync(
+    public Task<bool> EnsureDesktopConnectedAsync(
         CancellationToken cancellationToken,
         bool showWindow = true)
+    {
+        ThrowIfDisposed();
+
+        // 同上：这里的每一步都是窗口/RDP 控件操作。
+        if (_dispatcher.CheckAccess())
+        {
+            return EnsureDesktopConnectedCoreAsync(cancellationToken, showWindow);
+        }
+
+        return _dispatcher
+            .InvokeAsync(() => EnsureDesktopConnectedCoreAsync(cancellationToken, showWindow))
+            .Task
+            .Unwrap();
+    }
+
+    private async Task<bool> EnsureDesktopConnectedCoreAsync(
+        CancellationToken cancellationToken,
+        bool showWindow)
     {
         ThrowIfDisposed();
 
@@ -620,6 +667,18 @@ public sealed class ChildSessionService : IDisposable
     public void ResetDisconnectState()
     {
         ThrowIfDisposed();
+
+        if (!_dispatcher.CheckAccess())
+        {
+            _dispatcher.Invoke(ResetDisconnectStateCore);
+            return;
+        }
+
+        ResetDisconnectStateCore();
+    }
+
+    private void ResetDisconnectStateCore()
+    {
         _desktopWindow?.RdpHost.ResetDisconnectState();
     }
 

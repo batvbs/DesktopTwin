@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -64,7 +64,7 @@ internal sealed class AutoLoginService : IDisposable
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool LogonUserW(
         string userName,
-        string domain,
+        string? domain,
         string password,
         int logonType,
         int logonProvider,
@@ -271,6 +271,15 @@ internal sealed class AutoLoginService : IDisposable
     public PasswordCheckResult VerifyPassword(string password, out int errorCode)
     {
         var (userName, domain) = ResolveLogonIdentity();
+
+        if (_logonIdentityAmbiguous)
+        {
+            // 连是哪个账户都定不下来，就不要拿本地用户名去猜：那次尝试必然失败，
+            // 还会消耗真实账户的失败次数，并让用户以为自己密码输了。
+            errorCode = 0;
+            return PasswordCheckResult.Unknown;
+        }
+
         return VerifyPassword(userName, domain, password, out errorCode);
     }
 
@@ -283,7 +292,7 @@ internal sealed class AutoLoginService : IDisposable
     /// <param name="errorCode">Win32 错误码，成功时为 0。</param>
     public PasswordCheckResult VerifyPassword(
         string userName,
-        string domain,
+        string? domain,
         string password,
         out int errorCode)
     {
@@ -329,6 +338,11 @@ internal sealed class AutoLoginService : IDisposable
     {
         email = string.Empty;
 
+        // 只有「账户存储里恰好一个候选」时才采用。
+        //
+        // 不用 LastLoggedOnUser：机器上登着多个账户时，它可能是别人，
+        // 拿那个邮箱去校验密码必然失败，还白耗对方账户的失败次数。
+        // 多候选时宁可退回本地账户名，让用户自己在设置里填完整账户。
         try
         {
             using var key = Registry.CurrentUser.OpenSubKey(MicrosoftAccountPropertiesPath);
@@ -337,14 +351,32 @@ internal sealed class AutoLoginService : IDisposable
                 return false;
             }
 
+            string? single = null;
             foreach (var name in key.GetSubKeyNames())
             {
-                if (name.Contains('@'))
+                if (!name.Contains('@'))
                 {
-                    email = name;
-                    return true;
+                    continue;
                 }
+
+                if (single is not null)
+                {
+                    // 有多个候选：不猜。猜错会拿别人的账户去校验密码，白耗对方的失败次数。
+                    AppLog.Warn("自动登录：检测到多个微软账户，无法确定当前账户，请在设置里填写完整账户名。");
+                    _logonIdentityAmbiguous = true;
+                    return false;
+                }
+
+                single = name;
             }
+
+            if (single is null)
+            {
+                return false;
+            }
+
+            email = single;
+            return true;
         }
         catch (Exception exception) when (exception is SecurityException
                                               or UnauthorizedAccessException
@@ -357,16 +389,79 @@ internal sealed class AutoLoginService : IDisposable
     }
 
     /// <summary>
+    /// 这个名称是不是本机账户存储里登记过的微软账户。
+    /// </summary>
+    private static bool IsKnownMicrosoftAccount(string name)
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(MicrosoftAccountPropertiesPath);
+            if (key is null)
+            {
+                return false;
+            }
+
+            foreach (var candidate in key.GetSubKeyNames())
+            {
+                if (string.Equals(candidate, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+        }
+        catch (Exception exception) when (exception is SecurityException
+                                              or UnauthorizedAccessException
+                                              or IOException)
+        {
+            AppLog.Warn("读取微软账户列表失败。", exception);
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// 决定 <c>LogonUser</c> 用哪个用户名/域：微软账户用 UPN + MicrosoftAccount，本地账户用机器名。
     /// </summary>
-    private (string UserName, string Domain) ResolveLogonIdentity()
+    private (string UserName, string? Domain) ResolveLogonIdentity()
     {
+        _logonIdentityAmbiguous = false;
+
+        var raw = _settings.Current.Automation.AutoLoginUserName;
+
+        if (!string.IsNullOrWhiteSpace(raw))
+        {
+            var configured = raw.Trim();
+
+            // 显式写了 UPN：它就是要用的账户，不必去注册表里猜。
+            if (configured.Contains('@'))
+            {
+                // 但「带 @」不等于微软账户：AD 域 UPN（alice@example.org）按 Windows
+                // 的规定必须传 null 域，硬套 MicrosoftAccount 会在校验密码时直接失败。
+                return IsKnownMicrosoftAccount(configured)
+                    ? (configured, "MicrosoftAccount")
+                    : (configured, null);
+            }
+
+            // 显式写了「域\用户」：拆开直接交给 LogonUser。
+            var separator = configured.IndexOf('\\');
+            if (separator > 0 && separator < configured.Length - 1)
+            {
+                return (configured[(separator + 1)..], configured[..separator]);
+            }
+
+            // 显式写了本地账户名：尊重它，不要再替换成微软账户。
+            return (configured, Environment.MachineName);
+        }
+
+        // 没配置时才跟随当前登录身份：微软账户需要换成邮箱，本地账户用机器名。
         if (TryGetMicrosoftAccountEmail(out var email))
         {
             return (email, "MicrosoftAccount");
         }
 
-        return (Environment.UserName, Environment.MachineName);
+        // 未配置时跟随当前登录身份。域成员机器上 UserDomainName 是域、本地账户时是机器名，
+        // 直接用它才能和系统里的登录身份对上（写死机器名会让域账户验证失败）。
+        return (Environment.UserName, Environment.UserDomainName);
     }
 
     /// <summary>
@@ -386,7 +481,17 @@ internal sealed class AutoLoginService : IDisposable
             return false;
         }
 
-        credential = new RdpCredential(UserName, Domain, password);
+        // 用与校验完全相同的身份：之前凭据走 Domain 属性（Environment.UserDomainName），
+        // 校验走的却是机器名或 MicrosoftAccount，域成员机器上会验过却连不上。
+        var (userName, domain) = ResolveLogonIdentity();
+
+        if (_logonIdentityAmbiguous)
+        {
+            AppLog.Warn("自动登录：存在多个微软账户且未指定账户名，跳过自动填充。");
+            return false;
+        }
+
+        credential = new RdpCredential(userName, domain ?? string.Empty, password);
         return true;
     }
 
@@ -642,9 +747,30 @@ internal sealed class AutoLoginService : IDisposable
             }
 
             // 用户名：只在字段存在且为空时填。用户自己输过的内容不覆盖。
+            //
+            // 但填完必须读回来核对：框里预填了别的账户时，继续填密码就等于替那个账户
+            // 登录一次——密码不对会消耗它的失败次数，对的则登进别人的桌面。
             if (userNameField is not null)
             {
-                TrySetValue(userNameField, UserName, onlyWhenEmpty: true);
+                var filled = TrySetValue(userNameField, UserName, onlyWhenEmpty: true);
+                var current = TryReadValue(userNameField);
+
+                // 值对得上就继续。只读字段（写不进去）但预填的正好是目标账户，
+                // 也是可用的——不必因为写失败就整轮放弃。
+                if (!IsSameAccount(current, UserName))
+                {
+                    if (!filled || current.Length == 0)
+                    {
+                        // 写不进去、或读回来是空的（UIA 暂时不可用）：不记 handle，下一轮重试。
+                        return false;
+                    }
+
+                    // 确认是别的账户：记下这个对话框，别再往上填密码。
+                    // 不打账户名——日志会被用户贴给支持人员，那是个人信息。
+                    AppLog.Warn("自动登录：用户名框内容与配置的账户不一致，跳过本次填充。");
+                    _lastFilledDialog = handle;
+                    return false;
+                }
             }
 
             if (!TrySetValue(passwordField, password, onlyWhenEmpty: false))
@@ -732,6 +858,52 @@ internal sealed class AutoLoginService : IDisposable
         }
     }
 
+    /// <summary>
+    /// 两种写法是否指向同一个账户。
+    ///
+    /// 凭据框里可能显示 <c>MACHINE\user</c>、<c>MicrosoftAccount\a@b.com</c>
+    /// 或裸的用户名/邮箱，而配置里只写了其中一种。按去掉域前缀后的部分比较，
+    /// 才不会因为写法不同就把正确账户判成「别人的」。
+    /// </summary>
+    private static bool IsSameAccount(string left, string right)
+    {
+        return string.Equals(
+            TrimAccountPrefix(left),
+            TrimAccountPrefix(right),
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string TrimAccountPrefix(string name)
+    {
+        var value = name.Trim();
+        var separator = value.IndexOf('\\');
+        return separator >= 0 && separator < value.Length - 1
+            ? value[(separator + 1)..]
+            : value;
+    }
+
+    /// <summary>
+    /// 读一个值控件当前的内容。读不到时返回空串（调用方只会因此放弃填充）。
+    /// </summary>
+    private static string TryReadValue(AutomationElement element)
+    {
+        try
+        {
+            if (element.TryGetCurrentPattern(ValuePattern.Pattern, out var pattern)
+                && pattern is ValuePattern valuePattern)
+            {
+                return valuePattern.Current.Value ?? string.Empty;
+            }
+        }
+        catch (Exception exception) when (exception is ElementNotAvailableException
+                                              or InvalidOperationException)
+        {
+            AppLog.Warn("自动登录：读取用户名框失败。", exception);
+        }
+
+        return string.Empty;
+    }
+
     private static bool TryInvokeConfirm(AutomationElement dialog)
     {
         var buttons = dialog.FindAll(
@@ -741,7 +913,9 @@ internal sealed class AutoLoginService : IDisposable
         // 按钮文案随系统语言变化，同时按 AutomationId 和常见名称匹配，命中一个即可。
         string[] preferredNames = ["确定", "OK", "继续", "Continue", "登录", "Sign in", "提交", "Submit"];
 
-        AutomationElement? fallback = null;
+        AutomationElement? matched = null;
+        var otherEnabled = new List<AutomationElement>();
+
         foreach (AutomationElement button in buttons)
         {
             try
@@ -754,19 +928,18 @@ internal sealed class AutoLoginService : IDisposable
                 var automationId = button.Current.AutomationId;
                 if (string.Equals(automationId, "OkButton", StringComparison.OrdinalIgnoreCase))
                 {
-                    fallback = button;
+                    matched = button;
                     break;
                 }
 
                 var name = button.Current.Name;
                 if (Array.Exists(preferredNames, candidate => string.Equals(candidate, name, StringComparison.OrdinalIgnoreCase)))
                 {
-                    fallback = button;
+                    matched = button;
                     break;
                 }
 
-                // 凭据框通常只有一个按钮，名称是本地化文本时按这个兜底。
-                fallback ??= button;
+                otherEnabled.Add(button);
             }
             catch (ElementNotAvailableException)
             {
@@ -774,14 +947,18 @@ internal sealed class AutoLoginService : IDisposable
             }
         }
 
-        if (fallback is null)
+        // 名称没匹配上时，只有「整个对话框就这一个可用按钮」才敢点：
+        // 系统语言不认识、又同时有「取消」时，取第一个等于替用户点了取消，
+        // 而调用方还会把它记成「已经填过」，这一轮就再也不会重试。
+        var target = matched ?? (otherEnabled.Count == 1 ? otherEnabled[0] : null);
+        if (target is null)
         {
             return false;
         }
 
         try
         {
-            if (!fallback.TryGetCurrentPattern(InvokePattern.Pattern, out var pattern)
+            if (!target.TryGetCurrentPattern(InvokePattern.Pattern, out var pattern)
                 || pattern is not InvokePattern invokePattern)
             {
                 return false;
@@ -797,6 +974,11 @@ internal sealed class AutoLoginService : IDisposable
             return false;
         }
     }
+
+    /// <summary>
+    /// 账户存储里有多个微软账户且没配置账户名：无法确定用哪个身份校验。
+    /// </summary>
+    private bool _logonIdentityAmbiguous;
 
     private string? ReadPassword()
     {

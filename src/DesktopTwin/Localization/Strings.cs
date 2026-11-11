@@ -190,6 +190,7 @@ internal static class Strings
         Pair("Uu.Result.ToMain.StreamerStuck", "UU 串流端没能落到主桌面。程序会在后台自动重试拉起 UU 服务，也可以稍后在手机上重连一次。"),
         Pair("Uu.Result.ToChild", "已切回「桌面分身」，重新连一下 UU 就进游戏桌面。"),
         Pair("Uu.Result.ToChild.NoStreamer", "已切回「桌面分身」。当前没有 UU 串流端，下次连入即是游戏桌面。"),
+        Pair("Uu.Result.StreamerKillFailed", "有 UU 串流端进程但无法结束，切换可能没有生效，请手动结束后重试。"),
         Pair("Uu.Result.ToChild.StreamerStuck", "UU 串流端还没落到分身。程序会在后台自动重试拉起 UU 服务，稍候在手机上重连一次即可。"),
         Pair("Uu.Result.ServiceRestarted", "UU 服务已重启，串流端已重新拉起。"),
         Pair("Uu.Result.ServiceRestarted.NoStreamer", "UU 服务已重启。请在手机上重新连接一次 UU（设备应该已经回到在线）。"),

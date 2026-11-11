@@ -158,6 +158,7 @@ Uu.Result.ToMain.NoStreamer=Switched to "the whole PC". No UU streamer is runnin
 Uu.Result.ToMain.StreamerStuck=The UU streamer did not land on the main desktop. The app retries starting the UU service in the background; you can also reconnect from the phone later.
 Uu.Result.ToChild=Switched back to the twin desktop. Reconnect UU and you land on the game desktop.
 Uu.Result.ToChild.NoStreamer=Switched back to the twin desktop. No UU streamer is running, so the next connection lands on the game desktop.
+Uu.Result.StreamerKillFailed=A UU streamer process is running but could not be terminated, so the switch may not have taken effect. End it manually and try again.
 Uu.Result.ToChild.StreamerStuck=The UU streamer has not landed on the twin yet. The app retries starting the UU service in the background; reconnect from the phone in a moment.
 Uu.Result.ServiceRestarted=The UU service was restarted and the streamer is running again.
 Uu.Result.ServiceRestarted.NoStreamer=The UU service was restarted. Reconnect UU from the phone (the device should be online again).

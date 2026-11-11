@@ -261,11 +261,19 @@ public static partial class EnvironmentFixer
         {
             result = FixTermsrvDllCore(cancellationToken);
         }
-        catch
+        catch (Exception original)
         {
             // 修复抛异常也要把服务拉回来，否则用户会剩一个停着的远程桌面服务。
-            EnsureTermServiceRunning(out _);
-            throw;
+            if (EnsureTermServiceRunning(out var recoveryError))
+            {
+                throw;
+            }
+
+            // 服务没能恢复：这条信息不能丢，否则调用方只看到最初的异常，
+            // 完全不知道远程桌面此刻是不可用的。
+            throw new InvalidOperationException(
+                original.Message + Locale.Format("Fix.Termsrv.RestartFailed", recoveryError),
+                original);
         }
 
         // 不管从哪条路径退出，服务都该在跑。

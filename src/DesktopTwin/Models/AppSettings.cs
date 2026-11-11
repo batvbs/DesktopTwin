@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace DesktopTwin.Models;
@@ -43,6 +43,16 @@ public sealed class AppSettings
     /// 未确认前不会真正启动分身，避免用户在不了解后果的情况下改动系统设置。
     /// </summary>
     public bool ChildSessionNoticeAccepted { get; set; }
+
+    /// <summary>
+    /// 还有一次「深扫」义务没完成。
+    ///
+    /// 语义：termsrv.dll 曾被判定篡改（或干脆不存在），文件后来已还原，
+    /// 但还没跑过一次干净的完整深扫。存在设置里是为了跨重启保持——
+    /// 否则程序恰好在深扫前退出，下次启动就退回浅扫，系统子树里的残留任务
+    /// 从此再也看不见。
+    /// </summary>
+    public bool PersistenceDeepScanPending { get; set; }
 }
 
 /// <summary>

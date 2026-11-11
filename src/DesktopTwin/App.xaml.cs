@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -107,6 +107,28 @@ public partial class App : Application
         _ = Task.Run(ChildSessionProcessLauncher.SweepOrphanTasks);
 
         _settings = new SettingsService();
+
+        // 深扫义务跨重启保持：上次没跑完一次干净的完整深扫时，这次启动接着深扫。
+        ChildSessionEnvironmentCheck.RestoreDeepScanObligation(
+            _settings.Current.PersistenceDeepScanPending);
+
+        var settingsForDeepScan = _settings;
+        ChildSessionEnvironmentCheck.DeepScanObligationChanged = pending =>
+        {
+            settingsForDeepScan.Current.PersistenceDeepScanPending = pending;
+
+            if (pending)
+            {
+                // 置位要立刻落盘：这条义务的全部意义就是「程序异常退出也不丢」，
+                // 而 SaveSoon 有 800 毫秒延迟，正好覆盖不了崩溃窗口。
+                settingsForDeepScan.Flush();
+            }
+            else
+            {
+                settingsForDeepScan.SaveSoon();
+            }
+        };
+
         _autoLogin = new AutoLoginService(_settings);
         _childSessionService = new ChildSessionService(_settings, _autoLogin);
 

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -1789,6 +1789,14 @@ public partial class MainWindowViewModel : ObservableObject
         _notificationTimer.Interval = duration ?? TimeSpan.FromSeconds(5);
         _notificationTimer.Start();
     }
+
+    /// <summary>
+    /// 通知是否仍在有效期内（超时定时器还没走完）。
+    ///
+    /// 窗口隐藏时通知条会被临时关掉，而它是两向绑定的，一关就把 IsNotificationOpen
+    /// 写回 false。所以恢复窗口时不能看那个值，只能看定时器还在不在跑。
+    /// </summary>
+    public bool IsNotificationActive => _notificationTimer.IsEnabled;
 
     private void OnNotificationTimerTick(object? sender, EventArgs e)
     {

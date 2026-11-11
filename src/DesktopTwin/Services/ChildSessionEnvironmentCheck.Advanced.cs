@@ -269,10 +269,18 @@ public static partial class ChildSessionEnvironmentCheck
     private static bool ShouldDeepScanPersistence()
     {
         var state = GetTermsrvState();
-        if (state.Exists && state.Verified && !state.Intact)
+
+        // 文件不存在也算「被工具动过」：这类工具会先把 termsrv.dll 改名备份再写补丁，
+        // 补丁文件缺失时正好是它最可能留下还原任务的时刻。只判「存在且被篡改」的话，
+        // 首次检测就漏掉藏在系统子树里的那些任务，而清理又发生在修复之前。
+        if (!state.Exists || (state.Verified && !state.Intact))
         {
-            // 确认被篡改：从现在起深扫，直到深扫确认全清。
-            _persistenceDeepScanSticky = true;
+            // 确认被篡改（或文件已被工具拿走）：从现在起深扫，直到深扫确认全清。
+            if (!_persistenceDeepScanSticky)
+            {
+                _persistenceDeepScanSticky = true;
+                DeepScanObligationChanged?.Invoke(true);
+            }
         }
 
         return _persistenceDeepScanSticky;
@@ -297,10 +305,11 @@ public static partial class ChildSessionEnvironmentCheck
             return;
         }
 
-        // 扫不完整时的零命中不等于干净：读不到的目录里可能正好藏着那个任务。
+        // 扫不完整时的零命中不等于干净：读不到的目录（或自启位置）里
+        // 可能正好藏着那个任务，这里两个标记都要看。
         lock (ScanGate)
         {
-            if (_taskScanIncomplete)
+            if (_taskScanIncomplete || _runScanIncomplete)
             {
                 return;
             }
@@ -310,6 +319,7 @@ public static partial class ChildSessionEnvironmentCheck
         if (state.Exists && state.Verified && state.Intact)
         {
             _persistenceDeepScanSticky = false;
+            DeepScanObligationChanged?.Invoke(false);
         }
     }
 
@@ -687,6 +697,20 @@ public static partial class ChildSessionEnvironmentCheck
     /// 「这台机器有过前科」，不是「此刻有没有病」。
     /// </summary>
     private static bool _persistenceDeepScanSticky;
+
+    /// <summary>
+    /// 深扫义务变化时通知外部（用于落盘）。跨重启保持，见设置项
+    /// <c>PersistenceDeepScanPending</c>。
+    /// </summary>
+    internal static Action<bool>? DeepScanObligationChanged;
+
+    /// <summary>
+    /// 启动时恢复上一次没做完的深扫义务。
+    /// </summary>
+    internal static void RestoreDeepScanObligation(bool pending)
+    {
+        _persistenceDeepScanSticky = pending;
+    }
 
     /// <summary>
     /// 上一次计划任务扫描有没有目录被拒绝访问。先取命中项，标记才是这一轮的。

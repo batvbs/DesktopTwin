@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
@@ -558,7 +558,41 @@ internal sealed class SessionAgentService : IDisposable
             }
         }
 
-        File.Move(tempPath, AgentPath);
+        try
+        {
+            File.Move(tempPath, AgentPath);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // 旧文件刚才已经被改名让位，这里再失败，AgentPath 上就什么都没有了：
+            // 自启项指着这个路径，代理再也起不来。先把旧版本放回去。
+            AppLog.Warn("释放新分身端失败，回滚到旧版本。", exception);
+
+            try
+            {
+                if (!File.Exists(AgentPath) && File.Exists(retiredPath))
+                {
+                    File.Move(retiredPath, AgentPath);
+                }
+            }
+            catch (Exception rollbackException) when (rollbackException is IOException
+                                                          or UnauthorizedAccessException)
+            {
+                AppLog.Error("回滚旧分身端失败，代理可能无法启动。", rollbackException);
+            }
+
+            TryDelete(tempPath);
+
+            if (!File.Exists(AgentPath))
+            {
+                // 回滚也没能留下可执行文件：这次安装是失败的。返回 false 会被
+                // 调用方当成「内容没变」，接着写自启项并报成功，而路径上是空的。
+                throw new IOException(
+                    "分身端安装失败：目标路径没有可用的可执行文件。", exception);
+            }
+
+            return false;
+        }
 
         // 旧文件此刻可能还被旧进程占着，删不掉也无所谓：下次启动还会再试一次。
         TryDelete(retiredPath);
