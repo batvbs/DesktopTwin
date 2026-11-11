@@ -462,7 +462,9 @@ public partial class MainWindowViewModel : ObservableObject
 
         if (_childSessionService.ConnectedState != 1)
         {
-            _childSessionService.RefreshEnvironmentCheck();
+            // 预检要读上千个计划任务 XML，放后台跑：这里在 UI 线程上，
+            // 同步调用会直接把界面卡住。
+            await Task.Run(() => _childSessionService.RefreshEnvironmentCheck());
 
             // 服务只是「没启动」时先替用户拉一次：状态栏已经写着「TermService：未启动」，
             // 用户点「启动」即视为同意。被禁用或启动失败的情况不在这里处理，
@@ -470,7 +472,7 @@ public partial class MainWindowViewModel : ObservableObject
             if (_childSessionService.HasBlockingEnvironmentIssue
                 && await Task.Run(() => _childSessionService.TryStartTermServiceIfStopped(out _)))
             {
-                _childSessionService.RefreshEnvironmentCheck();
+                await Task.Run(() => _childSessionService.RefreshEnvironmentCheck());
                 _childSessionService.RefreshState();
             }
 

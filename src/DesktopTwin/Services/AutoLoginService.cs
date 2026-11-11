@@ -404,7 +404,15 @@ internal sealed class AutoLoginService : IDisposable
         {
             var configured = raw.Trim();
 
-            // 显式写了 UPN：它就是要用的账户，不必去注册表里猜。
+            // 先拆「域\用户」再判 @：MicrosoftAccount\alice@example.com 是合法写法，
+            // 先看 @ 会把整串当成 UPN 配 null 域，LogonUser 必然失败。
+            var separator = configured.IndexOf('\\');
+            if (separator > 0 && separator < configured.Length - 1)
+            {
+                return (configured[(separator + 1)..], configured[..separator]);
+            }
+
+            // 只剩 UPN：它就是要用的账户，不必去注册表里猜。
             if (configured.Contains('@'))
             {
                 // 但「带 @」不等于微软账户：AD 域 UPN（alice@example.org）按 Windows
@@ -412,13 +420,6 @@ internal sealed class AutoLoginService : IDisposable
                 return IsKnownMicrosoftAccount(configured)
                     ? (configured, "MicrosoftAccount")
                     : (configured, null);
-            }
-
-            // 显式写了「域\用户」：拆开直接交给 LogonUser。
-            var separator = configured.IndexOf('\\');
-            if (separator > 0 && separator < configured.Length - 1)
-            {
-                return (configured[(separator + 1)..], configured[..separator]);
             }
 
             // 显式写了本地账户名：尊重它，不要再替换成微软账户。
@@ -712,7 +713,16 @@ internal sealed class AutoLoginService : IDisposable
             }
 
             // 用解析出来的登录身份填：微软账户要在凭据框里写邮箱，本地账户写用户名。
-            var (resolvedUserName, _) = ResolveLogonIdentity();
+            var (resolvedUserName, resolvedDomain) = ResolveLogonIdentity();
+
+            // 显式配了「域\用户」时，框里也要带域：同名不同域是两个账户，
+            // 只填后半段可能登到别人头上。微软账户例外——框里要的是邮箱。
+            var dialogUserName = resolvedUserName;
+            if (!string.IsNullOrEmpty(resolvedDomain)
+                && !string.Equals(resolvedDomain, "MicrosoftAccount", StringComparison.OrdinalIgnoreCase))
+            {
+                dialogUserName = resolvedDomain + "\\" + resolvedUserName;
+            }
 
             // 用户名只在字段为空时填，用户自己输过的不覆盖。
             //
@@ -720,7 +730,7 @@ internal sealed class AutoLoginService : IDisposable
             // 这次没成就交给用户手动输入，不会反复试。
             if (userNameField is not null)
             {
-                TrySetValue(userNameField, resolvedUserName, onlyWhenEmpty: true);
+                TrySetValue(userNameField, dialogUserName, onlyWhenEmpty: true);
             }
 
             if (!TrySetValue(passwordField, password, onlyWhenEmpty: false))

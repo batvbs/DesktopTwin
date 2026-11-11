@@ -108,6 +108,12 @@ public sealed class ChildSessionService : IDisposable
     private System.Collections.Generic.IReadOnlyList<ChildSessionEnvironmentCheck.Issue> _environmentIssues = [];
 
     /// <summary>
+    /// 启动代际。注销与释放会让它自增，正在跑的启动据此判断自己是否已经被取代。
+    /// 预检被移到后台后，启动流程中间多了一个等待点，等待期间用户完全可能点了注销。
+    /// </summary>
+    private int _startGeneration;
+
+    /// <summary>
     /// 界面需要刷新的状态发生变化。
     /// </summary>
     public event EventHandler? StateChanged;
@@ -331,7 +337,24 @@ public sealed class ChildSessionService : IDisposable
     private async Task StartCoreAsync()
     {
         ThrowIfDisposed();
-        RefreshEnvironmentCheck();
+
+        var startGeneration = _startGeneration;
+
+        // 预检可能读上千个计划任务 XML（深扫还要读内容）。这里已经跑在 UI 线程上了，
+        // 直接调用会把界面卡住，所以扔到后台再回来。
+        //
+        // 结果先放在局部变量里：被注销取代的那次启动不能把结果写进共享字段，
+        // 否则会覆盖掉新一次启动刚发布的结论。
+        var issues = await Task.Run(() => ChildSessionEnvironmentCheck.Collect()).ConfigureAwait(true);
+
+        // 预检期间可能被注销或释放。那之后不能再改系统状态、更不能把会话建回来。
+        if (_disposed || startGeneration != _startGeneration)
+        {
+            AppLog.Info("环境预检期间启动已被注销或释放取代，放弃后续步骤。");
+            return;
+        }
+
+        PublishEnvironmentIssues(issues);
         EnsureChildSessionsEnabled();
         RefreshState();
 
@@ -572,6 +595,10 @@ public sealed class ChildSessionService : IDisposable
     {
         try
         {
+            // 代际要在最开头捕获：下面「等 RDP 控件断开」可能等好几秒，
+            // 期间用户完全可能点了注销，那时再捕获就已经是新代际，检查等于没做。
+            var startGeneration = _startGeneration;
+
             var host = EnsureDesktopWindow().RdpHost;
 
             // 等 RDP 控件真正回到「已断开」。
@@ -598,8 +625,17 @@ public sealed class ChildSessionService : IDisposable
             // 最多试两次。第一次失败最常见的原因是控件状态还没稳定，
             // 隔 3 秒重来一次基本都能成——比让用户自己再按一次热键强。
             var connected = false;
+
             for (var attempt = 1; attempt <= 2; attempt++)
             {
+                // 注销或释放会推进代际：这之后不能再发起启动，否则会把用户
+                // 刚关掉的会话又建回来。
+                if (_disposed || startGeneration != _startGeneration)
+                {
+                    AppLog.Info("后台重连已被注销或释放取代，停止重试。");
+                    return false;
+                }
+
                 host.ResetDisconnectState();
                 await StartAsync().ConfigureAwait(true);
 
@@ -896,6 +932,10 @@ public sealed class ChildSessionService : IDisposable
             }
 
             // 完成目标会话校验后再取消连接和重试状态，避免旧菜单项影响刚创建的新会话。
+            //
+            // 代际也在这里推进：校验没过就抛异常时，这次注销是被拒绝的，
+            // 不能顺手把在途的预检废掉，否则窗口还在、会话却不再重连。
+            _startGeneration++;
             _autoLaunchPending = false;
             _initialConnectionRetriesRemaining = 0;
             _pendingRdpSettingChanges = RdpSettingChange.None;
@@ -1041,9 +1081,18 @@ public sealed class ChildSessionService : IDisposable
     public void RefreshEnvironmentCheck()
     {
         ThrowIfDisposed();
-        _environmentIssues = ChildSessionEnvironmentCheck.Collect();
+        PublishEnvironmentIssues(ChildSessionEnvironmentCheck.Collect());
+    }
 
-        foreach (var issue in _environmentIssues)
+    /// <summary>
+    /// 发布一次预检结果（字段 + 日志）。调用方必须已经在 UI 线程上。
+    /// </summary>
+    private void PublishEnvironmentIssues(
+        System.Collections.Generic.IReadOnlyList<ChildSessionEnvironmentCheck.Issue> issues)
+    {
+        _environmentIssues = issues;
+
+        foreach (var issue in issues)
         {
             AppLog.Warn($"环境预检：{issue.Title}。{issue.Summary}");
         }
@@ -1058,6 +1107,8 @@ public sealed class ChildSessionService : IDisposable
         {
             return;
         }
+
+        _startGeneration++;
 
         _disposed = true;
         _statusTimer.Stop();

@@ -580,7 +580,9 @@ public partial class MainWindow : FluentWindow
                 // 留在屏幕外或盖在隐藏窗口上。记下待重开状态，等下次可见时补。
                 if (!IsVisible)
                 {
-                    _notificationReopenPending = notificationWasOpen;
+                    // 用 |=：期间可能又有新通知打开、又被隐藏置位了，
+                    // 直接赋值会把它清掉，恢复窗口时那条就没了。
+                    _notificationReopenPending |= notificationWasOpen;
                     return;
                 }
 

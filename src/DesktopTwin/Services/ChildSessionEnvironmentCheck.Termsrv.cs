@@ -90,6 +90,18 @@ public static partial class ChildSessionEnvironmentCheck
 
                 _ = Task.Run(() =>
                 {
+                    // 这一轮在排队期间可能已被作废（用户点了重新检测、或修复后复核过）。
+                    // 让它继续跑没有意义：它只会占住 sfc 闸门，让真正需要结论的那轮
+                    // 等满超时、最后拿到「未验证」。
+                    lock (TermsrvGate)
+                    {
+                        if (generation != _termsrvGeneration)
+                        {
+                            AppLog.Info("本轮 termsrv.dll 校验在开始前已过期，跳过。");
+                            return;
+                        }
+                    }
+
                     TermsrvFileState result;
                     try
                     {

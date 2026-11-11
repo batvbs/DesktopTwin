@@ -841,13 +841,15 @@ public static partial class EnvironmentFixer
     {
         unchecked
         {
-            var hash = 2166136261u;
+            // 64 位 FNV-1a：32 位时两个长前缀相同的目标只要哈希撞上就会互相覆盖，
+            // 而两项都会被删掉——等于丢了一份备份。
+            var hash = 14695981039346656037ul;
             foreach (var ch in text)
             {
-                hash = (hash ^ ch) * 16777619u;
+                hash = (hash ^ ch) * 1099511628211ul;
             }
 
-            return hash.ToString("x8");
+            return hash.ToString("x16");
         }
     }
 

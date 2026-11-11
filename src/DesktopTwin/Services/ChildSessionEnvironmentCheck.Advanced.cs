@@ -242,6 +242,17 @@ public static partial class ChildSessionEnvironmentCheck
     /// </summary>
     internal static IReadOnlyList<ToolPersistenceHit> GetToolPersistenceHits()
     {
+        return GetToolPersistenceHits(out _);
+    }
+
+    /// <summary>
+    /// 取持久化命中，并把这一趟的扫描完整性一并带出。
+    ///
+    /// 用返回值而不是再读共享标记：缓存失效会把标记清掉，调用方据此判断就会
+    /// 把「没扫全」当成「扫全了」。
+    /// </summary>
+    internal static IReadOnlyList<ToolPersistenceHit> GetToolPersistenceHits(out bool scanIncomplete)
+    {
         // 先记下代际，再开始扫描：扫描期间别处可能发现新的篡改（代际会变），
         // 那种情况下这轮的「干净」结论已经过期。
         int scanGeneration;
@@ -251,7 +262,8 @@ public static partial class ChildSessionEnvironmentCheck
         }
 
         var deep = ShouldDeepScanPersistence();
-        var hits = new List<ToolPersistenceHit>(GetCachedTaskHits(deep, out var scannedNow));
+        var hits = new List<ToolPersistenceHit>(
+            GetCachedTaskHits(deep, out var scannedNow, out var taskScanIncomplete));
         hits.AddRange(GetRunKeyHits(out var runIncomplete));
 
         // 每轮都按这一趟的结果赋值。只在 true 时置位的话，某个 Run 位置读失败过一次
@@ -261,7 +273,14 @@ public static partial class ChildSessionEnvironmentCheck
             _runScanIncomplete = runIncomplete;
         }
 
-        ReleaseStickyDeepScanIfClean(hits, deep && scannedNow, scanGeneration);
+        ReleaseStickyDeepScanIfClean(
+            hits,
+            deep && scannedNow,
+            taskScanIncomplete,
+            runIncomplete,
+            scanGeneration);
+
+        scanIncomplete = taskScanIncomplete || runIncomplete;
         return hits;
     }
 
@@ -314,6 +333,8 @@ public static partial class ChildSessionEnvironmentCheck
     private static void ReleaseStickyDeepScanIfClean(
         IReadOnlyList<ToolPersistenceHit> hits,
         bool freshDeepScan,
+        bool taskScanIncomplete,
+        bool runScanIncomplete,
         int scanGeneration)
     {
         if (!_persistenceDeepScanSticky || hits.Count > 0 || !freshDeepScan)
@@ -322,13 +343,13 @@ public static partial class ChildSessionEnvironmentCheck
         }
 
         // 扫不完整时的零命中不等于干净：读不到的目录（或自启位置）里
-        // 可能正好藏着那个任务，这里两个标记都要看。
-        lock (ScanGate)
+        // 可能正好藏着那个任务。
+        //
+        // 用调用方传进来的本轮结果，而不是共享字段：缓存失效会把字段清掉，
+        // 用它判断会让「这轮其实没扫全」的扫描通过检查。
+        if (taskScanIncomplete || runScanIncomplete)
         {
-            if (_taskScanIncomplete || _runScanIncomplete)
-            {
-                return;
-            }
+            return;
         }
 
         var state = GetTermsrvState();
@@ -452,7 +473,23 @@ public static partial class ChildSessionEnvironmentCheck
     /// </summary>
     private static void CollectToolPersistenceIssue(List<Issue> issues)
     {
-        var hits = GetToolPersistenceHits();
+        var hits = GetToolPersistenceHits(out var scanIncomplete);
+
+        // 只要没扫全就单独报一条，不管有没有命中。
+        // 有命中时如果只在上面那条里说「部分路径被拒」，一旦清掉这几个命中，
+        // 没扫到的那部分就再也没有任何提示了。
+        if (scanIncomplete)
+        {
+            issues.Add(new Issue(
+                "rdp-tool-persistence-incomplete",
+                Locale.Get("Check.Persistence.IncompleteTitle"),
+                Locale.Get("Check.Persistence.IncompleteSummary"),
+                Locale.Get("Check.Persistence.IncompleteDetail"),
+                Severity.Notice,
+                IsBlocking: false,
+                CanAutoFix: false));
+        }
+
         if (hits.Count == 0)
         {
             return;
@@ -654,6 +691,18 @@ public static partial class ChildSessionEnvironmentCheck
             persistenceState,
             blocking: false);
 
+        // 扫描不完整时单独一条：命中数为 0 也可能只是「没扫到」，
+        // 「全部检查项」里要能看见这件事，而不是当成「扫描完整」。
+        AddOrInactive(
+            all, active,
+            "rdp-tool-persistence-incomplete",
+            "Check.Persistence.IncompleteTitle",
+            "Check.Persistence.IncompleteInactive",
+            "Check.Persistence.IncompleteDetail",
+            scanIncomplete ? Locale.Get("Check.Persistence.IncompleteValue") : Locale.Get("Check.None"),
+            scanIncomplete ? Locale.Get("Check.Persistence.IncompleteValue") : Locale.Get("Check.None"),
+            blocking: false);
+
         var downgrades = GetRdpSecurityDowngrades();
         AddOrInactive(
             all, active,
@@ -801,7 +850,10 @@ public static partial class ChildSessionEnvironmentCheck
     /// 这次是真扫了一遍（true），还是命中缓存（false）。
     /// 释放黏性标记时必须要求 true：缓存里的空结果可能早于某次任务变动。
     /// </param>
-    private static IReadOnlyList<ToolPersistenceHit> GetCachedTaskHits(bool deep, out bool scannedNow)
+    private static IReadOnlyList<ToolPersistenceHit> GetCachedTaskHits(
+        bool deep,
+        out bool scannedNow,
+        out bool incomplete)
     {
         lock (ScanGate)
         {
@@ -809,14 +861,19 @@ public static partial class ChildSessionEnvironmentCheck
             if (DateTime.UtcNow - _taskScanAt < TaskScanTtl && (!deep || _taskScanDeep))
             {
                 scannedNow = false;
+                incomplete = _taskScanIncomplete;
                 return _taskScanCache;
             }
 
-            _taskScanCache = ScanScheduledTasks(deep, out var incomplete);
-            _taskScanIncomplete = incomplete;
+            _taskScanCache = ScanScheduledTasks(deep, out var scanned);
+            _taskScanIncomplete = scanned;
             _taskScanAt = DateTime.UtcNow;
             _taskScanDeep = deep;
             scannedNow = true;
+
+            // 把这一趟的完整性一并交出去：共享字段可能被别处的缓存失效重置，
+            // 调用方拿它判断「能不能解除深扫义务」就会被骗。
+            incomplete = scanned;
             return _taskScanCache;
         }
     }
