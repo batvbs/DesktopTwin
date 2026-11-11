@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using System.Windows;
@@ -149,6 +149,10 @@ internal static class PasswordDialog
             busy = value;
             applyButton.IsEnabled = !value;
             cancelButton.IsEnabled = !value;
+
+            // 校验期间锁住输入框：否则用户在 validator 跑完前改了密码，
+            // 校验的是旧的、返回给调用方的是新的，两边对不上。
+            passwordBox.IsEnabled = !value;
             statusText.Text = message ?? string.Empty;
             statusText.Visibility = string.IsNullOrEmpty(message) ? Visibility.Collapsed : Visibility.Visible;
         }

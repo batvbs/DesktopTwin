@@ -1,5 +1,7 @@
-using System;
+﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.Drawing;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -84,7 +86,12 @@ namespace DesktopTwinSessionAgent
             // 会话判定一过就写心跳：主程序据此判断「代理是否在线」。
             WriteHeartbeat();
 
-            KillStaleAgents();
+            // 自检只验会话与热键，不该顺手把正在跑的旧代理杀掉：
+            // 那会注销它的热键，而自检自己马上退出，等于谁也没在服务。
+            if (!testMode)
+            {
+                KillStaleAgents();
+            }
 
             bool createdNew;
             _mutex = new Mutex(false, MutexName, out createdNew);
@@ -101,6 +108,14 @@ namespace DesktopTwinSessionAgent
 
             if (!owned)
             {
+                // 自检模式下不能杀旧代理，也就抢不到 mutex、走不到热键检查。
+                // 返回 0 会让自检看起来通过了，其实一次热键都没验。
+                if (testMode)
+                {
+                    Log("自检未完成：已有分身端在运行，无法验证热键注册。");
+                    return 3;
+                }
+
                 Log("已有分身端在运行，本进程退出");
                 return 0;
             }
@@ -293,6 +308,13 @@ namespace DesktopTwinSessionAgent
                         {
                             Log("收掉过期旧代理 pid=" + process.Id);
                             process.Kill();
+
+                            // Kill 是异步的：不等它退出就继续，下面 WaitOne(0) 会撞上
+                            // 还没释放的 mutex，新代理自己先退出去了。
+                            if (!process.WaitForExit(5000))
+                            {
+                                Log("旧代理未在 5 秒内退出 pid=" + process.Id);
+                            }
                         }
                     }
                     catch (Exception)
@@ -318,15 +340,55 @@ namespace DesktopTwinSessionAgent
                 long now = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds;
                 byte[] payload = new UTF8Encoding(false).GetBytes(now.ToString());
 
-                // 用 FileShare.ReadWrite 打开：主程序那边同时可能在读，
-                // 默认共享模式（FileShare.Read）会把「读」挡在外面，反之亦然。
-                using (FileStream stream = new FileStream(
-                           _heartbeatPath,
-                           FileMode.Create,
-                           FileAccess.Write,
-                           FileShare.ReadWrite | FileShare.Delete))
+                // 先写临时文件再整体替换。直接 FileMode.Create 会先把原文件截断，
+                // 主程序恰好在这个窗口里读就会拿到空内容，把在线判成离线。
+                //
+                // 暂存文件名带上进程号：--test 或重复启动会让两个代理同时写心跳，
+                // 共用一个 .tmp 时一个会把另一个还没发布的内容截断或搬走。
+                string temporaryPath = _heartbeatPath + "."
+                    + Process.GetCurrentProcess().Id + ".tmp";
+
+                try
                 {
-                    stream.Write(payload, 0, payload.Length);
+                    using (FileStream stream = new FileStream(
+                               temporaryPath,
+                               FileMode.Create,
+                               FileAccess.Write,
+                               FileShare.ReadWrite | FileShare.Delete))
+                    {
+                        stream.Write(payload, 0, payload.Length);
+                    }
+
+                    try
+                    {
+                        if (File.Exists(_heartbeatPath))
+                        {
+                            File.Replace(temporaryPath, _heartbeatPath, null);
+                        }
+                        else
+                        {
+                            File.Move(temporaryPath, _heartbeatPath);
+                        }
+                    }
+                    catch (IOException)
+                    {
+                        // 替换被占用时退回直接覆盖：心跳宁可冒一次截断风险，也不能整个停掉。
+                        File.Copy(temporaryPath, _heartbeatPath, true);
+                    }
+                }
+                finally
+                {
+                    // 只清自己那份暂存文件。
+                    try
+                    {
+                        if (File.Exists(temporaryPath))
+                        {
+                            File.Delete(temporaryPath);
+                        }
+                    }
+                    catch (Exception)
+                    {
+                    }
                 }
             }
             catch (Exception ex)
@@ -396,6 +458,43 @@ namespace DesktopTwinSessionAgent
             return false;
         }
 
+        /// <summary>
+        /// 命名键表。必须与主程序 Services/GlobalHotkeyService.cs 里的 NamedKeys 一致：
+        /// 两边对同一个组合串算出不同虚拟键时，界面上设的是 Ctrl+F5，分身里注册的却是 U。
+        /// </summary>
+        private static readonly Dictionary<string, uint> NamedKeys =
+            new Dictionary<string, uint>(StringComparer.OrdinalIgnoreCase)
+            {
+                { "space", 0x20 },
+                { "tab", 0x09 },
+                { "enter", 0x0D },
+                { "return", 0x0D },
+                { "esc", 0x1B },
+                { "escape", 0x1B },
+                { "backspace", 0x08 },
+                { "delete", 0x2E },
+                { "insert", 0x2D },
+                { "home", 0x24 },
+                { "end", 0x23 },
+                { "pageup", 0x21 },
+                { "pagedown", 0x22 },
+                { "left", 0x25 },
+                { "up", 0x26 },
+                { "right", 0x27 },
+                { "down", 0x28 },
+                { "`", 0xC0 },
+                { "-", 0xBD },
+                { "=", 0xBB },
+                { "[", 0xDB },
+                { "]", 0xDD },
+                { ";", 0xBA },
+                { "'", 0xDE },
+                { ",", 0xBC },
+                { ".", 0xBE },
+                { "/", 0xBF },
+                { "\\", 0xDC }
+            };
+
         private static void ParseHotkey(string text, out uint mods, out uint vk)
         {
             mods = 0;
@@ -403,31 +502,60 @@ namespace DesktopTwinSessionAgent
 
             foreach (string raw in text.Split('+'))
             {
-                string part = raw.Trim().ToLowerInvariant();
+                string part = raw.Trim();
                 if (part.Length == 0)
                 {
                     continue;
                 }
 
-                if (part == "ctrl" || part == "control")
+                switch (part.ToLowerInvariant())
                 {
-                    mods |= 0x2;
+                    case "ctrl":
+                    case "control":
+                        mods |= 0x2;
+                        continue;
+                    case "alt":
+                        mods |= 0x1;
+                        continue;
+                    case "shift":
+                        mods |= 0x4;
+                        continue;
+                    case "win":
+                    case "super":
+                    case "windows":
+                        mods |= 0x8;
+                        continue;
                 }
-                else if (part == "alt")
+
+                uint named;
+                if (NamedKeys.TryGetValue(part, out named))
                 {
-                    mods |= 0x1;
+                    vk = named;
+                    continue;
                 }
-                else if (part == "shift")
+
+                // F1 ~ F24
+                if (part.Length >= 2 && part.Length <= 3
+                    && (part[0] == 'f' || part[0] == 'F'))
                 {
-                    mods |= 0x4;
+                    int functionKey;
+                    if (int.TryParse(part.Substring(1), NumberStyles.Integer,
+                            CultureInfo.InvariantCulture, out functionKey)
+                        && functionKey >= 1 && functionKey <= 24)
+                    {
+                        vk = (uint)(0x70 + functionKey - 1);
+                        continue;
+                    }
                 }
-                else if (part == "win" || part == "super")
+
+                if (part.Length == 1)
                 {
-                    mods |= 0x8;
-                }
-                else if (part.Length == 1)
-                {
-                    vk = (uint)char.ToUpperInvariant(part[0]);
+                    char character = char.ToUpperInvariant(part[0]);
+                    if ((character >= 'A' && character <= 'Z')
+                        || (character >= '0' && character <= '9'))
+                    {
+                        vk = character;
+                    }
                 }
             }
 

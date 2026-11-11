@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -293,7 +293,13 @@ internal sealed class DiagnosticsWindow : FluentWindow
             MinWidth = 92,
             Margin = new Thickness(0, 0, 8, 0)
         };
-        refreshButton.Click += (_, _) => Refresh();
+        // 用户主动点「重新检测」：缓存一律作废。否则 termsrv.dll 的 5 分钟结论会让
+        // 用户在别处修好的文件仍显示旧警告，还带一个点了也修不动的「修复」按钮。
+        refreshButton.Click += (_, _) =>
+        {
+            ChildSessionEnvironmentCheck.InvalidateScanCache();
+            Refresh();
+        };
 
         var restartButton = new Wpf.Ui.Controls.Button
         {
@@ -379,12 +385,30 @@ internal sealed class DiagnosticsWindow : FluentWindow
             _resolved.Remove(issue.Id);
         }
 
+        // 校验还没出结论时，termsrv 那一条会暂时不出现：这时不能把它记成「已解决」，
+        // 否则界面会先打勾、几秒后又变回问题。
+        var termsrvPending = ChildSessionEnvironmentCheck.IsTermsrvVerifying;
+        var termsrvState = ChildSessionEnvironmentCheck.GetTermsrvState();
+        var termsrvConclusive = termsrvState.Exists && termsrvState.Verified && termsrvState.Intact;
         foreach (var id in _seen)
         {
-            if (!currentIds.Contains(id))
+            if (currentIds.Contains(id))
             {
-                _resolved.Add(id);
+                continue;
             }
+
+            // 未出结论（校验中、没提权、sfc 跑不起来）都不算「已解决」：
+            // 只有确认文件完好才允许打勾，否则会先打勾、下次又变回问题。
+            if ((termsrvPending || !termsrvConclusive)
+                && string.Equals(id, "termsrv-dll-tampered", StringComparison.Ordinal))
+            {
+                // 只跳过「加入」不够：上一轮确认修好后它已经在集合里，这轮重检又变成
+                // 「未验证」，旧的绿勾会一直挂着，直到新结论出来。先摘掉。
+                _resolved.Remove(id);
+                continue;
+            }
+
+            _resolved.Add(id);
         }
 
         var warningCount = 0;

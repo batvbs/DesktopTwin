@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -64,7 +64,7 @@ internal sealed class AutoLoginService : IDisposable
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool LogonUserW(
         string userName,
-        string domain,
+        string? domain,
         string password,
         int logonType,
         int logonProvider,
@@ -73,6 +73,23 @@ internal sealed class AutoLoginService : IDisposable
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool CloseHandle(IntPtr handle);
+
+    private enum NetJoinStatus
+    {
+        Unknown = 0,
+        Unjoined = 1,
+        Workgroup = 2,
+        Domain = 3
+    }
+
+    [DllImport("netapi32.dll", CharSet = CharSet.Unicode)]
+    private static extern int NetGetJoinInformation(
+        string? server,
+        out IntPtr nameBuffer,
+        out NetJoinStatus status);
+
+    [DllImport("netapi32.dll")]
+    private static extern int NetApiBufferFree(IntPtr buffer);
 
     /// <summary>
     /// 一次连接最多自动填几次。凭据框反复出现通常意味着密码本身就是错的，
@@ -283,7 +300,7 @@ internal sealed class AutoLoginService : IDisposable
     /// <param name="errorCode">Win32 错误码，成功时为 0。</param>
     public PasswordCheckResult VerifyPassword(
         string userName,
-        string domain,
+        string? domain,
         string password,
         out int errorCode)
     {
@@ -323,6 +340,9 @@ internal sealed class AutoLoginService : IDisposable
     ///
     /// 该邮箱是 <c>runas /u:MicrosoftAccount\&lt;邮箱&gt;</c> 与 <c>LogonUser</c> 需要的用户名，
     /// 本地用户名（C:\Users 下那个）并不是它。
+    ///
+    /// 多账户时取第一个候选：自动登录本来就只有一次机会，猜错了也只是这次失败、
+    /// 用户手动输一遍，不值得为了「可能猜错」而整个放弃。
     /// </summary>
     /// <param name="email">读到的邮箱。</param>
     public bool TryGetMicrosoftAccountEmail(out string email)
@@ -357,16 +377,169 @@ internal sealed class AutoLoginService : IDisposable
     }
 
     /// <summary>
+    /// 这个名称是不是本机账户存储里登记过的微软账户。
+    ///
+    /// 用来区分「微软账户邮箱」和「AD 域 UPN」：前者要配 MicrosoftAccount 域，
+    /// 后者按 Windows 的规定必须传 null 域。
+    /// </summary>
+    /// <summary>
+    /// 这台机器是否加入了 Entra（Azure AD）。
+    ///
+    /// 加入 Entra 的机器在 NetGetJoinInformation 里仍然报「工作组」，只看域加入状态
+    /// 会把工作账户的 UPN 当成微软账户，套上 MicrosoftAccount 域之后自动登录必然失败。
+    /// 系统把加入信息放在 CloudDomainJoin 下，键存在即为已加入。
+    /// </summary>
+    private static bool IsEntraJoined()
+    {
+        try
+        {
+            using var key = Registry.LocalMachine.OpenSubKey(
+                @"SYSTEM\CurrentControlSet\Control\CloudDomainJoin\JoinInfo");
+
+            return key is not null && key.GetSubKeyNames().Length > 0;
+        }
+        catch (Exception exception) when (exception is SecurityException
+                                              or UnauthorizedAccessException
+                                              or IOException)
+        {
+            // 查不到按「已加入」处理：宁可让用户显式写 MicrosoftAccount\邮箱，
+            // 也不要把工作账户套成微软账户。
+            AppLog.Warn("查询 Entra 加入状态失败，按已加入处理。", exception);
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// 这台机器是否加入了 AD 域。没入域时不存在域账户，UPN 只能是微软账户。
+    ///
+    /// 用 NetGetJoinInformation 而不是「主 DNS 后缀是否非空」：工作组机器也可以设置
+    /// 主 DNS 后缀，那种机器会被误判成已入域，微软账户就再也匹配不上了。
+    /// </summary>
+    private static bool IsDomainJoined()
+    {
+        var buffer = IntPtr.Zero;
+        try
+        {
+            if (NetGetJoinInformation(null, out buffer, out var status) != 0)
+            {
+                // 查不到就按「已入域」处理：宁可让用户显式写 MicrosoftAccount\邮箱，
+                // 也不要把 AD 账户硬套成微软账户。
+                AppLog.Warn("查询域加入状态失败，按已入域处理。");
+                return true;
+            }
+
+            return status == NetJoinStatus.Domain;
+        }
+        catch (Exception exception) when (exception is DllNotFoundException
+                                              or EntryPointNotFoundException
+                                              or MarshalDirectiveException)
+        {
+            AppLog.Warn("查询域加入状态失败，按已入域处理。", exception);
+            return true;
+        }
+        finally
+        {
+            if (buffer != IntPtr.Zero)
+            {
+                try
+                {
+                    NetApiBufferFree(buffer);
+                }
+                catch (DllNotFoundException)
+                {
+                }
+            }
+        }
+    }
+
+    private static bool IsKnownMicrosoftAccount(string name)
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(MicrosoftAccountPropertiesPath);
+            if (key is null)
+            {
+                return false;
+            }
+
+            foreach (var candidate in key.GetSubKeyNames())
+            {
+                if (string.Equals(candidate, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+        }
+        catch (Exception exception) when (exception is SecurityException
+                                              or UnauthorizedAccessException
+                                              or IOException)
+        {
+            AppLog.Warn("读取微软账户列表失败。", exception);
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// 决定 <c>LogonUser</c> 用哪个用户名/域：微软账户用 UPN + MicrosoftAccount，本地账户用机器名。
     /// </summary>
-    private (string UserName, string Domain) ResolveLogonIdentity()
+    private (string UserName, string? Domain) ResolveLogonIdentity()
     {
+        var raw = _settings.Current.Automation.AutoLoginUserName;
+
+        if (!string.IsNullOrWhiteSpace(raw))
+        {
+            var configured = raw.Trim();
+
+            // 先拆「域\用户」再判 @：MicrosoftAccount\alice@example.com 是合法写法，
+            // 先看 @ 会把整串当成 UPN 配 null 域，LogonUser 必然失败。
+            var separator = configured.IndexOf('\\');
+            if (separator > 0 && separator < configured.Length - 1)
+            {
+                return (configured[(separator + 1)..], configured[..separator]);
+            }
+
+            // 只剩 UPN：它就是要用的账户，不必去注册表里猜。
+            if (configured.Contains('@'))
+            {
+                // 「带 @」不等于微软账户：AD 域 UPN（alice@example.org）按 Windows 的规定
+                // 必须传 null 域，硬套 MicrosoftAccount 会在校验密码时直接失败。
+                if (IsKnownMicrosoftAccount(configured))
+                {
+                    return (configured, "MicrosoftAccount");
+                }
+
+                // 当前用户的 hive 里没有它，也不代表就不是微软账户——别的 Windows 用户
+                // 的账户不会出现在这个进程的 CurrentUser 下。这里补一条环境判据：
+                // 既没加入 AD 域、也没加入 Entra 的机器上不存在「工作账户」，
+                // UPN 只可能是微软账户；两类加入都算「有组织账户」，
+                // 一律保持 null 域交给系统解析，否则工作账户会被套上 MicrosoftAccount 而失败。
+                // 要在这类机器上用微软账户，写 MicrosoftAccount\邮箱 即可（上面已处理）。
+                return IsDomainJoined() || IsEntraJoined()
+                    ? (configured, null)
+                    : (configured, "MicrosoftAccount");
+            }
+
+            // 显式写了裸账户名：
+            // 与当前登录用户同名时，用当前用户的域——域成员机器上裸写账户名通常就是它自己，
+            // 传机器名会让域账户校验失败。其余情况仍按本机账户解析。
+            if (string.Equals(configured, Environment.UserName, StringComparison.OrdinalIgnoreCase))
+            {
+                return (configured, Environment.UserDomainName);
+            }
+
+            return (configured, Environment.MachineName);
+        }
+
+        // 未配置时才跟随当前登录身份：微软账户需要换成邮箱，本地账户用当前域/机器名。
         if (TryGetMicrosoftAccountEmail(out var email))
         {
             return (email, "MicrosoftAccount");
         }
 
-        return (Environment.UserName, Environment.MachineName);
+        // 域成员机器上 UserDomainName 是域、本地账户时是机器名，
+        // 直接用它才能和系统里的登录身份对上（写死机器名会让域账户验证失败）。
+        return (Environment.UserName, Environment.UserDomainName);
     }
 
     /// <summary>
@@ -386,7 +559,10 @@ internal sealed class AutoLoginService : IDisposable
             return false;
         }
 
-        credential = new RdpCredential(UserName, Domain, password);
+        // 用与校验完全相同的身份：之前凭据走 Domain 属性（Environment.UserDomainName），
+        // 校验走的却是机器名或 MicrosoftAccount，域成员机器上会验过却连不上。
+        var (userName, domain) = ResolveLogonIdentity();
+        credential = new RdpCredential(userName, domain ?? string.Empty, password);
         return true;
     }
 
@@ -641,10 +817,25 @@ internal sealed class AutoLoginService : IDisposable
                 return false;
             }
 
-            // 用户名：只在字段存在且为空时填。用户自己输过的内容不覆盖。
+            // 用解析出来的登录身份填：微软账户要在凭据框里写邮箱，本地账户写用户名。
+            var (resolvedUserName, resolvedDomain) = ResolveLogonIdentity();
+
+            // 显式配了「域\用户」时，框里也要带域：同名不同域是两个账户，
+            // 只填后半段可能登到别人头上。微软账户例外——框里要的是邮箱。
+            var dialogUserName = resolvedUserName;
+            if (!string.IsNullOrEmpty(resolvedDomain)
+                && !string.Equals(resolvedDomain, "MicrosoftAccount", StringComparison.OrdinalIgnoreCase))
+            {
+                dialogUserName = resolvedDomain + "\\" + resolvedUserName;
+            }
+
+            // 用户名只在字段为空时填，用户自己输过的不覆盖。
+            //
+            // 填错也不要紧：自动登录只有一次机会（MaxFillAttempts = 1），
+            // 这次没成就交给用户手动输入，不会反复试。
             if (userNameField is not null)
             {
-                TrySetValue(userNameField, UserName, onlyWhenEmpty: true);
+                TrySetValue(userNameField, dialogUserName, onlyWhenEmpty: true);
             }
 
             if (!TrySetValue(passwordField, password, onlyWhenEmpty: false))
@@ -732,6 +923,13 @@ internal sealed class AutoLoginService : IDisposable
         }
     }
 
+    /// <summary>
+    /// 点凭据框里的确认按钮。
+    ///
+    /// 按钮文案随系统语言变化，不能取「第一个可用按钮」兜底：遇到不认识的语言、
+    /// 框里又有「取消」时，取第一个等于替用户点了取消，而调用方还会把它记成
+    /// 「已经填过」，这一轮就再也不会重试。
+    /// </summary>
     private static bool TryInvokeConfirm(AutomationElement dialog)
     {
         var buttons = dialog.FindAll(
@@ -739,9 +937,25 @@ internal sealed class AutoLoginService : IDisposable
             new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button));
 
         // 按钮文案随系统语言变化，同时按 AutomationId 和常见名称匹配，命中一个即可。
-        string[] preferredNames = ["确定", "OK", "继续", "Continue", "登录", "Sign in", "提交", "Submit"];
+        // 除中英文外补上繁体、韩、俄、西四语的确认字样：这些语言下原来一个都匹配不上，
+        // 而 RDP 凭据框固定有「确认 / 取消」两个按钮，用「只剩一个按钮」兜底也救不回来，
+        // 结果是密码填了却没提交，看起来像自动登录没生效。
+        string[] preferredNames =
+        [
+            "确定", "確定", "확인", "ОК",
+            "OK", "Aceptar",
+            "继续", "Continue",
+            "登录", "Sign in",
+            "提交", "Submit"
+        ];
 
-        AutomationElement? fallback = null;
+        // 取消除外的字样：确认按钮被禁用时，取消会是「唯一可用的按钮」，
+        // 单按钮兜底就会把它点下去——调用方还会记成「已经填过」，这一轮不再重试。
+        string[] cancelNames = ["取消", "取消(&C)", "Cancel", "キャンセル", "취소", "Отмена", "Cancelar"];
+
+        AutomationElement? matched = null;
+        var otherEnabled = new List<AutomationElement>();
+
         foreach (AutomationElement button in buttons)
         {
             try
@@ -754,19 +968,24 @@ internal sealed class AutoLoginService : IDisposable
                 var automationId = button.Current.AutomationId;
                 if (string.Equals(automationId, "OkButton", StringComparison.OrdinalIgnoreCase))
                 {
-                    fallback = button;
+                    matched = button;
                     break;
                 }
 
                 var name = button.Current.Name;
                 if (Array.Exists(preferredNames, candidate => string.Equals(candidate, name, StringComparison.OrdinalIgnoreCase)))
                 {
-                    fallback = button;
+                    matched = button;
                     break;
                 }
 
-                // 凭据框通常只有一个按钮，名称是本地化文本时按这个兜底。
-                fallback ??= button;
+                if (Array.Exists(cancelNames, candidate => string.Equals(candidate, name, StringComparison.OrdinalIgnoreCase)))
+                {
+                    // 取消类按钮永远不参与兜底。
+                    continue;
+                }
+
+                otherEnabled.Add(button);
             }
             catch (ElementNotAvailableException)
             {
@@ -774,14 +993,18 @@ internal sealed class AutoLoginService : IDisposable
             }
         }
 
-        if (fallback is null)
+        // 名称没匹配上时，只有「整个对话框就这一个可用按钮」才敢点：
+        // 系统语言不认识、又同时有「取消」时，取第一个等于替用户点了取消，
+        // 而调用方还会把它记成「已经填过」，这一轮就再也不会重试。
+        var target = matched ?? (otherEnabled.Count == 1 ? otherEnabled[0] : null);
+        if (target is null)
         {
             return false;
         }
 
         try
         {
-            if (!fallback.TryGetCurrentPattern(InvokePattern.Pattern, out var pattern)
+            if (!target.TryGetCurrentPattern(InvokePattern.Pattern, out var pattern)
                 || pattern is not InvokePattern invokePattern)
             {
                 return false;

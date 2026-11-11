@@ -1,9 +1,10 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Security;
 using System.Security.Principal;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Win32;
 
@@ -39,8 +40,22 @@ public static partial class ChildSessionEnvironmentCheck
         IReadOnlyList<string> Backups);
 
     private static readonly object TermsrvGate = new();
+
+    /// <summary>
+    /// sfc /verifyfile 同一时刻只跑一个。
+    ///
+    /// 修复完成后的同步复核很容易和后台校验撞上：两个进程读同一个文件只是白烧 CPU 和磁盘。
+    /// </summary>
+    private static readonly SemaphoreSlim SfcGate = new(1, 1);
     private static TermsrvFileState _termsrvState = new(false, false, false, Array.Empty<string>());
     private static DateTime _termsrvStateAt = DateTime.MinValue;
+
+    /// <summary>
+    /// 校验世代号。作废缓存时自增，后台校验完成时对不上就把结果丢掉——
+    /// 否则「缓存失效前开始、失效后才结束」的那次校验会把旧结论写回来，
+    /// 用户点「重新检测」等于白点，还要再等五分钟。
+    /// </summary>
+    private static int _termsrvGeneration;
     private static bool _termsrvVerifyRunning;
 
     /// <summary>已验证结果缓存 5 分钟；未验证的 30 秒后重试。</summary>
@@ -66,9 +81,27 @@ public static partial class ChildSessionEnvironmentCheck
             {
                 _termsrvVerifyRunning = true;
                 var backups = CollectTermsrvBackups(system32);
+                var generation = _termsrvGeneration;
+
+                // 列表同步写回：校验要跑几秒，这期间修复侧来读 GetTermsrvState 时
+                // 走的是「校验中」分支，返回的就是 _termsrvState.Backups——
+                // 不写回的话它拿到的还是上一轮的旧列表。
+                _termsrvState = _termsrvState with { Backups = backups };
 
                 _ = Task.Run(() =>
                 {
+                    // 这一轮在排队期间可能已被作废（用户点了重新检测、或修复后复核过）。
+                    // 让它继续跑没有意义：它只会占住 sfc 闸门，让真正需要结论的那轮
+                    // 等满超时、最后拿到「未验证」。
+                    lock (TermsrvGate)
+                    {
+                        if (generation != _termsrvGeneration)
+                        {
+                            AppLog.Info("本轮 termsrv.dll 校验在开始前已过期，跳过。");
+                            return;
+                        }
+                    }
+
                     TermsrvFileState result;
                     try
                     {
@@ -93,6 +126,14 @@ public static partial class ChildSessionEnvironmentCheck
 
                     lock (TermsrvGate)
                     {
+                        if (generation != _termsrvGeneration)
+                        {
+                            // 这轮已经被作废（用户点了重新检测，或修复后复核过）：结果丢掉，
+                            // 也不能动「正在校验」标志——那个标志归最新的那轮负责。
+                            AppLog.Info("丢弃过期的 termsrv.dll 校验结果。");
+                            return;
+                        }
+
                         _termsrvState = result;
                         _termsrvStateAt = DateTime.UtcNow;
                         _termsrvVerifyRunning = false;
@@ -120,6 +161,39 @@ public static partial class ChildSessionEnvironmentCheck
     }
 
     /// <summary>
+    /// 是否正在校验 termsrv.dll。界面据此避免把「暂时没结论」当成「已解决」。
+    /// </summary>
+    internal static bool IsTermsrvVerifying
+    {
+        get
+        {
+            lock (TermsrvGate)
+            {
+                return _termsrvVerifyRunning;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 清掉缓存，让下一次读取重新校验。
+    ///
+    /// 用户点「重新检测」时要调：结论默认缓存 5 分钟，用户在别处把文件修好了，
+    /// 不清缓存就会一直显示旧警告和一个点了也修不动的「修复」按钮。
+    /// </summary>
+    internal static void InvalidateTermsrvCache()
+    {
+        lock (TermsrvGate)
+        {
+            _termsrvStateAt = DateTime.MinValue;
+
+            // 作废正在跑的那轮：它的结论是失效之前的事实，不能写回来。
+            // 同时放下标志，让下一次读取能立刻发起新的校验。
+            _termsrvGeneration++;
+            _termsrvVerifyRunning = false;
+        }
+    }
+
+    /// <summary>
     /// 立即重新校验一次（修复完成后用），同步等待结果。
     /// </summary>
     internal static TermsrvFileState VerifyTermsrvNow()
@@ -128,12 +202,28 @@ public static partial class ChildSessionEnvironmentCheck
         var termsrvPath = Path.Combine(system32, "termsrv.dll");
         var backups = CollectTermsrvBackups(system32);
 
+        // 这次是权威结论：先用新世代作废在途的后台校验，免得它跑完后把旧诊断写回缓存。
+        // 同时记下世代，校验期间用户点「重新检测」时可以据此放弃写缓存。
+        int generation;
+        lock (TermsrvGate)
+        {
+            generation = ++_termsrvGeneration;
+        }
+
         var result = VerifyTermsrv(termsrvPath, backups);
 
         lock (TermsrvGate)
         {
+            if (generation != _termsrvGeneration)
+            {
+                // 期间被作废过：缓存里已经有更新的结论在跑或已写入，这次结果只回给调用方，
+                // 不再覆盖缓存——否则旧结论会把用户刚触发的那次重检结果挤掉。
+                return result;
+            }
+
             _termsrvState = result;
             _termsrvStateAt = DateTime.UtcNow;
+            _termsrvVerifyRunning = false;
         }
 
         return result;
@@ -161,6 +251,18 @@ public static partial class ChildSessionEnvironmentCheck
         };
     }
 
+    /// <summary>
+    /// 现在可用的备份列表。
+    ///
+    /// 修复前直接取，而不是用 <see cref="GetTermsrvState"/> 里的 <c>Backups</c>：
+    /// 用户可能在上一轮检测之后才放入备份，而缓存里的那份列表是旧的——
+    /// 于是修复会跳过新备份直接跑 sfc，白绕一大圈。
+    /// </summary>
+    internal static IReadOnlyList<string> CollectBackupsNow()
+    {
+        return CollectTermsrvBackups(Environment.GetFolderPath(Environment.SpecialFolder.System));
+    }
+
     private static IReadOnlyList<string> CollectTermsrvBackups(string system32)
     {
         var backups = new List<string>();
@@ -179,6 +281,29 @@ public static partial class ChildSessionEnvironmentCheck
     /// 运行 <c>sfc /verifyfile=</c>，返回退出码；跑不起来返回 -1。
     /// </summary>
     private static int RunSfcVerifyFile(string path)
+    {
+        // 排队等前一个跑完，而不是同时起两个。等不到（前一个卡住）就照跑：
+        // 校验本身不该因为排队而失败，多一个进程也比拿不到结论强。
+        if (!SfcGate.Wait(TimeSpan.FromMinutes(3.5)))
+        {
+            // 上一轮校验还没结束：另起一个只会让两个 sfc 抢同一个文件。
+            // 上限比 sfc 自己的 3 分钟强杀更长，所以正常情况下等不到这里；
+            // 真等到了说明前一个进程卡死，返回 -1 让上层按「未验证」处理，不拿旧结论凑数。
+            AppLog.Warn("等待上一次 sfc 校验超时，本次跳过校验。");
+            return -1;
+        }
+
+        try
+        {
+            return RunSfcVerifyFileCore(path);
+        }
+        finally
+        {
+            SfcGate.Release();
+        }
+    }
+
+    private static int RunSfcVerifyFileCore(string path)
     {
         try
         {

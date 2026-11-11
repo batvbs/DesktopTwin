@@ -120,12 +120,15 @@ public sealed class EnvironmentCheckTests
             Assert.True(ids.Add(issue.Id), $"全量检查项里出现重复 id：{issue.Id}");
         }
 
-        // 已知检查项固定 13 个，增减时要同步改这里。
+        // 已知检查项固定 14 个，增减时要同步改这里。
         //
         // 其中 1 项（credential-rejected）是运行时结论：它不属于环境状态，只有连接失败后的现场
         // 才会被 Collect(true) 触发；全量视图里它永远以「未触发」出现，用于核对文案。
-        Assert.Equal(13, all.Count);
+        // 另 1 项（rdp-tool-persistence-incomplete）是「没扫全」的独立结论：
+        // 它不进 Collect() 的命中路径，只把「扫描不完整」摆到常规视图里。
+        Assert.Equal(14, all.Count);
         Assert.Contains(all, x => x.Id == "credential-rejected");
+        Assert.Contains(all, x => x.Id == "rdp-tool-persistence-incomplete");
     }
 
     [Fact]
