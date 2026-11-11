@@ -179,6 +179,7 @@ internal static class Strings
         Pair("Uu.Repair.Done", "UU 串流已修复"),
         Pair("Uu.Repair.Failed", "UU 串流修复失败"),
         Pair("Uu.Result.Busy", "上一次切换还没结束，已忽略本次。"),
+        Pair("Uu.Result.RecoveryBusy", "上一轮的串流恢复还在收尾，请稍后再切换。"),
         Pair("Uu.Result.Cancelled", "切换已取消。"),
         Pair("Uu.Result.Failed", "切换失败：{0}"),
         Pair("Uu.Result.DisconnectFailed", "分身会话没能断开，请稍后重试。"),

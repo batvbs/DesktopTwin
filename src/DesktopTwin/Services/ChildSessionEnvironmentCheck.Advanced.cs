@@ -242,6 +242,14 @@ public static partial class ChildSessionEnvironmentCheck
     /// </summary>
     internal static IReadOnlyList<ToolPersistenceHit> GetToolPersistenceHits()
     {
+        // 先记下代际，再开始扫描：扫描期间别处可能发现新的篡改（代际会变），
+        // 那种情况下这轮的「干净」结论已经过期。
+        int scanGeneration;
+        lock (ObligationGate)
+        {
+            scanGeneration = _obligationGeneration;
+        }
+
         var deep = ShouldDeepScanPersistence();
         var hits = new List<ToolPersistenceHit>(GetCachedTaskHits(deep, out var scannedNow));
         hits.AddRange(GetRunKeyHits(out var runIncomplete));
@@ -253,7 +261,7 @@ public static partial class ChildSessionEnvironmentCheck
             _runScanIncomplete = runIncomplete;
         }
 
-        ReleaseStickyDeepScanIfClean(hits, deep && scannedNow);
+        ReleaseStickyDeepScanIfClean(hits, deep && scannedNow, scanGeneration);
         return hits;
     }
 
@@ -278,6 +286,10 @@ public static partial class ChildSessionEnvironmentCheck
             // 确认被篡改（或文件已被工具拿走）：从现在起深扫，直到深扫确认全清。
             lock (ObligationGate)
             {
+                // 每次检测到都推进代际，哪怕标志已经是 true：这样在途的旧扫描
+                // 就无法用它那轮「当时是干净的」结论来清除义务。
+                _obligationGeneration++;
+
                 if (!_persistenceDeepScanSticky)
                 {
                     _persistenceDeepScanSticky = true;
@@ -301,7 +313,8 @@ public static partial class ChildSessionEnvironmentCheck
     /// </param>
     private static void ReleaseStickyDeepScanIfClean(
         IReadOnlyList<ToolPersistenceHit> hits,
-        bool freshDeepScan)
+        bool freshDeepScan,
+        int scanGeneration)
     {
         if (!_persistenceDeepScanSticky || hits.Count > 0 || !freshDeepScan)
         {
@@ -319,13 +332,23 @@ public static partial class ChildSessionEnvironmentCheck
         }
 
         var state = GetTermsrvState();
-        if (state.Exists && state.Verified && state.Intact)
+        if (!state.Exists || !state.Verified || !state.Intact)
         {
-            lock (ObligationGate)
+            return;
+        }
+
+        lock (ObligationGate)
+        {
+            // 这轮扫描开始之后，别处已经发现过新的篡改：我看到的「干净」不再是
+            // 最新事实，清除会把那份新义务一起抹掉。
+            if (scanGeneration != _obligationGeneration)
             {
-                _persistenceDeepScanSticky = false;
-                DeepScanObligationChanged?.Invoke(false);
+                AppLog.Info("扫描结论已过期，本次不解除深扫义务。");
+                return;
             }
+
+            _persistenceDeepScanSticky = false;
+            DeepScanObligationChanged?.Invoke(false);
         }
     }
 
@@ -718,6 +741,15 @@ public static partial class ChildSessionEnvironmentCheck
     /// 状态变更与通知必须在同一把锁里串行，顺序才对得上。
     /// </summary>
     private static readonly object ObligationGate = new();
+
+    /// <summary>
+    /// 深扫义务的代际号。每次「检测到篡改（或文件缺失）」都自增。
+    ///
+    /// 一次扫描从读到干净状态到执行清除之间，别处可能已经发现了新的篡改。
+    /// 记下扫描开始时的代际，清除前比对：对不上就说明这轮结论已经过期，
+    /// 不能拿它把新建立的义务抹掉——否则重启后会直接退回浅扫。
+    /// </summary>
+    private static int _obligationGeneration;
 
     /// <summary>
     /// 启动时恢复上一次没做完的深扫义务。

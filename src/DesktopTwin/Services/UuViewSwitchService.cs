@@ -100,7 +100,13 @@ internal sealed class UuViewSwitchService : IDisposable
             // 但不清 _killedStreamersInLastSwitch：上一轮如果杀掉串流端后它一直没回来，
             // 这份「待恢复」的义务要跨过本次切换保留下来，否则恢复就断在半路，
             // 而两条切换路径都会因为「没有串流端」报成功。
-            await StopStreamerRecoveryAsync().ConfigureAwait(false);
+            if (!await StopStreamerRecoveryAsync().ConfigureAwait(false))
+            {
+                // 恢复循环还在它的停/启收尾里，这时去动会话，结果取决于两边谁后执行：
+                // 切换可能报「没有串流端」成功，而它随后又把串流端拉起来。
+                // 让用户稍后再切，比给一个不确定的成功更诚实。
+                return new Result(false, Locale.Get("Uu.Result.RecoveryBusy"));
+            }
 
             var consoleSession = ChildSessionNativeMethods.TryGetConsoleSessionId();
             var streamerSessions = GetStreamerSessionIds();
@@ -222,14 +228,15 @@ internal sealed class UuViewSwitchService : IDisposable
     /// 新一轮切换如果不等它，两边会同时动 UU 服务：切换可能看到「没有串流端」
     /// 而报成功，旧恢复循环随后又把服务启起来。
     /// </summary>
-    public async Task StopStreamerRecoveryAsync()
+    /// <returns>true 表示恢复循环已经收手；false 表示它还在动 UU 服务。</returns>
+    public async Task<bool> StopStreamerRecoveryAsync()
     {
         StopStreamerRecovery();
 
         var task = _recoveryTask;
         if (task is null)
         {
-            return;
+            return true;
         }
 
         try
@@ -246,13 +253,22 @@ internal sealed class UuViewSwitchService : IDisposable
             // 关键是不清 _recoveryTask：任务还活着，ScheduleStreamerRecovery 据此
             // 不再起新的恢复循环，避免两个循环同时动 UU 服务。
             AppLog.Warn("等待 UU 恢复循环退出超时，本次不再启动新的恢复。");
-            return;
+            return false;
         }
         catch (OperationCanceledException)
         {
         }
 
+        if (!ReferenceEquals(_recoveryTask, task))
+        {
+            // 等待期间旧任务结束了、它的收尾又排上了一个替代任务：这时候清空引用
+            // 会让后来的切换等不到它，而它照样会去动 UU 服务。保留引用，本次按未收手处理。
+            AppLog.Warn("UU 恢复循环已换成新的一轮，本次切换放弃。");
+            return false;
+        }
+
         _recoveryTask = null;
+        return true;
     }
 
     /// <summary>

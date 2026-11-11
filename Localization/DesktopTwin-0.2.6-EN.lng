@@ -147,6 +147,7 @@ Uu.Repair.Message=Restarting the UU service…
 Uu.Repair.Done=UU streaming repaired
 Uu.Repair.Failed=Could not repair UU streaming
 Uu.Result.Busy=The previous switch has not finished yet, so this one was ignored.
+Uu.Result.RecoveryBusy=The previous streamer recovery is still finishing. Try switching again in a moment.
 Uu.Result.Cancelled=Switch cancelled.
 Uu.Result.Failed=Switch failed: {0}
 Uu.Result.DisconnectFailed=The twin session could not be disconnected. Please try again.
