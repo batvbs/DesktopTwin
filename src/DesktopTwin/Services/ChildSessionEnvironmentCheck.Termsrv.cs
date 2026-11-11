@@ -83,6 +83,11 @@ public static partial class ChildSessionEnvironmentCheck
                 var backups = CollectTermsrvBackups(system32);
                 var generation = _termsrvGeneration;
 
+                // 列表同步写回：校验要跑几秒，这期间修复侧来读 GetTermsrvState 时
+                // 走的是「校验中」分支，返回的就是 _termsrvState.Backups——
+                // 不写回的话它拿到的还是上一轮的旧列表。
+                _termsrvState = _termsrvState with { Backups = backups };
+
                 _ = Task.Run(() =>
                 {
                     TermsrvFileState result;
@@ -232,6 +237,18 @@ public static partial class ChildSessionEnvironmentCheck
             1 => new TermsrvFileState(true, false, true, backups),
             _ => new TermsrvFileState(true, false, false, backups)
         };
+    }
+
+    /// <summary>
+    /// 现在可用的备份列表。
+    ///
+    /// 修复前直接取，而不是用 <see cref="GetTermsrvState"/> 里的 <c>Backups</c>：
+    /// 用户可能在上一轮检测之后才放入备份，而缓存里的那份列表是旧的——
+    /// 于是修复会跳过新备份直接跑 sfc，白绕一大圈。
+    /// </summary>
+    internal static IReadOnlyList<string> CollectBackupsNow()
+    {
+        return CollectTermsrvBackups(Environment.GetFolderPath(Environment.SpecialFolder.System));
     }
 
     private static IReadOnlyList<string> CollectTermsrvBackups(string system32)

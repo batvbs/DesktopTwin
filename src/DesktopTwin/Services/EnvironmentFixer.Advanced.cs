@@ -256,6 +256,35 @@ public static partial class EnvironmentFixer
     /// </summary>
     private static Result FixTermsrvDll(CancellationToken cancellationToken)
     {
+        Result result;
+        try
+        {
+            result = FixTermsrvDllCore(cancellationToken);
+        }
+        catch
+        {
+            // 修复抛异常也要把服务拉回来，否则用户会剩一个停着的远程桌面服务。
+            EnsureTermServiceRunning(out _);
+            throw;
+        }
+
+        // 不管从哪条路径退出，服务都该在跑。
+        //
+        // 修复链路中途可能停过服务：停止超时后 TryStart 会失败（服务还在 STOP_PENDING，
+        // 启动请求直接被拒），接着退到 sfc 兜底，那边没人再拉它。结果是文件修好了、
+        // 远程桌面却连不上——所以恢复失败不能只写日志，必须反映到结论里。
+        if (EnsureTermServiceRunning(out var restartError))
+        {
+            return result;
+        }
+
+        return new Result(
+            false,
+            result.Message + Locale.Format("Fix.Termsrv.RestartFailed", restartError));
+    }
+
+    private static Result FixTermsrvDllCore(CancellationToken cancellationToken)
+    {
         var state = ChildSessionEnvironmentCheck.GetTermsrvState();
         if (state.Exists && state.Verified && state.Intact)
         {
@@ -265,9 +294,10 @@ public static partial class EnvironmentFixer
         var system32 = Environment.GetFolderPath(Environment.SpecialFolder.System);
         var termsrvPath = Path.Combine(system32, "termsrv.dll");
 
-        // 1) 用工具自己的备份还原，但必须复核通过
+        // 1) 用工具自己的备份还原，但必须复核通过。
+        //    列表实时取：用户可能在上一轮检测之后才放入备份，用缓存里的旧列表会白白跳过它。
         string? stopFailure = null;
-        foreach (var backupName in state.Backups)
+        foreach (var backupName in ChildSessionEnvironmentCheck.CollectBackupsNow())
         {
             var backupPath = Path.Combine(system32, backupName);
             if (!File.Exists(backupPath))
@@ -403,12 +433,64 @@ public static partial class EnvironmentFixer
     /// 等服务停下来。TryStop 是在等状态收敛，超时返回时服务可能还在停，
     /// 这时候直接 TryStart 必然失败，得先等它真正停下。
     /// </summary>
+    // SERVICE_STATUS.dwCurrentState
+    private const int ServiceStoppedState = 1;
+    private const int ServiceStartPendingState = 2;
+    private const int ServiceStopPendingState = 3;
+    private const int ServiceRunningState = 4;
+
+    /// <summary>
+    /// 确保 TermService 处于运行状态。
+    ///
+    /// 停服务超时后 <see cref="ServiceNativeMethods.TryStart"/> 往往也失败：服务还在
+    /// STOP_PENDING，启动请求会被直接拒绝。所以要先等它真正停下再启动；等不到就
+    /// 如实报告「未恢复」，不能再发一次注定失败的启动请求。
+    /// </summary>
+    /// <param name="error">未能恢复到运行状态时的原因。</param>
+    private static bool EnsureTermServiceRunning(out string error)
+    {
+        error = string.Empty;
+
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (!ServiceNativeMethods.TryQueryState("TermService", out var state))
+            {
+                error = Locale.Get("Fix.Termsrv.StateUnknown");
+                return false;
+            }
+
+            if (state == ServiceRunningState)
+            {
+                return true;
+            }
+
+            if (state == ServiceStoppedState)
+            {
+                if (ServiceNativeMethods.TryStart("TermService", out var startError))
+                {
+                    return true;
+                }
+
+                AppLog.Warn($"修复后恢复 TermService 失败：{startError}");
+                error = startError;
+                return false;
+            }
+
+            // START_PENDING / STOP_PENDING：继续等，这一秒里发启动请求一定被拒。
+            Thread.Sleep(200);
+        }
+
+        error = Locale.Get("Fix.Termsrv.StillPending");
+        return false;
+    }
+
     private static bool WaitForServiceStopped(string serviceName, TimeSpan timeout)
     {
         var deadline = DateTime.UtcNow + timeout;
         while (DateTime.UtcNow < deadline)
         {
-            if (ServiceNativeMethods.TryQueryState(serviceName, out var state) && state == 1)
+            if (ServiceNativeMethods.TryQueryState(serviceName, out var state) && state == ServiceStoppedState)
             {
                 return true;
             }
@@ -416,7 +498,7 @@ public static partial class EnvironmentFixer
             Thread.Sleep(200);
         }
 
-        return ServiceNativeMethods.TryQueryState(serviceName, out var last) && last == 1;
+        return ServiceNativeMethods.TryQueryState(serviceName, out var last) && last == ServiceStoppedState;
     }
 
     /// <summary>

@@ -402,6 +402,9 @@ internal sealed class DiagnosticsWindow : FluentWindow
             if ((termsrvPending || !termsrvConclusive)
                 && string.Equals(id, "termsrv-dll-tampered", StringComparison.Ordinal))
             {
+                // 只跳过「加入」不够：上一轮确认修好后它已经在集合里，这轮重检又变成
+                // 「未验证」，旧的绿勾会一直挂着，直到新结论出来。先摘掉。
+                _resolved.Remove(id);
                 continue;
             }
 

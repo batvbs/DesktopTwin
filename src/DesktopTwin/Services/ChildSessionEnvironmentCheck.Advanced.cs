@@ -242,21 +242,75 @@ public static partial class ChildSessionEnvironmentCheck
     /// </summary>
     internal static IReadOnlyList<ToolPersistenceHit> GetToolPersistenceHits()
     {
-        var hits = new List<ToolPersistenceHit>();
-        hits.AddRange(GetCachedTaskHits());
+        var deep = ShouldDeepScanPersistence();
+        var hits = new List<ToolPersistenceHit>(GetCachedTaskHits(deep, out var scannedNow));
         hits.AddRange(GetRunKeyHits(out var runIncomplete));
 
-        if (runIncomplete)
+        // 每轮都按这一趟的结果赋值。只在 true 时置位的话，某个 Run 位置读失败过一次
+        // 之后标记永远清不掉——目录后来恢复可读，界面还在说「扫描不完整」。
+        lock (ScanGate)
         {
-            // 某个 Run/RunOnce 位置读不到：和计划任务一样算「没扫全」，
-            // 否则清理会报成功，而某个自启位置根本没检查。
-            lock (ScanGate)
+            _runScanIncomplete = runIncomplete;
+        }
+
+        ReleaseStickyDeepScanIfClean(hits, deep && scannedNow);
+        return hits;
+    }
+
+    /// <summary>
+    /// 是否需要连 Microsoft 子树里的任务一起读内容。
+    ///
+    /// 判据是 termsrv.dll 被 sfc 判定为「与组件库不一致」：这类工具把补丁写回去的唯一
+    /// 手段就是开机任务，文件真被改过时才值得为它多读一千多个系统任务（面板每次打开
+    /// 都会跑一遍）。没被改过时深扫只是白等。
+    ///
+    /// 检测和修复共用这一个判断：修复前会重新取一次命中项，天然带上同样的深度。
+    /// </summary>
+    private static bool ShouldDeepScanPersistence()
+    {
+        var state = GetTermsrvState();
+        if (state.Exists && state.Verified && !state.Intact)
+        {
+            // 确认被篡改：从现在起深扫，直到深扫确认全清。
+            _persistenceDeepScanSticky = true;
+        }
+
+        return _persistenceDeepScanSticky;
+    }
+
+    /// <summary>
+    /// 文件已经还原、且深扫一次没再发现任何命中，才允许退回浅扫。
+    ///
+    /// 只要还留着命中项（例如修复时删不掉的那个任务），就继续深扫——否则提示会随着
+    /// 文件被还原一起消失，而任务在下次开机时会把补丁再写回去。
+    /// </summary>
+    /// <param name="freshDeepScan">
+    /// 这一轮是不是真的跑了一次深扫。缓存命中的空结果可能早于某次任务变动，
+    /// 不能拿它当「干净」的证据——那会让标记提前释放，之后浅扫漏掉子树里的任务。
+    /// </param>
+    private static void ReleaseStickyDeepScanIfClean(
+        IReadOnlyList<ToolPersistenceHit> hits,
+        bool freshDeepScan)
+    {
+        if (!_persistenceDeepScanSticky || hits.Count > 0 || !freshDeepScan)
+        {
+            return;
+        }
+
+        // 扫不完整时的零命中不等于干净：读不到的目录里可能正好藏着那个任务。
+        lock (ScanGate)
+        {
+            if (_taskScanIncomplete)
             {
-                _runScanIncomplete = true;
+                return;
             }
         }
 
-        return hits;
+        var state = GetTermsrvState();
+        if (state.Exists && state.Verified && state.Intact)
+        {
+            _persistenceDeepScanSticky = false;
+        }
     }
 
     /// <summary>
@@ -267,6 +321,7 @@ public static partial class ChildSessionEnvironmentCheck
         lock (ScanGate)
         {
             _taskScanAt = DateTime.MinValue;
+            _taskScanDeep = false;
             _taskScanIncomplete = false;
             _runScanIncomplete = false;
         }
@@ -618,6 +673,21 @@ public static partial class ChildSessionEnvironmentCheck
     /// <summary>自启项（Run）扫描有没有位置读失败。和计划任务分开记，汇总时一起看。</summary>
     private static bool _runScanIncomplete;
 
+    /// <summary>当前缓存是不是深扫的结果（含 Microsoft 子树的任务内容）。</summary>
+    private static bool _taskScanDeep;
+
+    /// <summary>
+    /// 一旦确认 termsrv.dll 被篡改，就把「深扫」黏住，直到深扫一次全清干净为止。
+    ///
+    /// 只按「当前是否被篡改」判断会有两个坑：修复时完整性缓存刚好过期，会降级成浅扫，
+    /// 漏掉系统子树里的任务；文件被还原之后条件不再成立，修复时没删掉的任务就再也
+    /// 报不出来，用户以为已经清干净了。
+    ///
+    /// 注意：这个标记不随 <see cref="InvalidateScanCache"/> 复位——它记的是
+    /// 「这台机器有过前科」，不是「此刻有没有病」。
+    /// </summary>
+    private static bool _persistenceDeepScanSticky;
+
     /// <summary>
     /// 上一次计划任务扫描有没有目录被拒绝访问。先取命中项，标记才是这一轮的。
     /// </summary>
@@ -656,18 +726,26 @@ public static partial class ChildSessionEnvironmentCheck
     /// <summary>任务扫描结果缓存 30 秒：界面每 2 秒刷一次，不能每轮都读几百个 XML。</summary>
     private static readonly TimeSpan TaskScanTtl = TimeSpan.FromSeconds(30);
 
-    private static IReadOnlyList<ToolPersistenceHit> GetCachedTaskHits()
+    /// <param name="scannedNow">
+    /// 这次是真扫了一遍（true），还是命中缓存（false）。
+    /// 释放黏性标记时必须要求 true：缓存里的空结果可能早于某次任务变动。
+    /// </param>
+    private static IReadOnlyList<ToolPersistenceHit> GetCachedTaskHits(bool deep, out bool scannedNow)
     {
         lock (ScanGate)
         {
-            if (DateTime.UtcNow - _taskScanAt < TaskScanTtl)
+            // 浅扫的缓存不能拿去回答深扫：那正是「文件被改过但任务藏在系统子树里」的场景。
+            if (DateTime.UtcNow - _taskScanAt < TaskScanTtl && (!deep || _taskScanDeep))
             {
+                scannedNow = false;
                 return _taskScanCache;
             }
 
-            _taskScanCache = ScanScheduledTasks(out var incomplete);
+            _taskScanCache = ScanScheduledTasks(deep, out var incomplete);
             _taskScanIncomplete = incomplete;
             _taskScanAt = DateTime.UtcNow;
+            _taskScanDeep = deep;
+            scannedNow = true;
             return _taskScanCache;
         }
     }
@@ -680,14 +758,19 @@ public static partial class ChildSessionEnvironmentCheck
     /// 1. 任务名含关键词；
     /// 2. 任务 XML 内容含关键词（覆盖「改名但还指向 autoupdate.bat」的情况）。
     ///
-    /// 内容只读 Microsoft 子树以外的文件：系统自带任务有一千多个，
-    /// 全套读一遍会让每轮检测明显变慢，而破解工具不会把任务藏在 Microsoft 子树里。
+    /// 内容默认只读 Microsoft 子树以外的文件：系统自带任务有一千多个，
+    /// 全套读一遍会让每轮检测明显变慢。但 <paramref name="includeMicrosoftSubtree"/>
+    /// 为 true 时会一并读——只有 termsrv.dll 被确认篡改时才这么做，那时才值得为
+    /// 「藏在系统子树里的还原任务」付这个代价。
     ///
     /// 逐目录遍历而不是 <c>EnumerateFiles(AllDirectories)</c>：后者在第一个无权限的子目录上
     /// 就整体抛出，后面的任务全部漏掉，外面也只看到一句「扫描失败」。
     /// </summary>
+    /// <param name="includeMicrosoftSubtree">是否连系统子树的任务内容一起读（深扫）。</param>
     /// <param name="incomplete">有目录被拒绝访问时置 true，调用方据此提示「扫描不完整」。</param>
-    private static IReadOnlyList<ToolPersistenceHit> ScanScheduledTasks(out bool incomplete)
+    private static IReadOnlyList<ToolPersistenceHit> ScanScheduledTasks(
+        bool includeMicrosoftSubtree,
+        out bool incomplete)
     {
         var hits = new List<ToolPersistenceHit>();
         incomplete = false;
@@ -750,7 +833,8 @@ public static partial class ChildSessionEnvironmentCheck
                 }
 
                 // 内容检查只做非 Microsoft 子树，理由见方法注释。
-                if (relative.StartsWith(
+                if (!includeMicrosoftSubtree
+                    && relative.StartsWith(
                         "Microsoft" + Path.DirectorySeparatorChar,
                         StringComparison.OrdinalIgnoreCase))
                 {
@@ -824,7 +908,9 @@ public static partial class ChildSessionEnvironmentCheck
                                               or UnauthorizedAccessException
                                               or IOException)
         {
-            // 枚举 HKU 需要权限，拿不到就跳过，不影响主流程。
+            // 枚举 HKU 需要权限，拿不到就跳过——但这等于没检查其它用户的自启项，
+            // 必须记成「扫描不完整」，否则会报出「扫全了、没有残留」。
+            incomplete = true;
             AppLog.Warn("枚举其它用户的自启项失败。", exception);
         }
 
