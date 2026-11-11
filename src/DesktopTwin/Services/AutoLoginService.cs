@@ -752,12 +752,21 @@ internal sealed class AutoLoginService : IDisposable
             // 登录一次——密码不对会消耗它的失败次数，对的则登进别人的桌面。
             if (userNameField is not null)
             {
-                var filled = TrySetValue(userNameField, UserName, onlyWhenEmpty: true);
+                // 用「解析出来的登录身份」填充，而不是 UserName 属性（那个在没配置时
+                // 返回本地用户名）。微软账户登录时凭据框要的是邮箱，填本地名会被读回校验拦下。
+                var (resolvedUserName, resolvedDomain) = ResolveLogonIdentity();
+
+                if (_logonIdentityAmbiguous)
+                {
+                    return false;
+                }
+
+                var filled = TrySetValue(userNameField, resolvedUserName, onlyWhenEmpty: true);
                 var current = TryReadValue(userNameField);
 
                 // 值对得上就继续。只读字段（写不进去）但预填的正好是目标账户，
                 // 也是可用的——不必因为写失败就整轮放弃。
-                if (!IsSameAccount(current, UserName))
+                if (!IsSameAccount(current, resolvedUserName, resolvedDomain))
                 {
                     if (!filled || current.Length == 0)
                     {
@@ -865,21 +874,36 @@ internal sealed class AutoLoginService : IDisposable
     /// 或裸的用户名/邮箱，而配置里只写了其中一种。按去掉域前缀后的部分比较，
     /// 才不会因为写法不同就把正确账户判成「别人的」。
     /// </summary>
-    private static bool IsSameAccount(string left, string right)
+    /// <param name="promptValue">凭据框里显示的值，可能带 <c>域\</c> 前缀。</param>
+    /// <param name="expectedUser">解析出来的账户名。</param>
+    /// <param name="expectedDomain">解析出来的域；本地账户为机器名，微软账户为 MicrosoftAccount。</param>
+    private static bool IsSameAccount(string promptValue, string expectedUser, string? expectedDomain)
     {
-        return string.Equals(
-            TrimAccountPrefix(left),
-            TrimAccountPrefix(right),
-            StringComparison.OrdinalIgnoreCase);
-    }
+        var prompt = promptValue.Trim();
+        if (prompt.Length == 0)
+        {
+            return false;
+        }
 
-    private static string TrimAccountPrefix(string name)
-    {
-        var value = name.Trim();
-        var separator = value.IndexOf('\\');
-        return separator >= 0 && separator < value.Length - 1
-            ? value[(separator + 1)..]
-            : value;
+        var separator = prompt.IndexOf('\\');
+        if (separator <= 0 || separator >= prompt.Length - 1)
+        {
+            // 框里只有账户名：按账户名比较（框里通常不带域，域由系统带）。
+            return string.Equals(prompt, expectedUser, StringComparison.OrdinalIgnoreCase);
+        }
+
+        var promptDomain = prompt[..separator];
+        var promptUser = prompt[(separator + 1)..];
+
+        // 框里带了域：域和账户都要对上。否则 CONTOSO\alice 会被 OTHER\alice 顶替，
+        // 等于替另一个账户提交密码。
+        if (!string.Equals(promptUser, expectedUser, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return string.IsNullOrEmpty(expectedDomain)
+            || string.Equals(promptDomain, expectedDomain, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

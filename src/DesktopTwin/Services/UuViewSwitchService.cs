@@ -207,8 +207,12 @@ internal sealed class UuViewSwitchService : IDisposable
         }
 
         var cancellation = new CancellationTokenSource();
+
+        // 先把 token 取出来，再把这个 source 发布出去：一旦发布，别的线程可能立刻
+        // StopStreamerRecovery 取消并释放它，那时再读 .Token 会抛 ObjectDisposedException。
+        var token = cancellation.Token;
         _streamRecoveryCancellation = cancellation;
-        _recoveryTask = Task.Run(() => RecoverStreamerAsync(cancellation.Token));
+        _recoveryTask = Task.Run(() => RecoverStreamerAsync(token));
     }
 
     /// <summary>
@@ -449,16 +453,16 @@ internal sealed class UuViewSwitchService : IDisposable
             {
                 // sc.exe 自己卡住（服务控制管理器不响应）：杀掉它按失败处理，
                 // 否则调用方会在这里无限等下去，恢复循环也永远退不出去。
-                try
-                {
-                    process.Kill();
-                }
-                catch (Exception)
-                {
-                }
-
+                KillQuietly(process);
                 AppLog.Warn($"sc {command} {StreamerServiceName} 超过 {ServiceCommandTimeout.TotalSeconds} 秒未返回。");
                 return false;
+            }
+            catch (OperationCanceledException)
+            {
+                // 调用方取消：同样要把这个进程收掉。否则它会继续占着服务控制，
+                // 和后续的重启操作撞在一起。
+                KillQuietly(process);
+                throw;
             }
 
             // sc.exe 的退出码不可全信：「服务已在运行」「服务已停止」都落在失败位。
@@ -507,9 +511,16 @@ internal sealed class UuViewSwitchService : IDisposable
             var started = await RunServiceCommandAsync("start", CancellationToken.None).ConfigureAwait(false);
             if (!started)
             {
-                // 刚停下时启动偶尔会被拒：再等一轮状态确认。
+                // 刚停下时启动偶尔会被拒：先等一轮状态。
                 started = await WaitForServiceStateAsync(expectRunning: true, CancellationToken.None)
                     .ConfigureAwait(false);
+            }
+
+            if (!started)
+            {
+                // 还不行就再发一次启动请求。只轮询状态是「等」，不会让服务起来；
+                // 服务已经停着的时候，那 15 秒注定白等。
+                started = await RunServiceCommandAsync("start", CancellationToken.None).ConfigureAwait(false);
             }
 
             cancellationToken.ThrowIfCancellationRequested();
@@ -518,6 +529,20 @@ internal sealed class UuViewSwitchService : IDisposable
         finally
         {
             _serviceGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// 结束子进程，失败也不抛。
+    /// </summary>
+    private static void KillQuietly(Process process)
+    {
+        try
+        {
+            process.Kill();
+        }
+        catch (Exception)
+        {
         }
     }
 

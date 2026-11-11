@@ -276,10 +276,13 @@ public static partial class ChildSessionEnvironmentCheck
         if (!state.Exists || (state.Verified && !state.Intact))
         {
             // 确认被篡改（或文件已被工具拿走）：从现在起深扫，直到深扫确认全清。
-            if (!_persistenceDeepScanSticky)
+            lock (ObligationGate)
             {
-                _persistenceDeepScanSticky = true;
-                DeepScanObligationChanged?.Invoke(true);
+                if (!_persistenceDeepScanSticky)
+                {
+                    _persistenceDeepScanSticky = true;
+                    DeepScanObligationChanged?.Invoke(true);
+                }
             }
         }
 
@@ -318,8 +321,11 @@ public static partial class ChildSessionEnvironmentCheck
         var state = GetTermsrvState();
         if (state.Exists && state.Verified && state.Intact)
         {
-            _persistenceDeepScanSticky = false;
-            DeepScanObligationChanged?.Invoke(false);
+            lock (ObligationGate)
+            {
+                _persistenceDeepScanSticky = false;
+                DeepScanObligationChanged?.Invoke(false);
+            }
         }
     }
 
@@ -703,6 +709,15 @@ public static partial class ChildSessionEnvironmentCheck
     /// <c>PersistenceDeepScanPending</c>。
     /// </summary>
     internal static Action<bool>? DeepScanObligationChanged;
+
+    /// <summary>
+    /// 深扫义务的迁移锁。
+    ///
+    /// 修复扫描和「重新检测」可能并发：两个线程各自改标志、各自通知外部落盘，
+    /// 通知顺序一旦反了，设置文件里留下 false 而内存是 true——重启后义务就丢了。
+    /// 状态变更与通知必须在同一把锁里串行，顺序才对得上。
+    /// </summary>
+    private static readonly object ObligationGate = new();
 
     /// <summary>
     /// 启动时恢复上一次没做完的深扫义务。

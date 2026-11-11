@@ -334,33 +334,53 @@ namespace DesktopTwinSessionAgent
 
                 // 先写临时文件再整体替换。直接 FileMode.Create 会先把原文件截断，
                 // 主程序恰好在这个窗口里读就会拿到空内容，把在线判成离线。
-                // 共享模式仍要带上 Write/Delete：主程序那边同时在读同一个文件。
-                string temporaryPath = _heartbeatPath + ".tmp";
-                using (FileStream stream = new FileStream(
-                           temporaryPath,
-                           FileMode.Create,
-                           FileAccess.Write,
-                           FileShare.ReadWrite | FileShare.Delete))
-                {
-                    stream.Write(payload, 0, payload.Length);
-                }
+                //
+                // 暂存文件名带上进程号：--test 或重复启动会让两个代理同时写心跳，
+                // 共用一个 .tmp 时一个会把另一个还没发布的内容截断或搬走。
+                string temporaryPath = _heartbeatPath + "."
+                    + Process.GetCurrentProcess().Id + ".tmp";
 
                 try
                 {
-                    if (File.Exists(_heartbeatPath))
+                    using (FileStream stream = new FileStream(
+                               temporaryPath,
+                               FileMode.Create,
+                               FileAccess.Write,
+                               FileShare.ReadWrite | FileShare.Delete))
                     {
-                        File.Replace(temporaryPath, _heartbeatPath, null);
+                        stream.Write(payload, 0, payload.Length);
                     }
-                    else
+
+                    try
                     {
-                        File.Move(temporaryPath, _heartbeatPath);
+                        if (File.Exists(_heartbeatPath))
+                        {
+                            File.Replace(temporaryPath, _heartbeatPath, null);
+                        }
+                        else
+                        {
+                            File.Move(temporaryPath, _heartbeatPath);
+                        }
+                    }
+                    catch (IOException)
+                    {
+                        // 替换被占用时退回直接覆盖：心跳宁可冒一次截断风险，也不能整个停掉。
+                        File.Copy(temporaryPath, _heartbeatPath, true);
                     }
                 }
-                catch (IOException)
+                finally
                 {
-                    // 替换被占用时退回直接覆盖：心跳宁可冒一次截断风险，也不能整个停掉。
-                    File.Copy(temporaryPath, _heartbeatPath, true);
-                    File.Delete(temporaryPath);
+                    // 只清自己那份暂存文件。
+                    try
+                    {
+                        if (File.Exists(temporaryPath))
+                        {
+                            File.Delete(temporaryPath);
+                        }
+                    }
+                    catch (Exception)
+                    {
+                    }
                 }
             }
             catch (Exception ex)
