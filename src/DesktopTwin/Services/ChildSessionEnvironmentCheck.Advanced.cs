@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -244,7 +244,18 @@ public static partial class ChildSessionEnvironmentCheck
     {
         var hits = new List<ToolPersistenceHit>();
         hits.AddRange(GetCachedTaskHits());
-        hits.AddRange(GetRunKeyHits());
+        hits.AddRange(GetRunKeyHits(out var runIncomplete));
+
+        if (runIncomplete)
+        {
+            // 某个 Run/RunOnce 位置读不到：和计划任务一样算「没扫全」，
+            // 否则清理会报成功，而某个自启位置根本没检查。
+            lock (ScanGate)
+            {
+                _runScanIncomplete = true;
+            }
+        }
+
         return hits;
     }
 
@@ -256,7 +267,13 @@ public static partial class ChildSessionEnvironmentCheck
         lock (ScanGate)
         {
             _taskScanAt = DateTime.MinValue;
+            _taskScanIncomplete = false;
+            _runScanIncomplete = false;
         }
+
+        // 用户点「重新检测」或修复完成时，termsrv.dll 的 5 分钟缓存也要作废：
+        // 否则用户在别处把文件修好了，这里还会显示旧警告和一个点了也修不动的按钮。
+        InvalidateTermsrvCache();
     }
 
     // ---------------- 五条新结论 ----------------
@@ -372,7 +389,12 @@ public static partial class ChildSessionEnvironmentCheck
         issues.Add(new Issue(
             "rdp-tool-persistence",
             Locale.Get("Check.Persistence.Title"),
-            Locale.Format("Check.Persistence.Summary", tasks, runs),
+            Locale.Format(
+                IsTaskScanIncomplete()
+                    ? "Check.Persistence.SummaryIncomplete"
+                    : "Check.Persistence.Summary",
+                tasks,
+                runs),
             Locale.Format("Check.Persistence.Detail", builder.ToString()),
             Severity.Notice,
             IsBlocking: false,
@@ -515,14 +537,27 @@ public static partial class ChildSessionEnvironmentCheck
             blocking: true);
 
         var persistence = GetToolPersistenceHits();
+
+        // 三种状态要分开，不能都用「没有发现持久化项」含糊过去：
+        // 读不到目录（没提权）、扫了但有目录被拒（不完整）、扫全了确实没有。
+        var scanReadable = IsTaskScanReadable();
+        var scanIncomplete = IsTaskScanIncomplete();
+        var persistenceState = !scanReadable
+            ? Locale.Get("Check.Persistence.Unreadable")
+            : scanIncomplete
+                ? Locale.Format("Check.Persistence.Incomplete", persistence.Count)
+                : persistence.Count.ToString();
+
         AddOrInactive(
             all, active,
             "rdp-tool-persistence",
             "Check.Persistence.Title",
-            "Check.Persistence.InactiveSummary",
+            scanReadable && !scanIncomplete
+                ? "Check.Persistence.InactiveSummary"
+                : "Check.Persistence.StateSummary",
             "Check.Persistence.InactiveDetail",
-            persistence.Count,
-            persistence.Count,
+            persistenceState,
+            persistenceState,
             blocking: false);
 
         var downgrades = GetRdpSecurityDowngrades();
@@ -572,6 +607,52 @@ public static partial class ChildSessionEnvironmentCheck
     private static DateTime _taskScanAt = DateTime.MinValue;
     private static IReadOnlyList<ToolPersistenceHit> _taskScanCache = Array.Empty<ToolPersistenceHit>();
 
+    /// <summary>
+    /// 这次扫描有没有目录被系统拒绝访问。
+    ///
+    /// 逐目录 try/catch 之后，某个子目录读不到只是跳过，命中列表看起来和「查过、确实没有」
+    /// 一模一样。留一个标记，界面才能说清这一趟没扫全。
+    /// </summary>
+    private static bool _taskScanIncomplete;
+
+    /// <summary>自启项（Run）扫描有没有位置读失败。和计划任务分开记，汇总时一起看。</summary>
+    private static bool _runScanIncomplete;
+
+    /// <summary>
+    /// 上一次计划任务扫描有没有目录被拒绝访问。先取命中项，标记才是这一轮的。
+    /// </summary>
+    internal static bool IsTaskScanIncomplete()
+    {
+        lock (ScanGate)
+        {
+            return _taskScanIncomplete || _runScanIncomplete;
+        }
+    }
+
+    /// <summary>
+    /// 计划任务目录能不能读。非管理员时 <c>%SystemRoot%\System32\Tasks</c> 直接拒绝访问，
+    /// 扫描会静默返回空——界面必须能把「没查」和「查了没有」分开。
+    /// </summary>
+    internal static bool IsTaskScanReadable()
+    {
+        try
+        {
+            var tasksRoot = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.System),
+                "Tasks");
+
+            using var entries = Directory.EnumerateFileSystemEntries(tasksRoot).GetEnumerator();
+            _ = entries.MoveNext();
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException
+                                              or UnauthorizedAccessException
+                                              or SecurityException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>任务扫描结果缓存 30 秒：界面每 2 秒刷一次，不能每轮都读几百个 XML。</summary>
     private static readonly TimeSpan TaskScanTtl = TimeSpan.FromSeconds(30);
 
@@ -584,7 +665,8 @@ public static partial class ChildSessionEnvironmentCheck
                 return _taskScanCache;
             }
 
-            _taskScanCache = ScanScheduledTasks();
+            _taskScanCache = ScanScheduledTasks(out var incomplete);
+            _taskScanIncomplete = incomplete;
             _taskScanAt = DateTime.UtcNow;
             return _taskScanCache;
         }
@@ -600,30 +682,65 @@ public static partial class ChildSessionEnvironmentCheck
     ///
     /// 内容只读 Microsoft 子树以外的文件：系统自带任务有一千多个，
     /// 全套读一遍会让每轮检测明显变慢，而破解工具不会把任务藏在 Microsoft 子树里。
+    ///
+    /// 逐目录遍历而不是 <c>EnumerateFiles(AllDirectories)</c>：后者在第一个无权限的子目录上
+    /// 就整体抛出，后面的任务全部漏掉，外面也只看到一句「扫描失败」。
     /// </summary>
-    private static IReadOnlyList<ToolPersistenceHit> ScanScheduledTasks()
+    /// <param name="incomplete">有目录被拒绝访问时置 true，调用方据此提示「扫描不完整」。</param>
+    private static IReadOnlyList<ToolPersistenceHit> ScanScheduledTasks(out bool incomplete)
     {
         var hits = new List<ToolPersistenceHit>();
+        incomplete = false;
 
-        try
+        var tasksRoot = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.System),
+            "Tasks");
+
+        if (!Directory.Exists(tasksRoot))
         {
-            var tasksRoot = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.System),
-                "Tasks");
+            // Directory.Exists 在「拒绝访问」时同样返回 false，不能当成「没有这个目录」：
+            // 当成没扫全，调用方才不会把「没查」报成「没有」。
+            incomplete = true;
+            return hits;
+        }
 
-            if (!Directory.Exists(tasksRoot))
+        var pending = new Stack<string>();
+        pending.Push(tasksRoot);
+
+        while (pending.Count > 0)
+        {
+            var directory = pending.Pop();
+
+            string[] files;
+            string[] subdirectories;
+            try
             {
-                return hits;
+                files = Directory.GetFiles(directory);
+                subdirectories = Directory.GetDirectories(directory);
+            }
+            catch (Exception exception) when (exception is IOException
+                                                  or UnauthorizedAccessException
+                                                  or SecurityException)
+            {
+                // 跳过这个目录，但要把「没扫全」记下来：否则结果和「扫过、确实没有」一样。
+                incomplete = true;
+                AppLog.Warn($"跳过无法读取的任务目录 {directory}。", exception);
+                continue;
             }
 
-            foreach (var file in Directory.EnumerateFiles(tasksRoot, "*", SearchOption.AllDirectories))
+            foreach (var subdirectory in subdirectories)
+            {
+                pending.Push(subdirectory);
+            }
+
+            foreach (var file in files)
             {
                 var relative = Path.GetRelativePath(tasksRoot, file);
                 var taskName = Path.GetFileName(file);
+                var taskPath = @"\" + relative.Replace('/', '\\');
 
                 if (ContainsKeyword(taskName))
                 {
-                    var taskPath = @"\" + relative.Replace('/', '\\');
                     hits.Add(new ToolPersistenceHit(
                         "task",
                         taskPath,
@@ -633,30 +750,32 @@ public static partial class ChildSessionEnvironmentCheck
                 }
 
                 // 内容检查只做非 Microsoft 子树，理由见方法注释。
-                if (relative.StartsWith("Microsoft" + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                if (relative.StartsWith(
+                        "Microsoft" + Path.DirectorySeparatorChar,
+                        StringComparison.OrdinalIgnoreCase))
                 {
                     continue;
                 }
 
                 var content = TryReadTextFile(file);
-                if (content is null || !ContainsKeyword(content))
+                if (content is null)
+                {
+                    // 读不到任务定义同样算没扫全：这一条可能正好是目标，不能当作「查过、没有」。
+                    incomplete = true;
+                    continue;
+                }
+
+                if (!ContainsKeyword(content))
                 {
                     continue;
                 }
 
-                var contentTaskPath = @"\" + relative.Replace('/', '\\');
                 hits.Add(new ToolPersistenceHit(
                     "task",
-                    contentTaskPath,
+                    taskPath,
                     Locale.Get("Check.Persistence.Reason.Content"),
-                    TaskPath: contentTaskPath));
+                    TaskPath: taskPath));
             }
-        }
-        catch (Exception exception) when (exception is IOException
-                                              or UnauthorizedAccessException
-                                              or SecurityException)
-        {
-            AppLog.Warn("扫描计划任务失败。", exception);
         }
 
         return hits;
@@ -665,9 +784,10 @@ public static partial class ChildSessionEnvironmentCheck
     /// <summary>
     /// 扫描自启项（Run / RunOnce / 策略 Run，含其它已加载用户的 HKCU）。
     /// </summary>
-    private static IReadOnlyList<ToolPersistenceHit> GetRunKeyHits()
+    private static IReadOnlyList<ToolPersistenceHit> GetRunKeyHits(out bool incomplete)
     {
         var hits = new List<ToolPersistenceHit>();
+        incomplete = false;
 
         var locations = new List<(RegistryKey Root, string Path, string Label)>
         {
@@ -745,7 +865,8 @@ public static partial class ChildSessionEnvironmentCheck
                                                   or UnauthorizedAccessException
                                                   or IOException)
             {
-                // 单个位置读不到不影响其它位置。
+                // 单个位置读不到不影响其它位置，但这一趟就不算扫全了。
+                incomplete = true;
                 AppLog.Warn($"读取自启项 {label}\\{path} 失败。", exception);
             }
         }
