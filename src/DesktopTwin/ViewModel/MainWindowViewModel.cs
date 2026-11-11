@@ -455,6 +455,10 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private async Task StartAsync()
     {
+        // 记下代际要放在最前面：下面这个说明框不是模态的，用户完全可能在它开着的时候
+        // 从诊断面板关掉桌面分身，随后「同意」接着把会话又建回来。
+        var startGeneration = _childSessionService.StartGeneration;
+
         if (!await EnsureSystemChangeDisclosedAsync())
         {
             return;
@@ -505,7 +509,9 @@ public partial class MainWindowViewModel : ObservableObject
         try
         {
             await Dispatcher.Yield(DispatcherPriority.Background);
-            await _childSessionService.StartAsync();
+
+            // 带上代际：等待期间被注销的启动由服务侧直接放弃。
+            await _childSessionService.StartAsync(startGeneration);
         }
         catch (Exception exception)
         {

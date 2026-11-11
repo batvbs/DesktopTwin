@@ -192,6 +192,7 @@ internal static class Strings
         Pair("Uu.Result.ToChild", "已切回「桌面分身」，重新连一下 UU 就进游戏桌面。"),
         Pair("Uu.Result.ToChild.NoStreamer", "已切回「桌面分身」。当前没有 UU 串流端，下次连入即是游戏桌面。"),
         Pair("Uu.Result.StreamerKillFailed", "有 UU 串流端进程但无法结束，切换可能没有生效，请手动结束后重试。"),
+        Pair("Uu.Result.StreamerKillFailed.NotRestored", "有 UU 串流端进程但无法结束，切换没有生效，且分身连接未能恢复。请手动结束该进程后重新连接。"),
         Pair("Uu.Result.ToChild.StreamerStuck", "UU 串流端还没落到分身。程序会在后台自动重试拉起 UU 服务，稍候在手机上重连一次即可。"),
         Pair("Uu.Result.ServiceRestarted", "UU 服务已重启，串流端已重新拉起。"),
         Pair("Uu.Result.ServiceRestarted.NoStreamer", "UU 服务已重启。请在手机上重新连接一次 UU（设备应该已经回到在线）。"),
@@ -412,6 +413,7 @@ internal static class Strings
 
         // ---- 分身端 ----
         Pair("Agent.Error.ReleaseFailed", "释放分身端失败：{0}"),
+        Pair("Agent.Error.UpdateRolledBack", "分身端更新失败，已回滚到旧版本（当前仍可正常使用，下次启动会重试）。"),
         Pair("Agent.Error.RunKeyFailed", "写自启项失败：{0}"),
         Pair("Agent.Started", "已在分身会话 {0} 里启动分身端。"),
         Pair("Agent.StartFailed", "在分身会话 {0} 里启动分身端失败，下次登录时由自启项兜底。"),
@@ -535,6 +537,8 @@ internal static class Strings
         Pair("Common.Success", "成功"),
         Pair("Common.Failed", "失败"),
         Pair("Uu.Result.ServiceRestartFailed2", "重启 UU 服务失败（停止{0}、启动失败）。请在服务管理器里手动重启 GameViewerService。"),
+        Pair("Uu.Result.ServiceStopFailed", "无法停止 UU 服务（GameViewerService），本次重启没有继续。请在服务管理器里手动重启它。"),
+        Pair("Uu.Result.ServiceStartFailed", "UU 服务已停止但没能重新启动。请在服务管理器里手动启动 GameViewerService。"),
         Pair("AutoLogin.System.NotFound", "找不到 netplwiz.exe，请手动按 Win+R 输入 netplwiz 打开。"),
         Pair("AutoLogin.System.NotStarted", "系统设置没有启动起来，请手动按 Win+R 输入 netplwiz。"),
         Pair("AutoLogin.System.OpenError", "无法打开系统设置：{0}"),

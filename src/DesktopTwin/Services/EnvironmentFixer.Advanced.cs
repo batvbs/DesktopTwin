@@ -293,6 +293,11 @@ public static partial class EnvironmentFixer
 
     private static Result FixTermsrvDllCore(CancellationToken cancellationToken)
     {
+        // 走到这里就说明确认过文件被改：先把深扫义务记下来。
+        // 修复会把文件还原成「完好」，之后若靠扫描去重新发现，就再也发现不了，
+        // 而没删掉的开机任务会在下次开机把补丁写回去。
+        ChildSessionEnvironmentCheck.MarkTamperingObserved();
+
         var state = ChildSessionEnvironmentCheck.GetTermsrvState();
         if (state.Exists && state.Verified && state.Intact)
         {
@@ -338,10 +343,10 @@ public static partial class EnvironmentFixer
 
         if (after.Exists && after.Verified && after.Intact)
         {
-            var repaired = Locale.Format("Fix.Termsrv.RepairedBySfc", sfcResult);
-            return new Result(
-                true,
-                stopFailure is null ? repaired : repaired + Locale.Get("Fix.Termsrv.RestartCheck"));
+            // 不再追一句「此前可能未能重新启动」：停服务失败时 TryStart 往往本来就是成功的
+            //（服务还在跑），那句话会误报。真正的恢复结果由 FixTermsrvDll 收尾时判定，
+            // 那里失败会直接把结论改成失败并说明原因。
+            return new Result(true, Locale.Format("Fix.Termsrv.RepairedBySfc", sfcResult));
         }
 
         var failureMessage = Locale.Format("Fix.Termsrv.SfcNotFixed", sfcResult);

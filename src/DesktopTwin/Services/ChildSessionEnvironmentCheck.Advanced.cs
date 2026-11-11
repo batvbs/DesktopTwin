@@ -285,6 +285,29 @@ public static partial class ChildSessionEnvironmentCheck
     }
 
     /// <summary>
+    /// 记录「这台机器被改过」：立刻置位深扫义务并持久化。
+    ///
+    /// 由「发现篡改」的地方直接调用（诊断出结论、开始修复），而不是等持久化扫描
+    /// 去重新发现——那一步看到的可能是已被复核覆盖掉的「完好」状态。
+    /// </summary>
+    internal static void MarkTamperingObserved()
+    {
+        lock (ObligationGate)
+        {
+            // 每次都推进代际：在途的旧扫描不能拿它那轮「当时干净」的结论来清义务。
+            _obligationGeneration++;
+
+            if (_persistenceDeepScanSticky)
+            {
+                return;
+            }
+
+            _persistenceDeepScanSticky = true;
+            DeepScanObligationChanged?.Invoke(true);
+        }
+    }
+
+    /// <summary>
     /// 是否需要连 Microsoft 子树里的任务一起读内容。
     ///
     /// 判据是 termsrv.dll 被 sfc 判定为「与组件库不一致」：这类工具把补丁写回去的唯一
@@ -579,6 +602,13 @@ public static partial class ChildSessionEnvironmentCheck
         {
             return;
         }
+
+        // 结论一出就记下深扫义务，不要等下一次持久化扫描去「发现」：
+        // Collect() 先查持久化再查这一项，后台校验恰好在这两步之间出结果时，
+        // 持久化那一步看到的是「未验证」，义务就不会被记下；而这一项照常报「已篡改」。
+        // 反过来，用户随后在别处把文件修好、VerifyTermsrvNow 写回「完好」，
+        // 之后每一轮都会是浅扫，藏在系统子树里的还原任务永远看不到。
+        MarkTamperingObserved();
 
         var backups = state.Backups.Count == 0
             ? Locale.Get("Check.Termsrv.NoBackup")

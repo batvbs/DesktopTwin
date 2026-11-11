@@ -113,6 +113,10 @@ public partial class MainWindow : FluentWindow
 
         // 分身分辨率被改时，全屏下的「1:1 / 自适应」判定前提也变了。
         _childSessionService.DesktopSizeChanged += OnDesktopSizeChanged;
+
+        // 通知条的 IsOpen 是两向绑定的：窗口隐藏期间任何一次 ShowNotification
+        // （例如 UU 串流已恢复）都会把它重新打开，而它是独立 HWND，会孤零零浮在桌面上。
+        NotificationPopup.Opened += OnNotificationPopupOpened;
     }
 
     /// <inheritdoc />
@@ -256,6 +260,20 @@ public partial class MainWindow : FluentWindow
         {
             HideFullscreenBar();
         }
+    }
+
+    /// <summary>
+    /// 窗口隐藏时又被通知打开：先收掉，等窗口回来再按有效期补开。
+    /// </summary>
+    private void OnNotificationPopupOpened(object? sender, EventArgs e)
+    {
+        if (IsVisible)
+        {
+            return;
+        }
+
+        _notificationReopenPending = true;
+        NotificationPopup.IsOpen = false;
     }
 
     private void OnWindowVisibilityChanged(object? sender, DependencyPropertyChangedEventArgs e)

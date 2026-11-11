@@ -108,6 +108,14 @@ namespace DesktopTwinSessionAgent
 
             if (!owned)
             {
+                // 自检模式下不能杀旧代理，也就抢不到 mutex、走不到热键检查。
+                // 返回 0 会让自检看起来通过了，其实一次热键都没验。
+                if (testMode)
+                {
+                    Log("自检未完成：已有分身端在运行，无法验证热键注册。");
+                    return 3;
+                }
+
                 Log("已有分身端在运行，本进程退出");
                 return 0;
             }

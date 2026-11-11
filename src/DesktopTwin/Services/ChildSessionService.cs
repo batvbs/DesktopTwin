@@ -52,6 +52,41 @@ public sealed class ChildSessionService : IDisposable
     private readonly AutoLoginService? _autoLogin;
     private readonly DispatcherTimer _statusTimer;
     private readonly SemaphoreSlim _launchSemaphore = new(1, 1);
+
+    /// <summary>
+    /// 正在跑的那次启动。两次启动叠在一起时共用它，避免各自做一遍预检、
+    /// 再各自发起一次连接尝试（用户会看到两轮密码输入）。
+    /// </summary>
+    private Task? _startOperation;
+
+    /// <summary>
+    /// <see cref="_startOperation"/> 属于哪一代启动。
+    ///
+    /// 注销会推进代际，在途的那次启动随即作废（它回来时自己就放弃了）。这时候
+    /// 新的启动不能去等那个注定不连接的旧任务，否则用户按下启动却什么也没发生。
+    /// </summary>
+    private int _startOperationGeneration = -1;
+
+    /// <summary>
+    /// 保护 <see cref="_startOperation"/> 的赋值与清除：两者可能在不同线程上
+    /// （清理由 await 的续体在池线程执行），不加锁会用一个「清空」把刚赋上的新任务抹掉，
+    /// 下一次启动于是又各跑一遍预检、又发一次连接尝试。
+    /// </summary>
+    private readonly object _startOperationGate = new();
+
+    /// <summary>
+    /// 环境预检的代际：后开始的那一轮才算数，慢扫描不会把更新的结论盖回旧值。
+    /// </summary>
+    private int _environmentGeneration;
+
+    /// <summary>
+    /// 已经发布过的最大代际。用它而不是「等于当前代际」来判断：
+    /// 只要求「不比已发布的旧」，慢扫描回来的结果照样能发布，不会被默默丢掉；
+    /// 而更新的一轮稍后到达时仍然会覆盖它——顺序不会倒过来。
+    /// </summary>
+    private int _environmentPublishedGeneration;
+
+    private readonly object _environmentGate = new();
     private readonly CancellationTokenSource _disposeCancellationTokenSource = new();
 
     /// <summary>
@@ -316,7 +351,18 @@ public sealed class ChildSessionService : IDisposable
     /// 启动桌面分身：先做一次环境预检，确保 Child Sessions 已启用，然后建立 RDP 连接并等待登录完成。
     /// 已经处于已连接状态时直接返回。
     /// </summary>
-    public Task StartAsync()
+    public Task StartAsync() => StartAsync(null);
+
+    /// <summary>
+    /// 启动桌面分身，并要求「期间没有被注销取代」。
+    /// </summary>
+    /// <param name="expectedGeneration">
+    /// 调用方在等待之前记下的 <see cref="StartGeneration"/>。用户在等待期间关掉了桌面分身，
+    /// 这个值就对不上了——此时不能再往下走，否则会把刚关掉的会话又建回来。
+    /// </param>
+    public Task StartAsync(int expectedGeneration) => StartAsync((int?)expectedGeneration);
+
+    private Task StartAsync(int? expectedGeneration)
     {
         ThrowIfDisposed();
 
@@ -325,18 +371,80 @@ public sealed class ChildSessionService : IDisposable
         // 线程，不切回去就直接抛 InvalidOperationException——兜底反而成了故障点。
         if (_dispatcher.CheckAccess())
         {
-            return StartCoreAsync();
+            return StartSharedAsync(expectedGeneration);
         }
 
         return _dispatcher
-            .InvokeAsync(StartCoreAsync)
+            .InvokeAsync(() => StartSharedAsync(expectedGeneration))
             .Task
             .Unwrap();
     }
 
-    private async Task StartCoreAsync()
+    /// <summary>
+    /// 当前启动代际。注销或释放会推进它，调用方可在等待前记下、启动时回传。
+    /// </summary>
+    public int StartGeneration
+    {
+        get
+        {
+            lock (_environmentGate)
+            {
+                return _startGeneration;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 同一次启动只跑一遍：两次启动叠在一起时（界面按钮与 UU 后台切回撞上），
+    /// 后到的那个等前一个的结果，不再单独发起一次连接尝试——
+    /// 否则第一次尝试失败后，第二次的预检回来时会重新建一个尝试，用户要输两遍密码。
+    /// </summary>
+    private Task StartSharedAsync(int? expectedGeneration)
+    {
+        lock (_startOperationGate)
+        {
+            if (_startOperation is { IsCompleted: false } running
+                && _startOperationGeneration == _startGeneration)
+            {
+                return running;
+            }
+
+            // 上一次启动已被注销作废：它的任务还在跑，但不会去连接，不能共用。
+            var task = StartCoreAsync(expectedGeneration);
+            _startOperation = task;
+            _startOperationGeneration = _startGeneration;
+            return AwaitAndClearStartAsync(task);
+        }
+    }
+
+    private async Task AwaitAndClearStartAsync(Task task)
+    {
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        finally
+        {
+            lock (_startOperationGate)
+            {
+                if (ReferenceEquals(_startOperation, task))
+                {
+                    _startOperation = null;
+                }
+            }
+        }
+    }
+
+    private async Task StartCoreAsync(int? expectedGeneration)
     {
         ThrowIfDisposed();
+
+        // 等待期间被注销（用户关掉了桌面分身）：直接放弃，不能把它再建回来。
+        if (expectedGeneration is { } expected && expected != StartGeneration)
+        {
+            AppLog.Info("启动请求已过期（期间桌面分身被关闭），放弃。");
+            return;
+        }
 
         var startGeneration = _startGeneration;
 
@@ -345,6 +453,12 @@ public sealed class ChildSessionService : IDisposable
         //
         // 结果先放在局部变量里：被注销取代的那次启动不能把结果写进共享字段，
         // 否则会覆盖掉新一次启动刚发布的结论。
+        int environmentGeneration;
+        lock (_environmentGate)
+        {
+            environmentGeneration = ++_environmentGeneration;
+        }
+
         var issues = await Task.Run(() => ChildSessionEnvironmentCheck.Collect()).ConfigureAwait(true);
 
         // 预检期间可能被注销或释放。那之后不能再改系统状态、更不能把会话建回来。
@@ -354,7 +468,7 @@ public sealed class ChildSessionService : IDisposable
             return;
         }
 
-        PublishEnvironmentIssues(issues);
+        PublishEnvironmentIssuesIfCurrent(issues, environmentGeneration);
         EnsureChildSessionsEnabled();
         RefreshState();
 
@@ -530,6 +644,11 @@ public sealed class ChildSessionService : IDisposable
     {
         ThrowIfDisposed();
 
+        // 排队等 UI 线程期间可能已经被取消（切换超时、用户又按了一次热键）。
+        // 这里必须先看：再往下就会显示窗口、改连接状态，然后才在别处发现「已取消」，
+        // 于是一次已取消的切换照样改掉了桌面连接。
+        cancellationToken.ThrowIfCancellationRequested();
+
         var window = EnsureDesktopWindow();
         if (showWindow && !_windowHiddenByUser)
         {
@@ -573,7 +692,14 @@ public sealed class ChildSessionService : IDisposable
     /// 这时把分身挂回后台不会影响它的选择，而下次切回分身就能秒切——
     /// 不用重新走一遍连接握手。原版社区脚本把这个行为叫 keep_child_connected。
     /// </summary>
-    public Task<bool> ConnectDesktopInBackgroundAsync(CancellationToken cancellationToken)
+    /// <param name="minimizeWindow">
+    /// 连上之后要不要把分身窗口最小化。切换成功时为 true（分身退到后台）；
+    /// 切换失败、只是把连接恢复回来时为 false——那时用户正看着这个窗口，
+    /// 缩下去等于让他自己去任务栏里找回来。
+    /// </param>
+    public Task<bool> ConnectDesktopInBackgroundAsync(
+        CancellationToken cancellationToken,
+        bool minimizeWindow = true)
     {
         ThrowIfDisposed();
 
@@ -582,16 +708,18 @@ public sealed class ChildSessionService : IDisposable
         // 必须先切回 UI 线程，否则直接抛 InvalidOperationException。
         if (_dispatcher.CheckAccess())
         {
-            return ConnectDesktopInBackgroundCoreAsync(cancellationToken);
+            return ConnectDesktopInBackgroundCoreAsync(cancellationToken, minimizeWindow);
         }
 
         return _dispatcher
-            .InvokeAsync(() => ConnectDesktopInBackgroundCoreAsync(cancellationToken))
+            .InvokeAsync(() => ConnectDesktopInBackgroundCoreAsync(cancellationToken, minimizeWindow))
             .Task
             .Unwrap();
     }
 
-    private async Task<bool> ConnectDesktopInBackgroundCoreAsync(CancellationToken cancellationToken)
+    private async Task<bool> ConnectDesktopInBackgroundCoreAsync(
+        CancellationToken cancellationToken,
+        bool minimizeWindow)
     {
         try
         {
@@ -678,7 +806,7 @@ public sealed class ChildSessionService : IDisposable
                 : Locale.Get("Svc.Background.ReconnectFailed"));
 
             var window = _desktopWindow;
-            if (window is not null && window.IsVisible)
+            if (minimizeWindow && window is not null && window.IsVisible)
             {
                 window.WindowState = WindowState.Minimized;
             }
@@ -1081,7 +1209,61 @@ public sealed class ChildSessionService : IDisposable
     public void RefreshEnvironmentCheck()
     {
         ThrowIfDisposed();
-        PublishEnvironmentIssues(ChildSessionEnvironmentCheck.Collect());
+
+        // 代际在「开始采集」时就定下：晚开始的那一轮才算数。
+        // 允许在后台线程调用（采集本身很慢），发布时再切回 UI 线程。
+        int generation;
+        lock (_environmentGate)
+        {
+            generation = ++_environmentGeneration;
+        }
+
+        var issues = ChildSessionEnvironmentCheck.Collect();
+        PublishEnvironmentIssuesIfCurrent(issues, generation);
+    }
+
+    /// <summary>
+    /// 发布预检结果，但如果期间已经有更新的一轮开始了就丢弃这一份。
+    ///
+    /// 两处都会调它：启动流程的预检、界面/切换流程的单独预检。没有代际的话，
+    /// 一轮慢扫描回来会把更新的结论盖掉，界面据此做出错误的阻塞判断。
+    /// </summary>
+    private void PublishEnvironmentIssuesIfCurrent(
+        System.Collections.Generic.IReadOnlyList<ChildSessionEnvironmentCheck.Issue> issues,
+        int generation)
+    {
+        if (_dispatcher.HasShutdownStarted || _dispatcher.HasShutdownFinished)
+        {
+            return;
+        }
+
+        void Publish()
+        {
+            lock (_environmentGate)
+            {
+                // 只有比「已经发布过的」更旧才丢弃。写成一味要求等于当前代际的话，
+                // 新一轮刚起跑时这一份会被扔掉，而调用方（启动流程）随后读到的
+                // 还是上一次的结论，可能漏掉阻塞项。
+                if (generation < _environmentPublishedGeneration)
+                {
+                    AppLog.Info("丢弃过期的环境预检结果（已发布过更新的一轮）。");
+                    return;
+                }
+
+                _environmentPublishedGeneration = generation;
+            }
+
+            PublishEnvironmentIssues(issues);
+        }
+
+        if (_dispatcher.CheckAccess())
+        {
+            Publish();
+            return;
+        }
+
+        // 走队列而不是同步 Invoke：调用方多半在池线程上等结果，没必要把它卡住。
+        _dispatcher.BeginInvoke(new Action(Publish));
     }
 
     /// <summary>

@@ -134,13 +134,22 @@ internal sealed class SessionAgentService : IDisposable
 
         _hotkeyArgument = hotkey;
 
+        string? updateError = null;
+
         try
         {
             Directory.CreateDirectory(_dataDirectory);
-            if (WriteAgentIfChanged())
+            switch (WriteAgentIfChanged())
             {
-                // 代理换了，正在跑的还是旧版（或者压根没在跑），下次连上时要重启一次。
-                NeedsRestart = true;
+                case AgentWriteOutcome.Updated:
+                    // 代理换了，正在跑的还是旧版（或者压根没在跑），下次连上时要重启一次。
+                    NeedsRestart = true;
+                    break;
+
+                case AgentWriteOutcome.FailedRolledBack:
+                    updateError = Locale.Get("Agent.Error.UpdateRolledBack");
+                    AppLog.Warn(updateError);
+                    break;
             }
         }
         catch (Exception exception) when (exception is IOException
@@ -166,6 +175,14 @@ internal sealed class SessionAgentService : IDisposable
         }
 
         StartPolling();
+
+        if (updateError is not null)
+        {
+            // 旧代理可用，所以流程走完、轮询也开着；但这次更新没成功，不能报成功。
+            error = updateError;
+            return false;
+        }
+
         return true;
     }
 
@@ -495,7 +512,20 @@ internal sealed class SessionAgentService : IDisposable
     /// 把内嵌的分身端 exe 释放到数据目录；内容有变化才重写。
     /// </summary>
     /// <returns>是否真的写了新文件。调用方据此决定要不要重启分身端。</returns>
-    private bool WriteAgentIfChanged()
+    /// <summary>
+    /// 释放内嵌分身端的结果。
+    ///
+    /// 把「替换失败但已回滚」单独列出来：这种情况下路径上是一个**能用的旧代理**，
+    /// 轮询要照常开着，只是要如实告诉用户「这次没更新成」。
+    /// </summary>
+    private enum AgentWriteOutcome
+    {
+        Unchanged,
+        Updated,
+        FailedRolledBack
+    }
+
+    private AgentWriteOutcome WriteAgentIfChanged()
     {
         var assembly = typeof(SessionAgentService).Assembly;
         var resourceName = ResolveAgentResourceName(assembly);
@@ -524,7 +554,7 @@ internal sealed class SessionAgentService : IDisposable
                 var existing = File.ReadAllBytes(AgentPath);
                 if (existing.Length == buffer.Length && BytesEqual(existing, buffer))
                 {
-                    return false;
+                    return AgentWriteOutcome.Unchanged;
                 }
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
@@ -554,7 +584,7 @@ internal sealed class SessionAgentService : IDisposable
                 // 连改名都不行（极少见）：留着旧代理继续跑，下次启动再换。
                 AppLog.Warn("旧分身端无法改名让位，本次沿用旧版本。", exception);
                 TryDelete(tempPath);
-                return false;
+                return AgentWriteOutcome.Unchanged;
             }
         }
 
@@ -591,14 +621,17 @@ internal sealed class SessionAgentService : IDisposable
                     "分身端安装失败：目标路径没有可用的可执行文件。", exception);
             }
 
-            return false;
+            // 回滚成功说明旧代理还在、还能用：不抛异常，让调用方继续写自启项、
+            // 继续轮询——否则一个在跑的旧代理写来的切换请求没人处理。
+            // 但这次替换确实失败了，必须如实上报，不能当成「内容没变」。
+            return AgentWriteOutcome.FailedRolledBack;
         }
 
         // 旧文件此刻可能还被旧进程占着，删不掉也无所谓：下次启动还会再试一次。
         TryDelete(retiredPath);
 
         AppLog.Info($"分身端已释放：{AgentPath}");
-        return true;
+        return AgentWriteOutcome.Updated;
     }
 
     /// <summary>
