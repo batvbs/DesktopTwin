@@ -429,12 +429,14 @@ public partial class MainWindow : FluentWindow
         var monitorHeight = monitor.Bottom - monitor.Top;
         var dpi = VisualTreeHelper.GetDpi(this);
 
+        // 先定缩放模式，再改窗口尺寸：控件是在尺寸变化时按 SmartSizing 重排的，
+        // 反过来做的话，这次 resize 用的还是上一档设置，画面要等下一次尺寸变化才跟上。
+        UpdateFullscreenScaling(monitorWidth, monitorHeight);
+
         Left = monitor.Left / dpi.DpiScaleX;
         Top = monitor.Top / dpi.DpiScaleY;
         Width = monitorWidth / dpi.DpiScaleX;
         Height = monitorHeight / dpi.DpiScaleY;
-
-        UpdateFullscreenScaling(monitorWidth, monitorHeight);
     }
 
     /// <summary>

@@ -347,7 +347,7 @@ internal static class Strings
         Pair("Svc.Status.WatchModeOff", "已退出观看模式，可以操作桌面分身"),
         Pair("Svc.Error.ResolutionRange", "分辨率必须在 {0}×{1} 到 {2}×{3} 之间。"),
         Pair("Svc.Status.ResolutionSetNext", "分辨率已设为 {0} × {1}，将在下次连接后生效"),
-        Pair("Svc.Status.ResolutionSetReconnect", "分辨率已设为 {0} × {1}，正在自动重新连接 RDP"),
+        Pair("Svc.Status.ResolutionApplied", "分辨率已设为 {0} × {1}"),
         Pair("Svc.Error.NoTargetProgram", "还没有选择要在桌面分身中启动的程序。"),
         Pair("Svc.Status.SessionChanged", "桌面分身会话已从 {0} 变更为 {1}，已取消注销操作。"),
         Pair("Svc.Status.LoggingOff", "正在断开 RDP 并注销桌面分身会话"),

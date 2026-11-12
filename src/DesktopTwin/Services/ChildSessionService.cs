@@ -45,7 +45,14 @@ public sealed class ChildSessionService : IDisposable
     /// </summary>
     private const int ConnectionRetryCount = 1;
 
-    private const int RdpSettingsReconnectRetryCount = 2;
+    /// <summary>
+    /// 设置切换后的自动重连次数。
+    ///
+    /// 断开之后立刻重连，经常被 RDS 用「访问被拒绝」顶回来（日志里几乎每次都复现），
+    /// 隔几秒再连就能成功。重试不够时，用户看到的是「第一次必定失败、手动再点一次才行」，
+    /// 所以这里给足三次（2s / 4s / 8s）。
+    /// </summary>
+    private const int RdpSettingsReconnectRetryCount = 3;
     private const int ErrorTimeout = 1460;
 
     private readonly SettingsService _settings;
@@ -135,6 +142,14 @@ public sealed class ChildSessionService : IDisposable
     /// </summary>
     private bool _suppressCredentialDialogFill;
     private RdpSettingChange _pendingRdpSettingChanges;
+
+    /// <summary>
+    /// 设置重连重试的代际号。切到主桌面时自增，让还在 <c>Task.Delay</c> 里等的
+    /// 那次重试作废——否则它醒来后会把刚断开的分身又连回来。
+    /// 只作废这一次重试，不清 <see cref="_pendingRdpSettingChanges"/>：
+    /// 待应用的设置要留给下一次成功登录去收尾。
+    /// </summary>
+    private int _settingsReconnectGeneration;
     private int _rdpSettingsReconnectRetriesRemaining;
     private bool _rdpSettingsReconnectRetryInProgress;
     private bool _statusTickInProgress;
@@ -602,6 +617,14 @@ public sealed class ChildSessionService : IDisposable
     {
         ThrowIfDisposed();
         var window = _desktopWindow;
+
+        // 先作废还在等的自动重连：它只认代际号，普通断开不会让它停下，
+        // 等「会话释放」结束后会把分身又连回来——和切到主桌面的目的相反。
+        // 放在状态判断之前：控件已经是 0 时也要取消。
+        // 两处都要：控件侧排队的重连，以及服务侧还在 Delay 里的那次重试。
+        _settingsReconnectGeneration++;
+        window?.RdpHost.CancelPendingReconnect();
+
         if (window is null || window.RdpHost.ConnectedState == 0)
         {
             return false;
@@ -1008,8 +1031,12 @@ public sealed class ChildSessionService : IDisposable
             return;
         }
 
-        window.RdpHost.ReconnectToChildSession(new DrawingSize(width, height));
-        RefreshState(Locale.Format("Svc.Status.ResolutionSetReconnect", width, height));
+        // 走和音频/快捷键同一套「带重试的设置重连」：单独直连一次失败就直接判死，
+        // 还会把诊断面板弹到用户脸上——而实际只是重连的时机太早，重试一次就好。
+        ReconnectForRdpSettingChange(
+            window,
+            RdpSettingChange.Resolution,
+            Locale.Format("Svc.Status.ResolutionApplied", width, height));
     }
 
     /// <summary>
@@ -1702,6 +1729,9 @@ public sealed class ChildSessionService : IDisposable
     {
         _rdpSettingsReconnectRetryInProgress = true;
         ChildSessionConnectionFailedEventArgs? retryFailure = null;
+
+        // 记下代际：等待期间可能切到主桌面，那次重试就不该再发起了。
+        var generation = _settingsReconnectGeneration;
         var retryNumber = RdpSettingsReconnectRetryCount
                           - _rdpSettingsReconnectRetriesRemaining
                           + 1;
@@ -1722,7 +1752,9 @@ public sealed class ChildSessionService : IDisposable
         try
         {
             await Task.Delay(retryDelay, _disposeCancellationTokenSource.Token);
-            if (_disposed || _pendingRdpSettingChanges == RdpSettingChange.None)
+            if (_disposed
+                || generation != _settingsReconnectGeneration
+                || _pendingRdpSettingChanges == RdpSettingChange.None)
             {
                 return;
             }
@@ -2004,6 +2036,7 @@ public sealed class ChildSessionService : IDisposable
     {
         None = 0,
         SystemShortcuts = 1,
-        Audio = 2
+        Audio = 2,
+        Resolution = 4
     }
 }

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Globalization;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -32,6 +32,13 @@ internal sealed class RdpActiveXHost : AxHost
     private bool _disconnectRequested;
     private bool _sendSystemShortcutsToRemote = true;
     private bool _audioMuted;
+
+    /// <summary>
+    /// 待重连的代际号。取消（DisconnectSession / ResetDisconnectState）时自增，
+    /// 让已经排上、还在等「会话释放」的那次重连作废——否则它醒来后照样去连，
+    /// 把刚刚发起的断开又接回来。
+    /// </summary>
+    private int _reconnectGeneration;
     private DrawingSize? _pendingReconnectDesktopSize;
     private bool _smartSizingEnabled = true;
     private bool _inputBlocked;
@@ -202,6 +209,28 @@ internal sealed class RdpActiveXHost : AxHost
             ?? throw new COMException(Locale.Get("Rdp.Error.AdvancedSettings"));
         RunComStep(Locale.Get("Rdp.Step.DisplayScale"), () =>
             SetComProperty(advancedSettings, "SmartSizing", enabled));
+
+        // 这个属性允许联机修改，但控件是在「尺寸变化」时按它重算缩放比例的：
+        // 只改属性不会重绘，画面上看不出任何变化（全屏自适应/1:1 切换失灵的原因）。
+        // 把尺寸推一像素再复位，逼它按新设置重新排版。
+        if (ConnectedState != 1 || !IsHandleCreated)
+        {
+            return;
+        }
+
+        BeginInvoke(new Action(() =>
+        {
+            // 尺寸要在回调里读：全屏是「先定缩放模式、再改窗口尺寸」，
+            // 排队期间窗口可能刚变成全屏大小，用外面的旧值会把控件按回旧尺寸。
+            if (IsDisposed || Disposing || Width <= 1 || Height <= 1)
+            {
+                return;
+            }
+
+            var size = Size;
+            Size = new DrawingSize(size.Width - 1, size.Height);
+            Size = size;
+        }));
     }
 
     internal void SetSendSystemShortcutsToRemote(bool enabled)
@@ -241,6 +270,7 @@ internal sealed class RdpActiveXHost : AxHost
     /// </summary>
     internal void ResetDisconnectState()
     {
+        _reconnectGeneration++;
         _disconnectRequested = false;
         _pendingReconnectDesktopSize = null;
     }
@@ -255,6 +285,9 @@ internal sealed class RdpActiveXHost : AxHost
 
         if (ConnectedState == 0)
         {
+            // 直接连也作废在途的那次「等会话释放」重连：它拿的是旧尺寸，
+            // 等这边失败（控件回 0）时它会醒过来，用旧分辨率把新的一次顶掉。
+            _reconnectGeneration++;
             ConnectToChildSession(desktopSize);
             return;
         }
@@ -275,8 +308,22 @@ internal sealed class RdpActiveXHost : AxHost
         }
     }
 
+    /// <summary>
+    /// 作废尚未执行的重连。
+    ///
+    /// 切到主桌面时用：那次重连可能正停在「等会话释放」上，等完就会把分身连回来，
+    /// 和「切到整台电脑」的目的正好相反。只是断开（Disconnect）不会动这个标记，
+    /// 所以要显式取消。
+    /// </summary>
+    internal void CancelPendingReconnect()
+    {
+        _reconnectGeneration++;
+        _pendingReconnectDesktopSize = null;
+    }
+
     internal void DisconnectSession()
     {
+        _reconnectGeneration++;
         _pendingReconnectDesktopSize = null;
         _ = DisconnectCore();
     }
@@ -470,11 +517,29 @@ internal sealed class RdpActiveXHost : AxHost
 
     private async void ConnectPendingReconnect()
     {
+        var generation = _reconnectGeneration;
+
         await Task.Delay(ReconnectDelay);
+
+        // 等待期间可能被取消（主动断开）或被新的一次重连取代：这时不能再连。
+        if (generation != _reconnectGeneration || IsDisposed || Disposing)
+        {
+            return;
+        }
 
         var desktopSize = _pendingReconnectDesktopSize;
         _pendingReconnectDesktopSize = null;
         if (!desktopSize.HasValue || IsDisposed || Disposing)
+        {
+            return;
+        }
+
+        // 控件回到「已断开」不代表上一轮连接在系统里已经收尾。这时立刻重连，
+        // RDS 会用「访问被拒绝」把新连接顶回来——日志里每次改设置都这样，
+        // 隔几秒再连就好。等会话真的不再是 Active 再连，和「切回分身」那条
+        // 路径（先等会话离开 Active 再 StartAsync）保持一致。
+        await WaitForChildSessionReleasedAsync(TimeSpan.FromSeconds(10));
+        if (generation != _reconnectGeneration || IsDisposed || Disposing)
         {
             return;
         }
@@ -494,6 +559,25 @@ internal sealed class RdpActiveXHost : AxHost
             ReportConnectionFailure(
                 $"RDP 自动重新连接失败：{actualException.Message}",
                 errorCode);
+        }
+    }
+
+    /// <summary>
+    /// 等分身会话离开 Active 状态。没有会话（已经注销）也算可以连了。
+    /// </summary>
+    private static async Task WaitForChildSessionReleasedAsync(TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+
+        while (DateTime.UtcNow < deadline)
+        {
+            var sessionId = ChildSessionNativeMethods.TryGetChildSessionId();
+            if (sessionId is null || !ChildSessionNativeMethods.IsSessionActive(sessionId.Value))
+            {
+                return;
+            }
+
+            await Task.Delay(200);
         }
     }
 
