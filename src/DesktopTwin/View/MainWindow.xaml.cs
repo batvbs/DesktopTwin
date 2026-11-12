@@ -519,6 +519,20 @@ public partial class MainWindow : FluentWindow
         WindowState = WindowState.Minimized;
     }
 
+    /// <summary>
+    /// 全屏工具栏里的「切换窗口」：和非全屏标题栏那个按钮走同一个命令。
+    ///
+    /// 全屏时标题栏不可见，没有别的地方能切窗口；这里不额外加逻辑，
+    /// 只是把同一个入口搬到浮层上。
+    /// </summary>
+    private void OnFullscreenSwitchWindowClicked(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is MainWindowViewModel viewModel)
+        {
+            viewModel.SwitchWindowCommand.Execute(null);
+        }
+    }
+
     private void OnFullscreenRestoreClicked(object sender, RoutedEventArgs e)
     {
         ExitFullscreen();

@@ -518,7 +518,19 @@
                         BorderThickness="1"
                         CornerRadius="8">
                     <StackPanel Orientation="Horizontal">
-                        <TextBlock Margin="4,0,14,0"
+                        <!-- 与非全屏标题栏那个按钮同一个命令：向分身发送 Win+Tab，来回切窗口。
+                             全屏下标题栏不可见，这里给一个同样的入口，免得为了切窗口先退出全屏。 -->
+                        <ui:Button Width="36"
+                                   Height="30"
+                                   Margin="0,0,6,0"
+                                   Click="OnFullscreenSwitchWindowClicked"
+                                   IsEnabled="{Binding IsSessionInteractionEnabled}"
+                                   ToolTip="{loc:Loc Main.SwitchWindow.ToolTip}">
+                            <ui:Button.Icon>
+                                <ui:SymbolIcon FontSize="14" Symbol="ArrowSwap24" />
+                            </ui:Button.Icon>
+                        </ui:Button>
+                        <TextBlock Margin="0,0,14,0"
                                    VerticalAlignment="Center"
                                    FontWeight="SemiBold"
                                    Foreground="White"
