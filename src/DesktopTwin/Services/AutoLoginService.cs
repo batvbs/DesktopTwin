@@ -336,45 +336,41 @@ internal sealed class AutoLoginService : IDisposable
     }
 
     /// <summary>
-    /// 尝试读取当前账户的微软账户邮箱。
+    /// 取当前登录身份的 UPN（微软账户就是邮箱）。
     ///
-    /// 该邮箱是 <c>runas /u:MicrosoftAccount\&lt;邮箱&gt;</c> 与 <c>LogonUser</c> 需要的用户名，
-    /// 本地用户名（C:\Users 下那个）并不是它。
-    ///
-    /// 多账户时取第一个候选：自动登录本来就只有一次机会，猜错了也只是这次失败、
-    /// 用户手动输一遍，不值得为了「可能猜错」而整个放弃。
+    /// 本地账户/域账户读不到含 @ 的 UPN（返回机器名\用户名或直接失败），
+    /// 只有微软账户才会返回邮箱形式的 UPN。
     /// </summary>
-    /// <param name="email">读到的邮箱。</param>
-    public bool TryGetMicrosoftAccountEmail(out string email)
+    private static bool TryGetCurrentUserPrincipal(out string upn)
     {
-        email = string.Empty;
+        upn = string.Empty;
 
-        try
+        var buffer = new System.Text.StringBuilder(512);
+        var size = buffer.Capacity;
+        if (!GetUserNameEx(NameUserPrincipal, buffer, ref size) || size <= 0)
         {
-            using var key = Registry.CurrentUser.OpenSubKey(MicrosoftAccountPropertiesPath);
-            if (key is null)
-            {
-                return false;
-            }
-
-            foreach (var name in key.GetSubKeyNames())
-            {
-                if (name.Contains('@'))
-                {
-                    email = name;
-                    return true;
-                }
-            }
-        }
-        catch (Exception exception) when (exception is SecurityException
-                                              or UnauthorizedAccessException
-                                              or IOException)
-        {
-            AppLog.Warn("读取微软账户邮箱失败。", exception);
+            return false;
         }
 
-        return false;
+        var value = buffer.ToString(0, Math.Min(size, buffer.Length));
+        if (!value.Contains('@'))
+        {
+            return false;
+        }
+
+        upn = value;
+        return true;
     }
+
+    /// <summary><c>GetUserNameEx</c> 的格式代码：用户主体名（UPN，微软账户即邮箱）。</summary>
+    private const int NameUserPrincipal = 8;
+
+    [DllImport("secur32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetUserNameEx(
+        int nameFormat,
+        System.Text.StringBuilder userName,
+        ref int userNameSize);
 
     /// <summary>
     /// 这个名称是不是本机账户存储里登记过的微软账户。
@@ -532,9 +528,13 @@ internal sealed class AutoLoginService : IDisposable
         }
 
         // 未配置时才跟随当前登录身份：微软账户需要换成邮箱，本地账户用当前域/机器名。
-        if (TryGetMicrosoftAccountEmail(out var email))
+        //
+        // 判据是当前登录身份本身（GetUserNameEx(NameUserPrincipal) 的 UPN），不是注册表：
+        // 本地账户登录时，注册表 UserExtendedProperties 里仍可能残留「某应用/某次微软账户
+        // 登录」留下的邮箱，把它当微软账户会用邮箱去验证，本地账户的密码校验必然失败。
+        if (TryGetCurrentUserPrincipal(out var upn) && upn.Contains('@'))
         {
-            return (email, "MicrosoftAccount");
+            return (upn, "MicrosoftAccount");
         }
 
         // 域成员机器上 UserDomainName 是域、本地账户时是机器名，
