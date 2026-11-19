@@ -34,6 +34,12 @@ internal sealed class UuViewLockService : IDisposable
 
     /// <summary>配置代际。每次启停或模式变化递增，用于丢弃旧配置下算出的纠正结果。</summary>
     private int _configGeneration;
+
+    /// <summary>
+    /// 只开锁定：目标永远是「当前的 Console 会话」，不存具体会话号。
+    /// Console 会话可能因为重新登录而变号，存号会锁死在一个已经不存在的位置上。
+    /// </summary>
+    private bool _lockToHost;
     private bool _switching;
     private bool _disposed;
 
@@ -72,17 +78,23 @@ internal sealed class UuViewLockService : IDisposable
         _switchMode = switchEnabled;
         _configGeneration++;
 
+        // 配置一变就掐掉在途的纠正：它可能正卡在「等分身断开」的几十秒里，
+        // 按旧配置继续跑会背着用户完成一次切换。
+        CancelActiveSwitch();
+
         if (!enabled)
         {
-            // 关掉时把在途的纠正掐掉：它可能正卡在「等分身断开」的几十秒里，
-            // 继续跑下去会背着用户完成一次切换。
-            CancelActiveSwitch();
             _lockedSession = null;
+            _lockToHost = false;
             return;
         }
 
-        _lockedSession = ResolveInitialTarget(switchEnabled);
-        AppLog.Info($"UU 视角锁定：已记录会话位置 {_lockedSession?.ToString() ?? "(未知)"}。");
+        _lockToHost = !switchEnabled;
+
+        _lockedSession = _lockToHost ? null : ResolveInitialTarget(switchEnabled);
+        AppLog.Info(_lockToHost
+            ? "UU 视角锁定：目标固定为电脑主机。"
+            : $"UU 视角锁定：已记录会话位置 {_lockedSession?.ToString() ?? "(未知)"}。");
         _timer.Start();
     }
 
@@ -135,7 +147,17 @@ internal sealed class UuViewLockService : IDisposable
 
     private async void OnTick(object? sender, EventArgs e)
     {
-        if (!_enabled || _switching || _disposed || _lockedSession is not { } target)
+        if (!_enabled || _switching || _disposed)
+        {
+            return;
+        }
+
+        // 只开锁定时每次现取 Console：它可能因为重新登录换了号。
+        var target = _lockToHost
+            ? ChildSessionNativeMethods.TryGetConsoleSessionId()
+            : _lockedSession;
+
+        if (target is not { } targetSession)
         {
             return;
         }
@@ -143,7 +165,7 @@ internal sealed class UuViewLockService : IDisposable
         var streamers = UuViewSwitchService.GetStreamerSessionIds();
 
         // 串流端不在说明 UU 没连（或正在重连），这时无从判断位置，什么都不做。
-        if (streamers.Count == 0 || streamers.Contains(target))
+        if (streamers.Count == 0 || streamers.Contains(targetSession))
         {
             return;
         }
@@ -155,10 +177,10 @@ internal sealed class UuViewLockService : IDisposable
         try
         {
             AppLog.Info(
-                $"UU 视角锁定：串流端在 [{string.Join(",", streamers)}]，应为 {target}，自动切回。");
+                $"UU 视角锁定：串流端在 [{string.Join(",", streamers)}]，应为 {targetSession}，自动切回。");
 
             var result = await _switchService
-                .EnsureSessionAsync(target, cts.Token)
+                .EnsureSessionAsync(targetSession, cts.Token)
                 .ConfigureAwait(true);
 
             if (result.Success)
@@ -172,7 +194,9 @@ internal sealed class UuViewLockService : IDisposable
 
                 // 纠正时可能换了目标（记录的分身会话已失效，切到了当前那个）。
                 // 基线必须跟着改，否则下一轮仍拿旧号比对，会把已经正确的位置再纠正一遍。
-                if (_switchService.LastSwitchTarget is { } actual && actual != target)
+                if (!_lockToHost
+                    && _switchService.LastSwitchTarget is { } actual
+                    && actual != targetSession)
                 {
                     _lockedSession = actual;
                     AppLog.Info($"UU 视角锁定：记录值同步为 {actual}。");

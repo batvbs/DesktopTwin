@@ -200,7 +200,8 @@ internal sealed class UuViewSwitchService : IDisposable
             var console = ChildSessionNativeMethods.TryGetConsoleSessionId();
             if (targetSession == console)
             {
-                return await SwitchToMainAsync(cancellationToken).ConfigureAwait(false);
+                return await SwitchToMainAsync(cancellationToken, restoreChildConnection: false)
+                    .ConfigureAwait(false);
             }
 
             // 目标不是主机：必须是当前真实存在的分身会话。
@@ -721,7 +722,9 @@ internal sealed class UuViewSwitchService : IDisposable
     /// <summary>
     /// 切到「整台电脑」：断开分身，逼 UU 落到 Console。
     /// </summary>
-    private async Task<Result> SwitchToMainAsync(CancellationToken cancellationToken)
+    private async Task<Result> SwitchToMainAsync(
+        CancellationToken cancellationToken,
+        bool restoreChildConnection = true)
     {
         var childSession = ChildSessionNativeMethods.TryGetChildSessionId();
 
@@ -810,6 +813,15 @@ internal sealed class UuViewSwitchService : IDisposable
         // 串流端已经在主桌面上了，这时候把分身挂回后台不会影响 UU 的选择；
         // 而下次切回分身就是秒切，不用重新走一遍连接握手。
         // 对应原版脚本的 keep_child_connected。
+        //
+        // 视角锁定触发的纠正不这么做：那边可能是用户刚注销掉分身，把他关掉的会话
+        // 又连回来会让人以为程序在自作主张。
+        if (!restoreChildConnection)
+        {
+            _lastSwitchTarget = ChildSessionNativeMethods.TryGetConsoleSessionId();
+            return new Result(true, Locale.Get("Uu.Result.ToMain"));
+        }
+
         var restored = await _childSessionService
             .ConnectDesktopInBackgroundAsync(cancellationToken)
             .ConfigureAwait(false);
