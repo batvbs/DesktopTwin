@@ -30,6 +30,7 @@ internal sealed class UuViewLockService : IDisposable
     private uint? _lockedSession;
     private bool _enabled;
     private bool _switchMode;
+    private CancellationTokenSource? _switchCts;
     private bool _switching;
     private bool _disposed;
 
@@ -69,6 +70,9 @@ internal sealed class UuViewLockService : IDisposable
 
         if (!enabled)
         {
+            // 关掉时把在途的纠正掐掉：它可能正卡在「等分身断开」的几十秒里，
+            // 继续跑下去会背着用户完成一次切换。
+            CancelActiveSwitch();
             _lockedSession = null;
             return;
         }
@@ -141,16 +145,28 @@ internal sealed class UuViewLockService : IDisposable
         }
 
         _switching = true;
+        var cts = new CancellationTokenSource();
+        _switchCts = cts;
         try
         {
             AppLog.Info(
                 $"UU 视角锁定：串流端在 [{string.Join(",", streamers)}]，应为 {target}，自动切回。");
 
             var result = await _switchService
-                .EnsureSessionAsync(target, CancellationToken.None)
+                .EnsureSessionAsync(target, cts.Token)
                 .ConfigureAwait(true);
 
-            if (!result.Success)
+            if (result.Success)
+            {
+                // 纠正时可能换了目标（记录的分身会话已失效，切到了当前那个）。
+                // 基线必须跟着改，否则下一轮仍拿旧号比对，会把已经正确的位置再纠正一遍。
+                if (_switchService.LastSwitchTarget is { } actual && actual != target)
+                {
+                    _lockedSession = actual;
+                    AppLog.Info($"UU 视角锁定：记录值同步为 {actual}。");
+                }
+            }
+            else
             {
                 AppLog.Warn($"UU 视角锁定：自动切回未成功（{result.Message}），下一轮再试。");
             }
@@ -165,7 +181,25 @@ internal sealed class UuViewLockService : IDisposable
         }
         finally
         {
+            if (ReferenceEquals(_switchCts, cts))
+            {
+                _switchCts = null;
+            }
+
+            cts.Dispose();
             _switching = false;
+        }
+    }
+
+    private void CancelActiveSwitch()
+    {
+        try
+        {
+            _switchCts?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // 已经收尾，忽略。
         }
     }
 
@@ -179,6 +213,7 @@ internal sealed class UuViewLockService : IDisposable
         _disposed = true;
         _timer.Stop();
         _timer.Tick -= OnTick;
+        CancelActiveSwitch();
     }
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);

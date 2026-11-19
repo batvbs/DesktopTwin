@@ -1294,17 +1294,15 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        // 注册失败就把开关退回去，避免界面显示「已启用」但按键没反应。
+        // 注册失败不退开关：退掉之后「快捷键设置」会跟着从菜单里消失（它只在
+        // 视角切换开启时显示），用户连改键的入口都没有了。保持开关、只提示按键没生效。
         AppLog.Warn($"UU 视角切换热键注册失败：{error}");
-        UuViewSwitchEnabled = false;
-        _settings.Current.Automation.UuViewSwitchEnabled = false;
-        _settings.SaveSoon();
         _sessionAgent.Uninstall();
-
-        // 开关刚被退回 false：上面那次 ApplyUuViewLock 还在「切换开启」的前提下记录，
-        // 基线可能被记成了分身。这里按「只开锁定」重新校准一次。
-        ApplyUuViewLock();
-            ShowNotification(Locale.Get("Hotkey.Registered.Failed.Title"), error, InfoBarSeverity.Warning, TimeSpan.FromSeconds(7));
+        ShowNotification(
+            Locale.Get("Hotkey.Registered.Failed.Title"),
+            Locale.Format("Notify.Hotkey.Failed.Message", error),
+            InfoBarSeverity.Warning,
+            TimeSpan.FromSeconds(10));
     }
 
     /// <summary>
