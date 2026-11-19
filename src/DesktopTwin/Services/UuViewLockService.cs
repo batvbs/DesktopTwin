@@ -36,10 +36,13 @@ internal sealed class UuViewLockService : IDisposable
     private int _configGeneration;
 
     /// <summary>
-    /// 只开锁定：目标永远是「当前的 Console 会话」，不存具体会话号。
-    /// Console 会话可能因为重新登录而变号，存号会锁死在一个已经不存在的位置上。
+    /// 记录的目标是不是「电脑主机」。
+    ///
+    /// 两种模式都需要它：只开锁定时恒为主机；两者都开时，如果记录时串流端就在主机上，
+    /// 也要按主机处理。否则 Console 会话号一变（重新登录会把 1 换掉），
+    /// 旧号会被当成「分身目标」，程序会把视角切到分身去。
     /// </summary>
-    private bool _lockToHost;
+    private bool _lockedTargetIsHost;
     private bool _switching;
     private bool _disposed;
 
@@ -85,15 +88,18 @@ internal sealed class UuViewLockService : IDisposable
         if (!enabled)
         {
             _lockedSession = null;
-            _lockToHost = false;
+            _lockedTargetIsHost = false;
             return;
         }
 
-        _lockToHost = !switchEnabled;
+        _lockedTargetIsHost = !switchEnabled;
 
-        _lockedSession = _lockToHost ? null : ResolveInitialTarget(switchEnabled);
-        AppLog.Info(_lockToHost
-            ? "UU 视角锁定：目标固定为电脑主机。"
+        _lockedSession = ResolveInitialTarget(switchEnabled);
+        _lockedTargetIsHost = _lockedSession is not { } recorded
+                              || recorded == ChildSessionNativeMethods.TryGetConsoleSessionId();
+
+        AppLog.Info(_lockedTargetIsHost
+            ? "UU 视角锁定：目标为电脑主机。"
             : $"UU 视角锁定：已记录会话位置 {_lockedSession?.ToString() ?? "(未知)"}。");
         _timer.Start();
     }
@@ -111,22 +117,22 @@ internal sealed class UuViewLockService : IDisposable
             return;
         }
 
-        if (!_switchMode)
+        var console = ChildSessionNativeMethods.TryGetConsoleSessionId();
+        var isHost = console is null || console.Value == value;
+
+        if (!_switchMode && !isHost)
         {
             // 只开锁定时契约是「锁在电脑主机」：手动切到分身不该改变记录值，
             // 否则锁定会跟着留在分身，和这个模式的定义相悖。
-            var console = ChildSessionNativeMethods.TryGetConsoleSessionId();
-            if (console is null || console.Value == value)
-            {
-                _lockedSession = value;
-                AppLog.Info($"UU 视角锁定：记录值更新为 {value}。");
-            }
-
             return;
         }
 
         _lockedSession = value;
-        AppLog.Info($"UU 视角锁定：记录值更新为 {value}。");
+        _lockedTargetIsHost = isHost;
+        AppLog.Info(
+            isHost
+                ? "UU 视角锁定：记录值更新为电脑主机。"
+                : $"UU 视角锁定：记录值更新为 {value}。");
     }
 
     /// <summary>
@@ -152,8 +158,8 @@ internal sealed class UuViewLockService : IDisposable
             return;
         }
 
-        // 只开锁定时每次现取 Console：它可能因为重新登录换了号。
-        var target = _lockToHost
+        // 目标是主机时每次现取 Console：它可能因为重新登录换了号。
+        var target = _lockedTargetIsHost
             ? ChildSessionNativeMethods.TryGetConsoleSessionId()
             : _lockedSession;
 
@@ -194,7 +200,7 @@ internal sealed class UuViewLockService : IDisposable
 
                 // 纠正时可能换了目标（记录的分身会话已失效，切到了当前那个）。
                 // 基线必须跟着改，否则下一轮仍拿旧号比对，会把已经正确的位置再纠正一遍。
-                if (!_lockToHost
+                if (!_lockedTargetIsHost
                     && _switchService.LastSwitchTarget is { } actual
                     && actual != targetSession)
                 {

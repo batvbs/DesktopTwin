@@ -865,7 +865,11 @@ internal sealed class UuViewSwitchService : IDisposable
             AppLog.Info(existing is null
                 ? "切回分身：会话不存在（被关闭或注销），走完整启动流程。"
                 : $"切回分身：会话 {existing} 不是 Active，重新连接。");
-            await StartChildSessionAsync(expectedGeneration).ConfigureAwait(true);
+            if (!await StartChildSessionAsync(expectedGeneration).ConfigureAwait(true))
+            {
+                AppLog.Info("UU 视角锁定：启动期间会话代际已变（用户注销了分身），放弃本次纠正。");
+                return new Result(false, Locale.Get("Uu.Result.NoSession"));
+            }
         }
 
         // 2) 确保 RDP 连上。
@@ -884,7 +888,11 @@ internal sealed class UuViewSwitchService : IDisposable
             // 才会真正发起下一次连接。回调丢了就卡在「正在断开」的状态里。
             // 这里改走一次完整启动流程兜底，而不是让用户自己去点「启动并连接」。
             AppLog.Warn("切回分身：直接重连未成功，改走完整启动流程。");
-            await StartChildSessionAsync(expectedGeneration).ConfigureAwait(true);
+            if (!await StartChildSessionAsync(expectedGeneration).ConfigureAwait(true))
+            {
+                AppLog.Info("UU 视角锁定：启动期间会话代际已变（用户注销了分身），放弃本次纠正。");
+                return new Result(false, Locale.Get("Uu.Result.NoSession"));
+            }
             connected = await _childSessionService
                 .EnsureDesktopConnectedAsync(cancellationToken)
                 .ConfigureAwait(false);
@@ -941,10 +949,21 @@ internal sealed class UuViewSwitchService : IDisposable
     /// 启动分身会话。带代际时由会话服务校验：期间用户注销过就拒绝，
     /// 避免视角纠正把刚关掉的分身又拉起来。
     /// </summary>
-    private Task StartChildSessionAsync(int? expectedGeneration) =>
-        expectedGeneration is { } generation
-            ? _childSessionService.StartAsync(generation)
-            : _childSessionService.StartAsync();
+    private async Task<bool> StartChildSessionAsync(int? expectedGeneration)
+    {
+        if (expectedGeneration is not { } generation)
+        {
+            await _childSessionService.StartAsync().ConfigureAwait(true);
+            return true;
+        }
+
+        await _childSessionService.StartAsync(generation).ConfigureAwait(true);
+
+        // 启动返回不代表连上了：用户在这期间注销（关闭分身）时，代际已变、
+        // 启动被跳过。此时必须中止，否则后面的 EnsureDesktopConnectedAsync
+        // 会用无参 StartAsync 把刚注销的会话重新建出来。
+        return _childSessionService.StartGeneration == generation;
+    }
 
     /// <summary>
     /// 查 UU 串流端所在的会话号。没有串流端时返回空集合。
