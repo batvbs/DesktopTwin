@@ -31,6 +31,9 @@ internal sealed class UuViewLockService : IDisposable
     private bool _enabled;
     private bool _switchMode;
     private CancellationTokenSource? _switchCts;
+
+    /// <summary>配置代际。每次启停或模式变化递增，用于丢弃旧配置下算出的纠正结果。</summary>
+    private int _configGeneration;
     private bool _switching;
     private bool _disposed;
 
@@ -67,6 +70,7 @@ internal sealed class UuViewLockService : IDisposable
         _timer.Stop();
         _enabled = enabled;
         _switchMode = switchEnabled;
+        _configGeneration++;
 
         if (!enabled)
         {
@@ -145,6 +149,7 @@ internal sealed class UuViewLockService : IDisposable
         }
 
         _switching = true;
+        var configGeneration = _configGeneration;
         var cts = new CancellationTokenSource();
         _switchCts = cts;
         try
@@ -158,6 +163,13 @@ internal sealed class UuViewLockService : IDisposable
 
             if (result.Success)
             {
+                // 期间用户改过配置（关掉锁定、或切换了模式）就丢掉这次结果：
+                // 新配置可能有自己的基线，不能被旧纠正的落点覆盖回去。
+                if (configGeneration != _configGeneration)
+                {
+                    return;
+                }
+
                 // 纠正时可能换了目标（记录的分身会话已失效，切到了当前那个）。
                 // 基线必须跟着改，否则下一轮仍拿旧号比对，会把已经正确的位置再纠正一遍。
                 if (_switchService.LastSwitchTarget is { } actual && actual != target)

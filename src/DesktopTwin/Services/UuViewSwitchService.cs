@@ -181,6 +181,10 @@ internal sealed class UuViewSwitchService : IDisposable
     {
         ThrowIfDisposed();
 
+        // 发起前记下代际：纠正可能要跑几十秒，期间用户注销会话（关闭分身）时
+        // 代际会递增，下面的启动会被拒绝，不会把他刚关掉的分身又拉起来。
+        var startGeneration = _childSessionService.StartGeneration;
+
         if (!await _gate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
         {
             return new Result(false, Locale.Get("Uu.Result.Busy"));
@@ -214,7 +218,7 @@ internal sealed class UuViewSwitchService : IDisposable
                     $"UU 视角锁定：记录的分身会话 {targetSession} 已失效，当前是 {childId}，改切当前会话。");
             }
 
-            return await SwitchToChildAsync(cancellationToken).ConfigureAwait(false);
+            return await SwitchToChildAsync(cancellationToken, startGeneration).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -825,7 +829,9 @@ internal sealed class UuViewSwitchService : IDisposable
     /// 不能因为「后台还挂着连接」就跳过检查——RDP 的 Connected 属性和会话状态
     /// 都可能滞后，后台挂着一条断掉的连接时，看起来一切正常，实际画面是黑的。
     /// </summary>
-    private async Task<Result> SwitchToChildAsync(CancellationToken cancellationToken)
+    private async Task<Result> SwitchToChildAsync(
+        CancellationToken cancellationToken,
+        int? expectedGeneration = null)
     {
         // 1) 先看分身到底在不在：可能被关掉、断开、甚至整个注销了。
         var existing = ChildSessionNativeMethods.TryGetChildSessionId();
@@ -837,7 +843,7 @@ internal sealed class UuViewSwitchService : IDisposable
             AppLog.Info(existing is null
                 ? "切回分身：会话不存在（被关闭或注销），走完整启动流程。"
                 : $"切回分身：会话 {existing} 不是 Active，重新连接。");
-            await _childSessionService.StartAsync().ConfigureAwait(true);
+            await StartChildSessionAsync(expectedGeneration).ConfigureAwait(true);
         }
 
         // 2) 确保 RDP 连上。
@@ -856,7 +862,7 @@ internal sealed class UuViewSwitchService : IDisposable
             // 才会真正发起下一次连接。回调丢了就卡在「正在断开」的状态里。
             // 这里改走一次完整启动流程兜底，而不是让用户自己去点「启动并连接」。
             AppLog.Warn("切回分身：直接重连未成功，改走完整启动流程。");
-            await _childSessionService.StartAsync().ConfigureAwait(true);
+            await StartChildSessionAsync(expectedGeneration).ConfigureAwait(true);
             connected = await _childSessionService
                 .EnsureDesktopConnectedAsync(cancellationToken)
                 .ConfigureAwait(false);
@@ -908,6 +914,15 @@ internal sealed class UuViewSwitchService : IDisposable
             ? new Result(true, Locale.Get("Uu.Result.ToChild"))
             : new Result(false, Locale.Get("Uu.Result.ToChild.StreamerStuck"));
     }
+
+    /// <summary>
+    /// 启动分身会话。带代际时由会话服务校验：期间用户注销过就拒绝，
+    /// 避免视角纠正把刚关掉的分身又拉起来。
+    /// </summary>
+    private Task StartChildSessionAsync(int? expectedGeneration) =>
+        expectedGeneration is { } generation
+            ? _childSessionService.StartAsync(generation)
+            : _childSessionService.StartAsync();
 
     /// <summary>
     /// 查 UU 串流端所在的会话号。没有串流端时返回空集合。

@@ -163,6 +163,7 @@ public sealed class ChildSessionService : IDisposable
     /// </summary>
     private int _startGeneration;
 
+
     /// <summary>
     /// 界面需要刷新的状态发生变化。
     /// </summary>
