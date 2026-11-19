@@ -225,6 +225,14 @@ public sealed class AutomationSettings
     public string UuViewSwitchHotkey { get; set; } = "Ctrl+Alt+U";
 
     /// <summary>
+    /// 是否启用 UU 视角锁定：定时检查串流端是否还在记录的会话里，跑掉了就自动切回。
+    ///
+    /// 与「UU 视角切换」相互独立。只开锁定时不注册热键、不安装分身内代理，
+    /// 记录值固定为电脑主机。
+    /// </summary>
+    public bool UuViewLockEnabled { get; set; }
+
+    /// <summary>
     /// 是否启用分身自动登录。默认开启：没存密码时只尝试 RDP 记住的上一次凭据，
     /// 失败或没有就退回手动输入，不会静默改变任何东西。
     /// </summary>

@@ -255,6 +255,11 @@
                                                  IsCheckable="True"
                                                  IsChecked="{Binding UuViewSwitchEnabled, Mode=OneWay}"
                                                  ToolTip="{loc:Loc Menu.UuSwitch.ToolTip}" />
+                                    <ui:MenuItem Command="{Binding ToggleUuViewLockCommand}"
+                                                 Header="{loc:Loc Menu.UuViewLock}"
+                                                 IsCheckable="True"
+                                                 IsChecked="{Binding UuViewLockEnabled, Mode=OneWay}"
+                                                 ToolTip="{loc:Loc Menu.UuViewLock.ToolTip}" />
                                     <ui:MenuItem Command="{Binding ConfigureUuHotkeyCommand}"
                                                  Header="{Binding UuHotkeyText, StringFormat={loc:Loc Menu.UuHotkey}}" />
                                     <ui:MenuItem Command="{Binding TriggerUuViewSwitchCommand}"

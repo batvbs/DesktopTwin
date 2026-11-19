@@ -30,6 +30,7 @@ public partial class MainWindowViewModel : ObservableObject
     private readonly SettingsService _settings;
     private readonly DispatcherTimer _notificationTimer;
     private readonly UuViewSwitchService _uuViewSwitchService;
+    private readonly UuViewLockService _uuViewLockService;
     private readonly SessionAgentService _sessionAgent;
     private long _lastAgentStartTicks;
     private GlobalHotkeyService? _globalHotkey;
@@ -140,6 +141,9 @@ public partial class MainWindowViewModel : ObservableObject
     private bool _uuViewSwitchEnabled;
 
     [ObservableProperty]
+    private bool _uuViewLockEnabled;
+
+    [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(AutoLoginMenuHeader))]
     private bool _autoLoginEnabled;
 
@@ -169,7 +173,9 @@ public partial class MainWindowViewModel : ObservableObject
         _isSmallWindowMode = settings.Current.Window.SmallWindowMode;
 
         _uuViewSwitchService = new UuViewSwitchService(childSessionService);
+        _uuViewLockService = new UuViewLockService(_uuViewSwitchService, Dispatcher.CurrentDispatcher);
         _uuViewSwitchEnabled = settings.Current.Automation.UuViewSwitchEnabled;
+        _uuViewLockEnabled = settings.Current.Automation.UuViewLockEnabled;
         _autoLoginEnabled = settings.Current.Automation.AutoLoginEnabled;
         _hasAutoLoginPassword = childSessionService.AutoLogin?.HasStoredPassword == true;
 
@@ -732,6 +738,7 @@ public partial class MainWindowViewModel : ObservableObject
         _sessionAgent.Dispose();
         _uuViewSwitchService.StreamerRecovered -= OnStreamerRecovered;
         _uuViewSwitchService.Dispose();
+        _uuViewLockService.Dispose();
     }
 
     /// <summary>
@@ -804,6 +811,12 @@ public partial class MainWindowViewModel : ObservableObject
             AppLog.Info(
                 $"视角切换结束：{(result.Success ? "成功" : "失败")} —— {result.Message}");
 
+            if (result.Success)
+            {
+                // 用户主动切换：新的落点就是「正确位置」，不更新的话下一轮锁定会把它纠正回去。
+                _uuViewLockService.RebaseTo(_uuViewSwitchService.LastSwitchTarget);
+            }
+
             ShowNotification(
                 result.Success
                     ? Locale.Get("Uu.Done.Title")
@@ -831,6 +844,24 @@ public partial class MainWindowViewModel : ObservableObject
     }
 
     /// <summary>
+    /// 启用 / 关闭 UU 视角锁定。
+    ///
+    /// 只开锁定时不注册热键、不安装分身内代理——那种用法只在主机上操作，
+    /// 记录值固定为电脑主机。
+    /// </summary>
+    [RelayCommand]
+    private void ToggleUuViewLock()
+    {
+        UuViewLockEnabled = !UuViewLockEnabled;
+        _settings.Current.Automation.UuViewLockEnabled = UuViewLockEnabled;
+        _settings.SaveSoon();
+        ApplyUuViewLock();
+    }
+
+    private void ApplyUuViewLock() =>
+        _uuViewLockService.SetEnabled(UuViewLockEnabled, UuViewSwitchEnabled);
+
+    /// <summary>
     /// 启用 / 关闭 UU 视角切换热键。
     /// </summary>
     [RelayCommand]
@@ -839,6 +870,9 @@ public partial class MainWindowViewModel : ObservableObject
         UuViewSwitchEnabled = !UuViewSwitchEnabled;
         _settings.Current.Automation.UuViewSwitchEnabled = UuViewSwitchEnabled;
         _settings.SaveSoon();
+
+        // 锁定基线依赖「视角切换」是否开启：两个都开时记录当前会话，只开锁定时固定主机。
+        ApplyUuViewLock();
 
         if (UuViewSwitchEnabled)
         {
@@ -1205,6 +1239,9 @@ public partial class MainWindowViewModel : ObservableObject
         {
             return;
         }
+
+        // 打开软件、切换开关都会走到这里，正好是刷新锁定基线（记录串流端位置）的时机。
+        ApplyUuViewLock();
 
         _globalHotkey ??= new GlobalHotkeyService();
         _globalHotkey.Pressed -= OnUuHotkeyPressed;

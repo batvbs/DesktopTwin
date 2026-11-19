@@ -41,6 +41,9 @@ internal sealed class UuViewSwitchService : IDisposable
     private CancellationTokenSource? _streamRecoveryCancellation;
     private bool _killedStreamersInLastSwitch;
 
+    /// <summary>最近一次切换成功时串流端应该落在的会话号。供视角锁定更新记录值。</summary>
+    private uint? _lastSwitchTarget;
+
     /// <summary>正在跑的后台恢复任务，切换前要等它收手。</summary>
     private Task? _recoveryTask;
 
@@ -160,6 +163,65 @@ internal sealed class UuViewSwitchService : IDisposable
             // 这一次切换里如果真的结束过串流端，而它迟迟没回来，就交给后台持续重试：
             // UU 服务在短时间内被连续结束时会进入重启退避，之后不再拉起串流端，
             // 手机上看到的就是「设备离线」，等多久也不会自愈。
+            ScheduleStreamerRecovery();
+        }
+    }
+
+    /// <summary>
+    /// 最近一次切换成功时的目标会话。调用方在 ToggleAsync 返回后读取，
+    /// 拿它更新「视角锁定」的记录值——这时串流端可能还在 settle，不能靠再读一次。
+    /// </summary>
+    internal uint? LastSwitchTarget => _lastSwitchTarget;
+
+    /// <summary>
+    /// 把串流端放到指定会话上。与 ToggleAsync 的区别是它认目标，不认"对面"——
+    /// 视角锁定用它纠正落错位置的串流端。
+    /// </summary>
+    internal async Task<Result> EnsureSessionAsync(uint targetSession, CancellationToken cancellationToken)
+    {
+        ThrowIfDisposed();
+
+        if (!await _gate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+        {
+            return new Result(false, Locale.Get("Uu.Result.Busy"));
+        }
+
+        try
+        {
+            if (!await StopStreamerRecoveryAsync().ConfigureAwait(false))
+            {
+                return new Result(false, Locale.Get("Uu.Result.RecoveryBusy"));
+            }
+
+            var console = ChildSessionNativeMethods.TryGetConsoleSessionId();
+            var result = targetSession == console
+                ? await SwitchToMainAsync(cancellationToken).ConfigureAwait(false)
+                : await SwitchToChildAsync(cancellationToken).ConfigureAwait(false);
+
+            return result;
+        }
+        catch (OperationCanceledException)
+        {
+            return new Result(false, Locale.Get("Uu.Result.Cancelled"));
+        }
+        catch (Exception exception) when (exception is InvalidOperationException
+                                              or Win32Exception
+                                              or ObjectDisposedException)
+        {
+            AppLog.Warn("UU 视角锁定：把串流端放回指定会话失败。", exception);
+            return new Result(false, Locale.Format("Uu.Result.Failed", exception.GetBaseException().Message));
+        }
+        finally
+        {
+            try
+            {
+                _gate.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+                // 同上：切换中窗口被关掉，服务已释放。
+            }
+
             ScheduleStreamerRecovery();
         }
     }
@@ -730,6 +792,7 @@ internal sealed class UuViewSwitchService : IDisposable
             .ConnectDesktopInBackgroundAsync(cancellationToken)
             .ConfigureAwait(false);
 
+        _lastSwitchTarget = console;
         return new Result(
             true,
             restored
@@ -817,6 +880,11 @@ internal sealed class UuViewSwitchService : IDisposable
             StreamerSettleWait,
             cancellationToken).ConfigureAwait(false);
 
+        if (settled)
+        {
+            _lastSwitchTarget = sessionId;
+        }
+
         return settled
             ? new Result(true, Locale.Get("Uu.Result.ToChild"))
             : new Result(false, Locale.Get("Uu.Result.ToChild.StreamerStuck"));
@@ -825,7 +893,7 @@ internal sealed class UuViewSwitchService : IDisposable
     /// <summary>
     /// 查 UU 串流端所在的会话号。没有串流端时返回空集合。
     /// </summary>
-    private static List<uint> GetStreamerSessionIds()
+    internal static List<uint> GetStreamerSessionIds()
     {
         var sessions = new List<uint>();
 

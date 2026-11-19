@@ -67,6 +67,8 @@ internal static class Strings
         Pair("Menu.UuSwitch.ToolTip", "启用后可用全局热键在「UU 控制整台电脑」与「UU 控制桌面分身」之间切换。切换时会结束 UU 的串流端进程，让 UU 服务重新挑选会话；分身只是断开，不会注销。"),
         Pair("Menu.UuHotkey", "切换快捷键：{0}"),
         Pair("Menu.UuTrigger", "立即切换一次"),
+        Pair("Menu.UuViewLock", "UU 视角锁定"),
+        Pair("Menu.UuViewLock.ToolTip", "开启后每 15 秒检查一次 UU 串流端是否还在打开本功能时所在的会话，跑掉了自动切回；只有你主动切换视角才会更新这个位置。只勾这一项时固定在电脑主机，不注册热键、也不在分身里装代理。" ),
         Pair("Menu.UuRepair", "修复 UU 串流（重启 UU 服务）"),
         Pair("Menu.UuRepair.ToolTip", "快速连续切换后，手机上的 UU 可能显示设备离线：切换需要结束串流端，短时间内连续结束会被 UU 服务当成连续崩溃而暂停重拉。点这里重启 UU 服务恢复，然后在手机上重新连接一次。"),
 
