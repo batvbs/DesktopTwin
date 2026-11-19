@@ -41,6 +41,7 @@ internal sealed class RdpActiveXHost : AxHost
     private int _reconnectGeneration;
     private DrawingSize? _pendingReconnectDesktopSize;
     private bool _smartSizingEnabled = true;
+    private readonly RdpSmartSizingController _smartSizing;
     private bool _inputBlocked;
     private Func<(string UserName, string Domain, string Password)?>? _credentialProvider;
 
@@ -54,6 +55,10 @@ internal sealed class RdpActiveXHost : AxHost
     internal RdpActiveXHost()
         : base(RdpClientClsid)
     {
+        _smartSizing = new RdpSmartSizingController(
+            ApplySmartSizing,
+            callback => BeginInvoke(callback),
+            RefreshSmartSizing);
         Dock = DockStyle.Fill;
     }
 
@@ -143,8 +148,9 @@ internal sealed class RdpActiveXHost : AxHost
             SetComProperty(advancedSettings, "EnableCredSspSupport", true));
         RunComStep(Locale.Get("Rdp.Step.RemoteWindowsKey"), () =>
             SetComProperty(advancedSettings, "EnableWindowsKey", 1));
-        RunComStep(Locale.Get("Rdp.Step.DisplayScale"), () =>
-            SetComProperty(advancedSettings, "SmartSizing", _smartSizingEnabled));
+        // 每次连接重新确认设置，同时作废上一连接遗留的异步重排。
+        _smartSizing.Reset();
+        _smartSizing.Apply(_smartSizingEnabled);
 
         object connectToChildSession = true;
         RunComStep(Locale.Get("Rdp.Step.ChildSession"), () =>
@@ -205,10 +211,10 @@ internal sealed class RdpActiveXHost : AxHost
             return;
         }
 
-        var advancedSettings = GetComProperty(GetRequiredOcx(), "AdvancedSettings7")
-            ?? throw new COMException(Locale.Get("Rdp.Error.AdvancedSettings"));
-        RunComStep(Locale.Get("Rdp.Step.DisplayScale"), () =>
-            SetComProperty(advancedSettings, "SmartSizing", enabled));
+        if (!_smartSizing.Apply(enabled))
+        {
+            return;
+        }
 
         // 这个属性允许联机修改，但控件是在「尺寸变化」时按它重算缩放比例的：
         // 只改属性不会重绘，画面上看不出任何变化（全屏自适应/1:1 切换失灵的原因）。
@@ -218,19 +224,29 @@ internal sealed class RdpActiveXHost : AxHost
             return;
         }
 
-        BeginInvoke(new Action(() =>
-        {
-            // 尺寸要在回调里读：全屏是「先定缩放模式、再改窗口尺寸」，
-            // 排队期间窗口可能刚变成全屏大小，用外面的旧值会把控件按回旧尺寸。
-            if (IsDisposed || Disposing || Width <= 1 || Height <= 1)
-            {
-                return;
-            }
+        _smartSizing.ScheduleRefresh();
+    }
 
-            var size = Size;
-            Size = new DrawingSize(size.Width - 1, size.Height);
-            Size = size;
-        }));
+    private void ApplySmartSizing(bool enabled)
+    {
+        var advancedSettings = GetComProperty(GetRequiredOcx(), "AdvancedSettings7")
+            ?? throw new COMException(Locale.Get("Rdp.Error.AdvancedSettings"));
+        RunComStep(Locale.Get("Rdp.Step.DisplayScale"), () =>
+            SetComProperty(advancedSettings, "SmartSizing", enabled));
+    }
+
+    private void RefreshSmartSizing()
+    {
+        // 全屏先定缩放、再改窗口尺寸，必须在回调里取最新大小；断开后不再重排。
+        if (IsDisposed || Disposing || !IsHandleCreated || ConnectedState != 1
+            || Width <= 1 || Height <= 1)
+        {
+            return;
+        }
+
+        var size = Size;
+        Size = new DrawingSize(size.Width - 1, size.Height);
+        Size = size;
     }
 
     internal void SetSendSystemShortcutsToRemote(bool enabled)
@@ -384,6 +400,7 @@ internal sealed class RdpActiveXHost : AxHost
 
     protected override void OnHandleDestroyed(EventArgs e)
     {
+        _smartSizing.Reset();
         if (IsHandleCreated)
         {
             ChildSessionNativeMethods.ClearRdpInputWindowCache(Handle);

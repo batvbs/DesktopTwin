@@ -75,9 +75,6 @@ public partial class MainWindowViewModel : ObservableObject
     private bool _isAdaptive = true;
 
     [ObservableProperty]
-    private bool _isOneToOne;
-
-    [ObservableProperty]
     private bool _keepAspectRatio = true;
 
     [ObservableProperty]
@@ -160,7 +157,6 @@ public partial class MainWindowViewModel : ObservableObject
 
         _isTopmost = childSessionService.TopmostEnabled;
         _isAdaptive = childSessionService.SmartSizingEnabled;
-        _isOneToOne = !_isAdaptive;
         _keepAspectRatio = childSessionService.KeepAspectRatio;
         _normalWindowPosition = childSessionService.NormalWindowPosition;
         _smallWindowPosition = childSessionService.SmallWindowPosition;
@@ -292,6 +288,21 @@ public partial class MainWindowViewModel : ObservableObject
     /// </summary>
     public string CurrentResolutionText =>
         $"{_settings.Current.Session.DesktopWidth} × {_settings.Current.Session.DesktopHeight}";
+
+    /// <summary>
+    /// 分身桌面的宽高比。窗口锁定与全屏黑边都按它算——DesktopTwin 的分辨率可配，
+    /// 用户设成 1920×1200 时窗口就该锁 16:10，不能沿用固定的 16:9。
+    /// </summary>
+    public double DesktopAspectRatio
+    {
+        get
+        {
+            var session = _settings.Current.Session;
+            return session.DesktopHeight > 0
+                ? (double)session.DesktopWidth / session.DesktopHeight
+                : 16d / 9d;
+        }
+    }
 
     /// <summary>
     /// 断开 RDP 并注销分身会话，用于关闭窗口前的确认流程。
@@ -1365,30 +1376,22 @@ public partial class MainWindowViewModel : ObservableObject
         OnPropertyChanged(nameof(IsHdResolutionSelected));
         OnPropertyChanged(nameof(IsCustomResolutionSelected));
         OnPropertyChanged(nameof(CurrentResolutionText));
+        OnPropertyChanged(nameof(DesktopAspectRatio));
     }
 
     [RelayCommand]
     private void UseAdaptive()
     {
-        if (!Execute(() => _childSessionService.SetSmartSizing(true)))
+        // 菜单项是勾选框：勾上 = 自适应缩放，取消勾选 = 1:1 原始像素。
+        var useAdaptive = !IsAdaptive;
+        if (!Execute(() => _childSessionService.SetSmartSizing(useAdaptive)))
         {
+            // WPF 已在命令执行前把勾选拨过去了，切换失败要把勾选状态拉回真实值。
+            OnPropertyChanged(nameof(IsAdaptive));
             return;
         }
 
-        IsAdaptive = true;
-        IsOneToOne = false;
-    }
-
-    [RelayCommand]
-    private void UseOneToOne()
-    {
-        if (!Execute(() => _childSessionService.SetSmartSizing(false)))
-        {
-            return;
-        }
-
-        IsAdaptive = false;
-        IsOneToOne = true;
+        IsAdaptive = useAdaptive;
     }
 
     [RelayCommand]
@@ -1861,7 +1864,6 @@ public partial class MainWindowViewModel : ObservableObject
         var childSessionId = _childSessionService.ChildSessionId;
         IsTopmost = _childSessionService.TopmostEnabled;
         IsAdaptive = _childSessionService.SmartSizingEnabled;
-        IsOneToOne = !IsAdaptive;
         KeepAspectRatio = _childSessionService.KeepAspectRatio;
         SendSystemShortcutsToRemote = _childSessionService.SendSystemShortcutsToRemote;
         IsWatchModeEnabled = _childSessionService.WatchModeEnabled;

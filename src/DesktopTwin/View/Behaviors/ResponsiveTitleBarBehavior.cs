@@ -177,6 +177,9 @@ public sealed class ResponsiveTitleBarBehavior : Behavior<Panel>
         // 需求按「每个按钮都可能显示」算，包括此刻因状态而隐藏的：
         // 例如「更多」下拉在启动按钮可见时是收起的，但一折叠启动按钮它就会露出来。
         // 漏算这几十 DIP，后面的兜底判断会以为放得下，按钮就被系统按钮盖住了。
+        //
+        // 反过来「都算」会多折一个按钮，但那是可接受的方向：少显示一个按钮还能从
+        // 「更多」下拉找到，被系统按钮盖住则直接点不到。
         var requiredWidth = AssociatedObject.Children
             .OfType<FrameworkElement>()
             .Sum(GetCachedWidth);

@@ -228,11 +228,6 @@
                                                  Header="{loc:Loc Menu.Adaptive}"
                                                  IsCheckable="True"
                                                  IsChecked="{Binding IsAdaptive, Mode=OneWay}" />
-                                    <ui:MenuItem Command="{Binding UseOneToOneCommand}"
-                                                 Header="1 : 1"
-                                                 IsCheckable="True"
-                                                 IsChecked="{Binding IsOneToOne, Mode=OneWay}" />
-                                    <Separator />
                                     <ui:MenuItem Command="{Binding ToggleKeepAspectRatioCommand}"
                                                  Header="{loc:Loc Menu.KeepAspectRatio}"
                                                  IsCheckable="True"
@@ -406,7 +401,7 @@
                                   VerticalAlignment="Stretch"
                                   Visibility="{Binding IsConnectionPromptVisible, Converter={StaticResource BooleanToVisibilityRevertConverter}}">
                 <b:Interaction.Behaviors>
-                    <behaviors:WindowAspectRatioBehavior AspectRatio="1.7777777777777777"
+                    <behaviors:WindowAspectRatioBehavior AspectRatio="{Binding DesktopAspectRatio}"
                                                         IsEnabled="{Binding KeepAspectRatio}" />
                 </b:Interaction.Behaviors>
                 <wfi:WindowsFormsHost.Style>

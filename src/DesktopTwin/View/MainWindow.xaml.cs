@@ -586,30 +586,101 @@ public partial class MainWindow : FluentWindow
     }
 
     /// <summary>
-    /// 按「分身分辨率是否等于屏幕分辨率」决定全屏下的缩放模式。
+    /// 全屏时决定缩放模式与黑边，三条规则按顺序判定：
     ///
-    /// 一致 → 1:1：像素一一对应，不重采样，这是最清晰的一档；
-    /// 不一致 → 自适应：反正都要缩放，优先保证铺满。
-    /// 两者都只改运行时行为，不写设置，退出全屏时还原用户原本的选择。
+    /// 1. 屏幕正好等于分身分辨率 → 1:1 铺满，两项设置都不看；
+    /// 2. 屏幕长宽都 ≥ 分身分辨率，且用户关掉了「自适应缩放」→ 1:1 居中，四周黑边；
+    /// 3. 其余（屏幕比分身小，或用户开着自适应）→ 自适应缩放，是否留黑边看「保持宽高比」。
+    ///
+    /// 都只改运行时行为，不写设置，退出全屏时还原用户原本的选择。
+    /// 这里用传进来的显示器尺寸算，不读窗口的 Width/Height——调用方是先定缩放再改窗口尺寸的。
     /// </summary>
     private void UpdateFullscreenScaling(int monitorWidth, int monitorHeight)
     {
-        var session = _settings.Current.Session;
-        var matchesScreen = monitorWidth > 0
-            && monitorHeight > 0
-            && session.DesktopWidth == monitorWidth
-            && session.DesktopHeight == monitorHeight;
-
-        _childSessionService.SetSmartSizing(!matchesScreen, persist: false);
-
-        if (matchesScreen)
+        if (monitorWidth <= 0 || monitorHeight <= 0)
         {
             return;
         }
 
+        var session = _settings.Current.Session;
+        var desktopWidth = session.DesktopWidth;
+        var desktopHeight = session.DesktopHeight;
+
+        // 规则 1：分辨率一致，1:1 铺满。
+        if (desktopWidth == monitorWidth && desktopHeight == monitorHeight)
+        {
+            _childSessionService.SetSmartSizing(false, persist: false);
+            RdpFormsHost.Margin = new Thickness(0);
+            return;
+        }
+
+        var dpi = VisualTreeHelper.GetDpi(this);
+        var areaWidth = monitorWidth / dpi.DpiScaleX;
+        var areaHeight = monitorHeight / dpi.DpiScaleY;
+
+        // 规则 2：屏幕足够大且用户选了 1:1，按原始像素居中、四周留黑边。
+        var displayCoversDesktop = monitorWidth >= desktopWidth && monitorHeight >= desktopHeight;
+        if (displayCoversDesktop && !session.SmartSizing)
+        {
+            _childSessionService.SetSmartSizing(false, persist: false);
+
+            var contentWidth = desktopWidth / dpi.DpiScaleX;
+            var contentHeight = desktopHeight / dpi.DpiScaleY;
+            var insetX = Math.Max(0d, (areaWidth - contentWidth) / 2);
+            var insetY = Math.Max(0d, (areaHeight - contentHeight) / 2);
+            RdpFormsHost.Margin = new Thickness(insetX, insetY, insetX, insetY);
+            return;
+        }
+
+        // 规则 3：自适应缩放，黑边看「保持宽高比」。
+        // 目标比例取分身桌面的实际比例，不能写死 16:9——DesktopTwin 的桌面分辨率是可配的，
+        // 用户设成 1920x1200（16:10）时按 16:9 留边会把画面裁坏。
+        _childSessionService.SetSmartSizing(true, persist: false);
+        ApplyFullscreenLetterbox(areaWidth, areaHeight, (double)desktopWidth / desktopHeight);
+
         // 只有真的退到自适应缩放时才提示模糊——这是唯一会让人察觉画面变差的场景。
         // 提示走 Popup（独立窗口），所以画在外层桌面、浮在分身画面之上，不会被 RDP 画面盖住。
         NotifyResolutionMismatch();
+    }
+
+    /// <summary>
+    /// 全屏下按「保持宽高比」给 RDP 画面留黑边：画面是 16:9，显示器不是时把控件缩到
+    /// 居中的 16:9 矩形里，四周露出窗口的黑色背景。缩的是控件本身，RDP 的鼠标坐标映射
+    /// 仍是「远端 16:9 → 控件 16:9」的等比关系，不会错位。
+    /// </summary>
+    private void ApplyFullscreenLetterbox(double areaWidth, double areaHeight, double targetRatio)
+    {
+        if (!_settings.Current.Session.KeepAspectRatio
+            || areaWidth <= 0
+            || areaHeight <= 0
+            || !double.IsFinite(targetRatio)
+            || targetRatio <= 0)
+        {
+            RdpFormsHost.Margin = new Thickness(0);
+            return;
+        }
+
+        var areaRatio = areaWidth / areaHeight;
+        if (Math.Abs(areaRatio - targetRatio) < 0.001)
+        {
+            RdpFormsHost.Margin = new Thickness(0);
+            return;
+        }
+
+        if (areaRatio > targetRatio)
+        {
+            // 显示器比 16:9 宽：左右留黑边。
+            var contentWidth = areaHeight * targetRatio;
+            var sideInset = (areaWidth - contentWidth) / 2;
+            RdpFormsHost.Margin = new Thickness(sideInset, 0, sideInset, 0);
+        }
+        else
+        {
+            // 显示器比 16:9 高（16:10、4:3）：上下留黑边。
+            var contentHeight = areaWidth / targetRatio;
+            var verticalInset = (areaHeight - contentHeight) / 2;
+            RdpFormsHost.Margin = new Thickness(0, verticalInset, 0, verticalInset);
+        }
     }
 
     private IntPtr OnWindowMessage(
@@ -620,6 +691,7 @@ public partial class MainWindow : FluentWindow
         ref bool handled)
     {
         const int WmDisplayChange = 0x007E;
+        const int WmExitSizeMove = 0x0232;
 
         if (message == WmDisplayChange && _isFullscreen)
         {
@@ -630,7 +702,38 @@ public partial class MainWindow : FluentWindow
                 DispatcherPriority.Background);
         }
 
+        // 拖动/缩放结束时校正一次位置：用户把窗口推到屏幕顶部以外时，标题栏会被挡住、
+        // 窗口再也抓不回来。放在 EXITSIZEMOVE 而不是 MOVE，避免和拖动过程抢位置。
+        if (message == WmExitSizeMove && !_isFullscreen)
+        {
+            EnsureTitleBarVisible();
+        }
+
         return IntPtr.Zero;
+    }
+
+    /// <summary>
+    /// 把窗口顶边压回所在显示器工作区的顶部，保证标题栏始终露得出来。
+    ///
+    /// 只处理「上边缘跑出屏幕」这一种：左右超出时系统会留一部分可见，用户还能拖回来；
+    /// 上边缘一旦越过工作区顶部，标题栏整条看不见，只能靠任务栏或 Alt+Space 找回来。
+    /// </summary>
+    private void EnsureTitleBarVisible()
+    {
+        var handle = new WindowInteropHelper(this).Handle;
+        if (handle == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var screen = System.Windows.Forms.Screen.FromHandle(handle);
+        var dpi = VisualTreeHelper.GetDpi(this);
+        var workAreaTop = screen.WorkingArea.Top / (dpi.DpiScaleY > 0 ? dpi.DpiScaleY : 1);
+
+        if (Top < workAreaTop)
+        {
+            Top = workAreaTop;
+        }
     }
 
     private void OnDisplaySettingsChanged()
