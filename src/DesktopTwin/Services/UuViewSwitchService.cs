@@ -192,10 +192,20 @@ internal sealed class UuViewSwitchService : IDisposable
 
         try
         {
+            // 手动「修复 UU 串流」正在重启服务时不要插一脚：它走的是另一把闸，
+            // 两边同时动 UU 服务，结果取决于谁后执行。
+            if (_serviceGate.CurrentCount == 0)
+            {
+                return new Result(false, Locale.Get("Uu.Result.Busy"));
+            }
+
             if (!await StopStreamerRecoveryAsync().ConfigureAwait(false))
             {
                 return new Result(false, Locale.Get("Uu.Result.RecoveryBusy"));
             }
+
+            // 等恢复循环收手期间用户可能已经关掉锁定：这里再确认一次再动会话。
+            cancellationToken.ThrowIfCancellationRequested();
 
             var console = ChildSessionNativeMethods.TryGetConsoleSessionId();
             if (targetSession == console)
