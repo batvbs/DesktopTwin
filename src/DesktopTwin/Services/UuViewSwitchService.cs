@@ -194,11 +194,27 @@ internal sealed class UuViewSwitchService : IDisposable
             }
 
             var console = ChildSessionNativeMethods.TryGetConsoleSessionId();
-            var result = targetSession == console
-                ? await SwitchToMainAsync(cancellationToken).ConfigureAwait(false)
-                : await SwitchToChildAsync(cancellationToken).ConfigureAwait(false);
+            if (targetSession == console)
+            {
+                return await SwitchToMainAsync(cancellationToken).ConfigureAwait(false);
+            }
 
-            return result;
+            // 目标不是主机：必须是当前真实存在的分身会话。
+            // 分身注销后重建时会话号会变，拿旧号去切会对着另一个会话操作、还报成功，
+            // 而调用方记的仍是旧号，下一轮又重复一次——形成反复掐串流端的循环。
+            var childId = ChildSessionNativeMethods.TryGetChildSessionId();
+            if (childId is null)
+            {
+                return new Result(false, Locale.Get("Uu.Result.NoSession"));
+            }
+
+            if (childId != targetSession)
+            {
+                AppLog.Info(
+                    $"UU 视角锁定：记录的分身会话 {targetSession} 已失效，当前是 {childId}，改切当前会话。");
+            }
+
+            return await SwitchToChildAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -770,6 +786,8 @@ internal sealed class UuViewSwitchService : IDisposable
         if (killed == 0)
         {
             // 手机没连着的时候本来就没有串流端，分身已经断开，目的已经达到。
+            // 目标照样要记：调用方拿它更新视角锁定的记录值。
+            _lastSwitchTarget = ChildSessionNativeMethods.TryGetConsoleSessionId();
             return new Result(true, Locale.Get("Uu.Result.ToMain.NoStreamer"));
         }
 
@@ -872,6 +890,7 @@ internal sealed class UuViewSwitchService : IDisposable
 
         if (killed == 0)
         {
+            _lastSwitchTarget = sessionId;
             return new Result(true, Locale.Get("Uu.Result.ToChild.NoStreamer"));
         }
 

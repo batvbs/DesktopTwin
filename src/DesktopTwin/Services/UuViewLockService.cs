@@ -29,6 +29,7 @@ internal sealed class UuViewLockService : IDisposable
 
     private uint? _lockedSession;
     private bool _enabled;
+    private bool _switchMode;
     private bool _switching;
     private bool _disposed;
 
@@ -53,8 +54,18 @@ internal sealed class UuViewLockService : IDisposable
     {
         ThrowIfDisposed();
 
+        // 同样的启用状态和模式：保留已记录的会话。
+        //
+        // 这个方法会被「改热键」「切换视角开关」等路径重复调用。若每次都重新记录，
+        // 恰好此时串流端已经漂到别处，就会把漂移后的位置当成新基线，等于放过一次异常。
+        if (enabled && _enabled && switchEnabled == _switchMode)
+        {
+            return;
+        }
+
         _timer.Stop();
         _enabled = enabled;
+        _switchMode = switchEnabled;
 
         if (!enabled)
         {
@@ -77,6 +88,20 @@ internal sealed class UuViewLockService : IDisposable
     {
         if (!_enabled || _disposed || session is not { } value)
         {
+            return;
+        }
+
+        if (!_switchMode)
+        {
+            // 只开锁定时契约是「锁在电脑主机」：手动切到分身不该改变记录值，
+            // 否则锁定会跟着留在分身，和这个模式的定义相悖。
+            var console = ChildSessionNativeMethods.TryGetConsoleSessionId();
+            if (console is null || console.Value == value)
+            {
+                _lockedSession = value;
+                AppLog.Info($"UU 视角锁定：记录值更新为 {value}。");
+            }
+
             return;
         }
 

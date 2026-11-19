@@ -1289,6 +1289,10 @@ public partial class MainWindowViewModel : ObservableObject
         _settings.Current.Automation.UuViewSwitchEnabled = false;
         _settings.SaveSoon();
         _sessionAgent.Uninstall();
+
+        // 开关刚被退回 false：上面那次 ApplyUuViewLock 还在「切换开启」的前提下记录，
+        // 基线可能被记成了分身。这里按「只开锁定」重新校准一次。
+        ApplyUuViewLock();
             ShowNotification(Locale.Get("Hotkey.Registered.Failed.Title"), error, InfoBarSeverity.Warning, TimeSpan.FromSeconds(7));
     }
 
