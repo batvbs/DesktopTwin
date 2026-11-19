@@ -788,6 +788,13 @@ internal sealed class UuViewSwitchService : IDisposable
                 return new Result(false, Locale.Get("Uu.Result.StreamerKillFailed"));
             }
 
+            // 视角锁定触发的纠正不重连：那可能是用户刚注销的分身，连回来会自作主张。
+            if (!restoreChildConnection)
+            {
+                _lastSwitchTarget = ChildSessionNativeMethods.TryGetConsoleSessionId();
+                return new Result(false, Locale.Get("Uu.Result.StreamerKillFailed.NotRestored"));
+            }
+
             // 这次切换已经失败，用户还停在分身里：连回来就行，别再把他看着的窗口缩下去。
             var childRestored = await _childSessionService
                 .ConnectDesktopInBackgroundAsync(cancellationToken, minimizeWindow: false)
