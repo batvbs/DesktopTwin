@@ -163,7 +163,6 @@ public sealed class ChildSessionService : IDisposable
     /// </summary>
     private int _startGeneration;
 
-
     /// <summary>
     /// 界面需要刷新的状态发生变化。
     /// </summary>
@@ -648,28 +647,31 @@ public sealed class ChildSessionService : IDisposable
     /// 确保分身桌面处于已连接状态。会话不存在时走完整启动流程。
     /// </summary>
     /// <param name="cancellationToken">取消标记。</param>
+    /// <param name="existingSessionGeneration">自动纠正传入会话代际：仅重连现有会话，禁止启动。</param>
     /// <returns>连接成功返回 true。</returns>
     public Task<bool> EnsureDesktopConnectedAsync(
         CancellationToken cancellationToken,
-        bool showWindow = true)
+        bool showWindow = true,
+        int? existingSessionGeneration = null)
     {
         ThrowIfDisposed();
 
         // 同上：这里的每一步都是窗口/RDP 控件操作。
         if (_dispatcher.CheckAccess())
         {
-            return EnsureDesktopConnectedCoreAsync(cancellationToken, showWindow);
+            return EnsureDesktopConnectedCoreAsync(cancellationToken, showWindow, existingSessionGeneration);
         }
 
         return _dispatcher
-            .InvokeAsync(() => EnsureDesktopConnectedCoreAsync(cancellationToken, showWindow))
+            .InvokeAsync(() => EnsureDesktopConnectedCoreAsync(cancellationToken, showWindow, existingSessionGeneration))
             .Task
             .Unwrap();
     }
 
     private async Task<bool> EnsureDesktopConnectedCoreAsync(
         CancellationToken cancellationToken,
-        bool showWindow)
+        bool showWindow,
+        int? existingSessionGeneration)
     {
         ThrowIfDisposed();
 
@@ -678,6 +680,15 @@ public sealed class ChildSessionService : IDisposable
         // 于是一次已取消的切换照样改掉了桌面连接。
         cancellationToken.ThrowIfCancellationRequested();
 
+        // 自动纠正的限制要跨过 Dispatcher 队列，在显示窗口或重连前检查。
+        if (existingSessionGeneration is { } expected
+            && (expected != StartGeneration || ChildSessionNativeMethods.TryGetChildSessionId() is null))
+        {
+            return false;
+        }
+
+        // Disconnect 的回调丢失时必须先复位；放在取消和代际校验之后，统一由 UI 线程操作。
+        _desktopWindow?.RdpHost.ResetDisconnectState();
         var window = EnsureDesktopWindow();
         if (showWindow && !_windowHiddenByUser)
         {
@@ -688,7 +699,12 @@ public sealed class ChildSessionService : IDisposable
         {
             if (ChildSessionNativeMethods.TryGetChildSessionId() is null)
             {
-                // 会话被注销了：走完整启动流程，顺带补上环境预检。
+                if (existingSessionGeneration.HasValue)
+                {
+                    return false;
+                }
+
+                // 手动操作允许重新启动；自动纠正永远不会走到这里。
                 await StartAsync().ConfigureAwait(true);
             }
             else
@@ -703,6 +719,11 @@ public sealed class ChildSessionService : IDisposable
         while (DateTime.UtcNow < deadline)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (existingSessionGeneration is { } generation && generation != StartGeneration)
+            {
+                return false;
+            }
+
             if (window.RdpHost.ConnectedState == 1)
             {
                 return true;
@@ -711,7 +732,8 @@ public sealed class ChildSessionService : IDisposable
             await Task.Delay(400, cancellationToken).ConfigureAwait(true);
         }
 
-        return window.RdpHost.ConnectedState == 1;
+        return window.RdpHost.ConnectedState == 1
+            && (existingSessionGeneration is null || existingSessionGeneration == StartGeneration);
     }
 
     /// <summary>
@@ -849,30 +871,6 @@ public sealed class ChildSessionService : IDisposable
             AppLog.Warn("后台重连分身时出错。", exception);
             return false;
         }
-    }
-
-    /// <summary>
-    /// 清掉 RDP 的「正在断开」排队状态。
-    ///
-    /// 视角切换在重连前必须调用：<c>Disconnect()</c> 之后要等 <c>OnDisconnected</c>
-    /// 回调复位标志，回调丢了就永远卡在「正在断开」，重连只排队不执行。
-    /// </summary>
-    public void ResetDisconnectState()
-    {
-        ThrowIfDisposed();
-
-        if (!_dispatcher.CheckAccess())
-        {
-            _dispatcher.Invoke(ResetDisconnectStateCore);
-            return;
-        }
-
-        ResetDisconnectStateCore();
-    }
-
-    private void ResetDisconnectStateCore()
-    {
-        _desktopWindow?.RdpHost.ResetDisconnectState();
     }
 
     /// <summary>

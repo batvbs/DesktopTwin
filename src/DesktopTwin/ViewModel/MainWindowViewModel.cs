@@ -748,8 +748,8 @@ public partial class MainWindowViewModel : ObservableObject
         _sessionAgent.SwitchRequested -= OnSessionAgentSwitchRequested;
         _sessionAgent.Dispose();
         _uuViewSwitchService.StreamerRecovered -= OnStreamerRecovered;
-        _uuViewSwitchService.Dispose();
         _uuViewLockService.Dispose();
+        _uuViewSwitchService.Dispose();
     }
 
     /// <summary>
@@ -798,7 +798,7 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private async Task TriggerUuViewSwitchAsync()
     {
-        if (_uuSwitchInProgress)
+        if (!UuViewSwitchEnabled || _uuSwitchInProgress)
         {
             return;
         }
@@ -825,7 +825,7 @@ public partial class MainWindowViewModel : ObservableObject
             if (result.Success)
             {
                 // 用户主动切换：新的落点就是「正确位置」，不更新的话下一轮锁定会把它纠正回去。
-                _uuViewLockService.RebaseTo(_uuViewSwitchService.LastSwitchTarget);
+                _uuViewLockService.RebaseTo(result.Target);
             }
 
             ShowNotification(
@@ -892,6 +892,7 @@ public partial class MainWindowViewModel : ObservableObject
         }
 
         _globalHotkey?.Unregister();
+        _sessionAgent.Uninstall();
         ShowNotification(
                 Locale.Get("Notify.UuDisabled.Title"),
                 Locale.Get("Notify.UuDisabled.Message"),
