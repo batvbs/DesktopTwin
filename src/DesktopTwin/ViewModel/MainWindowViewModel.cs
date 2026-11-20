@@ -170,6 +170,7 @@ public partial class MainWindowViewModel : ObservableObject
 
         _uuViewSwitchService = new UuViewSwitchService(childSessionService);
         _uuViewLockService = new UuViewLockService(_uuViewSwitchService, Dispatcher.CurrentDispatcher);
+        _uuViewLockService.MonitoringFailed += OnUuViewLockMonitoringFailed;
         _uuViewSwitchEnabled = settings.Current.Automation.UuViewSwitchEnabled;
         _uuViewLockEnabled = settings.Current.Automation.UuViewLockEnabled;
         _autoLoginEnabled = settings.Current.Automation.AutoLoginEnabled;
@@ -640,6 +641,7 @@ public partial class MainWindowViewModel : ObservableObject
     {
         void Notify()
         {
+            _uuViewLockService.RequestCheck();
             ShowNotification(
                 Locale.Get("Uu.Recovered.Title"),
                 Locale.Get("Uu.Recovered.Message"),
@@ -748,6 +750,7 @@ public partial class MainWindowViewModel : ObservableObject
         _sessionAgent.SwitchRequested -= OnSessionAgentSwitchRequested;
         _sessionAgent.Dispose();
         _uuViewSwitchService.StreamerRecovered -= OnStreamerRecovered;
+        _uuViewLockService.MonitoringFailed -= OnUuViewLockMonitoringFailed;
         _uuViewLockService.Dispose();
         _uuViewSwitchService.Dispose();
     }
@@ -789,6 +792,7 @@ public partial class MainWindowViewModel : ObservableObject
         finally
         {
             _uuSwitchInProgress = false;
+            _uuViewLockService.RequestCheck();
         }
     }
 
@@ -851,6 +855,7 @@ public partial class MainWindowViewModel : ObservableObject
         finally
         {
             _uuSwitchInProgress = false;
+            _uuViewLockService.RequestCheck();
         }
     }
 
@@ -869,8 +874,27 @@ public partial class MainWindowViewModel : ObservableObject
         ApplyUuViewLock();
     }
 
-    private void ApplyUuViewLock() =>
-        _uuViewLockService.SetEnabled(UuViewLockEnabled, UuViewSwitchEnabled);
+    private void ApplyUuViewLock()
+    {
+        try
+        {
+            _uuViewLockService.SetEnabled(UuViewLockEnabled, UuViewSwitchEnabled);
+        }
+        catch (Exception exception)
+        {
+            OnUuViewLockMonitoringFailed(this, exception);
+        }
+    }
+
+    private void OnUuViewLockMonitoringFailed(object? sender, Exception exception)
+    {
+        AppLog.Warn("UU 视角锁定事件监听失败。", exception);
+        UuViewLockEnabled = false;
+        _settings.Current.Automation.UuViewLockEnabled = false;
+        _settings.SaveSoon();
+        ShowNotification(Locale.Get("Notify.UuLockFailed.Title"),
+            Locale.Get("Notify.UuLockFailed.Message"), InfoBarSeverity.Warning);
+    }
 
     /// <summary>
     /// 启用 / 关闭 UU 视角切换热键。

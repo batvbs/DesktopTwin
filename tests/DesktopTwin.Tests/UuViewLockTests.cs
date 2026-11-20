@@ -1,4 +1,3 @@
-using System.Windows.Threading;
 using DesktopTwin.Services;
 
 namespace DesktopTwin.Tests;
@@ -92,7 +91,7 @@ public sealed class UuViewLockTests
     [InlineData("failure")]
     [InlineData("exception")]
     [InlineData("cancelled")]
-    public async Task UnsuccessfulCorrectionAllowsNextTick(string outcome)
+    public async Task UnsuccessfulCorrectionAllowsNextEvent(string outcome)
     {
         var harness = new Harness
         {
@@ -159,6 +158,112 @@ public sealed class UuViewLockTests
         Assert.Throws<ObjectDisposedException>(() => service.SetEnabled(true, true));
     }
 
+    [Fact]
+    public void IdleLockOnlyChecksOnEnableAndAfterNotifications()
+    {
+        var observations = 0;
+        var harness = new Harness { NeedsCorrection = _ => { observations++; return false; } };
+        using var service = harness.Create();
+        service.SetEnabled(true, true);
+        harness.Flush();
+        Assert.Equal(1, observations);
+        Assert.Empty(harness.Queue);
+        harness.Flush();
+        Assert.Equal(1, observations);
+
+        for (var i = 0; i < 100; i++) harness.Changed();
+        Assert.Single(harness.Queue);
+        harness.Flush();
+        Assert.Equal(2, observations);
+        Assert.Empty(harness.Requests);
+        Assert.Empty(harness.Queue);
+    }
+
+    [Fact]
+    public async Task NotificationsDuringCorrectionCoalesceIntoOneFollowUp()
+    {
+        var completion = new TaskCompletionSource<UuViewSwitchService.Result>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var harness = new Harness { NeedsCorrection = _ => false };
+        using var service = harness.Create();
+        service.SetEnabled(true, true);
+        harness.Flush();
+        harness.NeedsCorrection = _ => true;
+        harness.Complete = () => completion.Task;
+        var pending = service.CheckAsync();
+
+        for (var i = 0; i < 100; i++) harness.Changed();
+        Assert.Empty(harness.Queue);
+        Assert.Single(harness.Requests);
+        completion.SetResult(new(true, "done"));
+        await pending;
+        Assert.Single(harness.Queue);
+        harness.Flush();
+        Assert.Equal(2, harness.Requests.Count);
+        Assert.Empty(harness.Queue);
+    }
+
+    [Fact]
+    public void DisableDisposesMonitorAndDiscardsQueuedNotifications()
+    {
+        var harness = new Harness();
+        using var service = harness.Create();
+        service.SetEnabled(true, true);
+        service.SetEnabled(true, true);
+        Assert.Equal(1, harness.Subscriptions);
+        service.SetEnabled(false, true);
+        harness.Changed();
+        harness.Flush();
+        Assert.Equal(1, harness.Disposals);
+        Assert.Empty(harness.Requests);
+
+        service.SetEnabled(true, false);
+        harness.Flush();
+        Assert.Equal(2, harness.Subscriptions);
+        Assert.Equal(new[] { UuViewTarget.Host }, harness.Requests);
+    }
+
+    [Fact]
+    public void SubscriptionFailureDoesNotLeaveLockEnabledAndCanRetry()
+    {
+        var harness = new Harness { FailSubscription = true };
+        using var service = harness.Create();
+        Assert.Throws<InvalidOperationException>(() => service.SetEnabled(true, true));
+        service.RequestCheck();
+        Assert.Empty(harness.Queue);
+        harness.FailSubscription = false;
+        service.SetEnabled(true, true);
+        harness.Flush();
+        Assert.Single(harness.Requests);
+    }
+
+    [Fact]
+    public void LostSubscriptionDisablesLockAndReportsFailure()
+    {
+        var harness = new Harness();
+        using var service = harness.Create();
+        Exception? reported = null;
+        service.MonitoringFailed += (_, error) => reported = error;
+        service.SetEnabled(true, true);
+        var failure = new InvalidOperationException("WMI stopped");
+        harness.Failed(failure);
+        harness.Flush();
+        Assert.Same(failure, reported);
+        Assert.Equal(1, harness.Disposals);
+        Assert.Empty(harness.Requests);
+    }
+
+    [Fact]
+    public void SubscriptionStartupDriftDoesNotBecomeTheNewBaseline()
+    {
+        var harness = new Harness();
+        harness.Subscribing = () => harness.Current = UuViewTarget.Host;
+        using var service = harness.Create();
+        service.SetEnabled(true, true);
+        harness.Flush();
+        Assert.Equal(new[] { UuViewTarget.Child }, harness.Requests);
+    }
+
     private sealed class Harness
     {
         internal UuViewTarget Current = UuViewTarget.Child;
@@ -167,14 +272,39 @@ public sealed class UuViewLockTests
             () => Task.FromResult(new UuViewSwitchService.Result(true, "done"));
         internal List<UuViewTarget> Requests = [];
         internal CancellationToken LastToken;
+        internal Queue<Action> Queue = new();
+        internal Action Changed = () => { };
+        internal Action<Exception> Failed = _ => { };
+        internal int Subscriptions;
+        internal int Disposals;
+        internal bool FailSubscription;
+        internal Action Subscribing = () => { };
 
         internal UuViewLockService Create() => new(
-            Dispatcher.CurrentDispatcher, () => Current, target => NeedsCorrection(target),
+            () => Current, target => NeedsCorrection(target),
             (target, token) =>
             {
                 Requests.Add(target);
                 LastToken = token;
                 return Complete();
-            });
+            }, (changed, failed) =>
+            {
+                if (FailSubscription) throw new InvalidOperationException("subscription unavailable");
+                Changed = changed;
+                Failed = failed;
+                Subscriptions++;
+                Subscribing();
+                return new Subscription(() => Disposals++);
+            }, Queue.Enqueue);
+
+        internal void Flush()
+        {
+            while (Queue.TryDequeue(out var action)) action();
+        }
+    }
+
+    private sealed class Subscription(Action dispose) : IDisposable
+    {
+        public void Dispose() => dispose();
     }
 }

@@ -69,7 +69,9 @@ internal static class Strings
         Pair("Menu.UuTrigger", "立即切换一次"),
         Pair("Notify.Hotkey.Failed.Message", "{0}\n快捷键没有生效，请从窗口菜单里重新设置一个未被占用的组合。"),
         Pair("Menu.UuViewLock", "UU 视角锁定"),
-        Pair("Menu.UuViewLock.ToolTip", "开启后每 15 秒检查一次 UU 串流端是否还在打开本功能时所在的会话，跑掉了自动切回；只有你主动切换视角才会更新这个位置。只勾这一项时固定在电脑主机，不注册热键、也不在分身里装代理。" ),
+        Pair("Menu.UuViewLock.ToolTip", "开启时记录控制目标，桌面会话变化或 UU 串流端启动时再检查，偏离记录的桌面就自动切回；只有你主动切换视角才会更新目标。只勾这一项时固定在电脑主机，不注册热键、也不在分身里装代理。"),
+        Pair("Notify.UuLockFailed.Title", "UU 视角锁定已关闭：无法监听桌面变化"),
+        Pair("Notify.UuLockFailed.Message", "请重新开启视角锁定。如果仍然无法监听控制目标的变化，可查看日志了解原因。"),
         Pair("Menu.UuRepair", "修复 UU 串流（重启 UU 服务）"),
         Pair("Menu.UuRepair.ToolTip", "快速连续切换后，手机上的 UU 可能显示设备离线：切换需要结束串流端，短时间内连续结束会被 UU 服务当成连续崩溃而暂停重拉。点这里重启 UU 服务恢复，然后在手机上重新连接一次。"),
 

@@ -6,40 +6,46 @@ using System.Windows.Threading;
 namespace DesktopTwin.Services;
 
 /// <summary>
-/// 每 15 秒纠正视角漂移。记录逻辑目标（主机 / 分身），会话号由切换服务现查。
+/// 会话变更或串流端启动时纠正视角漂移；空闲时不查询。
 /// 所有状态由 UI Dispatcher 管理；在途纠正退出前不启动下一轮。
 /// </summary>
 internal sealed class UuViewLockService : IDisposable
 {
-    private readonly DispatcherTimer _timer;
+    private readonly Func<Action, Action<Exception>, IDisposable> _subscribe;
+    private readonly Action<Action> _schedule;
     private readonly Func<UuViewTarget> _captureTarget;
     private readonly Func<UuViewTarget, bool> _needsCorrection;
     private readonly Func<UuViewTarget, CancellationToken, Task<UuViewSwitchService.Result>> _ensureTarget;
     private UuViewTarget? _target;
     private bool _switchMode;
     private CancellationTokenSource? _switchCts;
+    private IDisposable? _subscription;
+    private bool _checkPending;
+    private bool _checkQueued;
     private bool _disposed;
 
+    internal event EventHandler<Exception>? MonitoringFailed;
+
     internal UuViewLockService(UuViewSwitchService switchService, Dispatcher dispatcher)
-        : this(dispatcher, UuViewSwitchService.CaptureTarget,
-            UuViewSwitchService.NeedsCorrection, switchService.EnsureTargetAsync)
+        : this(UuViewSwitchService.CaptureTarget,
+            UuViewSwitchService.NeedsCorrection, switchService.EnsureTargetAsync,
+            (changed, failed) => new UuViewChangeMonitor(dispatcher, changed, failed),
+            action => dispatcher.BeginInvoke(DispatcherPriority.Background, action))
     {
     }
 
     internal UuViewLockService(
-        Dispatcher dispatcher,
         Func<UuViewTarget> captureTarget,
         Func<UuViewTarget, bool> needsCorrection,
-        Func<UuViewTarget, CancellationToken, Task<UuViewSwitchService.Result>> ensureTarget)
+        Func<UuViewTarget, CancellationToken, Task<UuViewSwitchService.Result>> ensureTarget,
+        Func<Action, Action<Exception>, IDisposable> subscribe,
+        Action<Action> schedule)
     {
         _captureTarget = captureTarget;
         _needsCorrection = needsCorrection;
         _ensureTarget = ensureTarget;
-        _timer = new DispatcherTimer(DispatcherPriority.Background, dispatcher)
-        {
-            Interval = TimeSpan.FromSeconds(15)
-        };
-        _timer.Tick += OnTick;
+        _subscribe = subscribe;
+        _schedule = schedule;
     }
 
     internal void SetEnabled(bool enabled, bool switchEnabled)
@@ -52,14 +58,32 @@ internal sealed class UuViewLockService : IDisposable
             return;
         }
 
-        _timer.Stop();
+        _checkPending = false;
         _switchCts?.Cancel();
         _switchMode = switchEnabled;
-        _target = enabled ? (switchEnabled ? _captureTarget() : UuViewTarget.Host) : null;
-        if (enabled)
+        _target = null;
+        if (!enabled)
         {
+            _subscription?.Dispose();
+            _subscription = null;
+            return;
+        }
+
+        try
+        {
+            // 先记录，再在订阅完成后补查，覆盖启动监听期间发生的变化。
+            var target = switchEnabled ? _captureTarget() : UuViewTarget.Host;
+            _subscription ??= _subscribe(RequestCheck, OnMonitoringFailed);
+            _target = target;
             AppLog.Info($"UU 视角锁定：记录目标为 {_target}。");
-            _timer.Start();
+            RequestCheck();
+        }
+        catch
+        {
+            _subscription?.Dispose();
+            _subscription = null;
+            _target = null;
+            throw;
         }
     }
 
@@ -78,9 +102,41 @@ internal sealed class UuViewLockService : IDisposable
             _target = target;
             AppLog.Info($"UU 视角锁定：记录目标更新为 {target}。");
         }
+
+        RequestCheck();
     }
 
-    private async void OnTick(object? sender, EventArgs e) => await CheckAsync();
+    /// <summary>合并一批通知；在途工作期间的通知留到收尾后再检查。</summary>
+    internal void RequestCheck()
+    {
+        if (_disposed || _target is null)
+        {
+            return;
+        }
+
+        _checkPending = true;
+        if (_switchCts is null && !_checkQueued)
+        {
+            _checkQueued = true;
+            _schedule(async () =>
+            {
+                _checkQueued = false;
+                if (_checkPending)
+                {
+                    await CheckAsync();
+                }
+            });
+        }
+    }
+
+    private void OnMonitoringFailed(Exception exception)
+    {
+        if (!_disposed && _target.HasValue)
+        {
+            SetEnabled(false, _switchMode);
+            MonitoringFailed?.Invoke(this, exception);
+        }
+    }
 
     internal async Task CheckAsync()
     {
@@ -89,6 +145,7 @@ internal sealed class UuViewLockService : IDisposable
             return;
         }
 
+        _checkPending = false;
         // CTS 归本轮所有。取消只发信号，不清引用、不释放，避免新旧两轮重叠。
         using var cts = new CancellationTokenSource();
         _switchCts = cts;
@@ -103,7 +160,7 @@ internal sealed class UuViewLockService : IDisposable
             var result = await _ensureTarget(target, cts.Token).ConfigureAwait(true);
             if (!result.Success && !cts.IsCancellationRequested)
             {
-                AppLog.Warn($"UU 视角锁定：自动切回未成功（{result.Message}），下一轮再试。");
+                AppLog.Warn($"UU 视角锁定：自动切回未成功（{result.Message}），等待后续变更通知。");
             }
             // 不从纠正结果更新基线，旧配置完成后也不会覆盖新配置。
         }
@@ -118,6 +175,10 @@ internal sealed class UuViewLockService : IDisposable
         finally
         {
             _switchCts = null;
+            if (_checkPending)
+            {
+                RequestCheck();
+            }
         }
     }
 
@@ -129,8 +190,8 @@ internal sealed class UuViewLockService : IDisposable
         }
 
         _disposed = true;
-        _timer.Stop();
-        _timer.Tick -= OnTick;
+        _checkPending = false;
         _switchCts?.Cancel();
+        _subscription?.Dispose();
     }
 }
