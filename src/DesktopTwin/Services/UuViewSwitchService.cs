@@ -2,13 +2,18 @@
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
-using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using DesktopTwin.Interop;
 using DesktopTwin.Localization;
 
 namespace DesktopTwin.Services;
+
+internal enum UuViewTarget
+{
+    Host,
+    Child
+}
 
 /// <summary>
 /// UU 远程的「视角切换」：在「UU 控制整台电脑」和「UU 控制桌面分身」之间来回切。
@@ -33,7 +38,6 @@ internal sealed class UuViewSwitchService : IDisposable
     private const string StreamerServiceName = "GameViewerService";
 
     private static readonly TimeSpan DisconnectWait = TimeSpan.FromSeconds(8);
-    private static readonly TimeSpan ReconnectWait = TimeSpan.FromSeconds(45);
     private static readonly TimeSpan StreamerSettleWait = TimeSpan.FromSeconds(30);
 
     private readonly ChildSessionService _childSessionService;
@@ -41,23 +45,10 @@ internal sealed class UuViewSwitchService : IDisposable
     private CancellationTokenSource? _streamRecoveryCancellation;
     private bool _killedStreamersInLastSwitch;
 
-    /// <summary>最近一次切换成功时串流端应该落在的会话号。供视角锁定更新记录值。</summary>
-    private uint? _lastSwitchTarget;
-
     /// <summary>正在跑的后台恢复任务，切换前要等它收手。</summary>
     private Task? _recoveryTask;
 
-    /// <summary>
-    /// 串行化所有「停服务 / 启服务」操作。
-    ///
-    /// 恢复循环和手动重启都会停再启同一个服务：两边叠在一起时，一边刚停、
-    /// 另一边已经 start，最后停在哪一步完全看时序。加闸门后它们排队执行，
-    /// 切换也不必再靠「等若干秒」来避开对方。
-    /// </summary>
-    private readonly SemaphoreSlim _serviceGate = new(1, 1);
-
-    /// <summary>单条 sc 命令的硬上限：它卡住时不能让切换或恢复永久挂起。</summary>
-    private static readonly TimeSpan ServiceCommandTimeout = TimeSpan.FromSeconds(30);
+    private readonly ServiceRecovery _serviceRecovery;
     private bool _disposed;
 
     /// <summary>
@@ -67,6 +58,10 @@ internal sealed class UuViewSwitchService : IDisposable
     public UuViewSwitchService(ChildSessionService childSessionService)
     {
         _childSessionService = childSessionService;
+        _serviceRecovery = new ServiceRecovery(
+            () => ServiceNativeMethods.TryQueryState(StreamerServiceName, out var state) ? state : null,
+            () => RequestService(start: false),
+            () => RequestService(start: true));
     }
 
     /// <summary>
@@ -79,64 +74,85 @@ internal sealed class UuViewSwitchService : IDisposable
     /// </summary>
     /// <param name="Success">是否切换成功。</param>
     /// <param name="Message">给用户看的一句话说明。</param>
-    public readonly record struct Result(bool Success, string Message);
+    /// <param name="Target">成功切换后的逻辑目标，避免调用方读取共享的上次结果。</param>
+    public readonly record struct Result(bool Success, string Message, UuViewTarget? Target = null);
 
     /// <summary>
     /// 在「整台电脑」与「桌面分身」之间切换一次。
     /// </summary>
     /// <param name="cancellationToken">取消标记。</param>
-    public async Task<Result> ToggleAsync(CancellationToken cancellationToken)
-    {
-        ThrowIfDisposed();
+    public Task<Result> ToggleAsync(CancellationToken cancellationToken) =>
+        ExecuteAsync(token => SwitchAsync(null, token), cancellationToken);
 
-        // 上一次切换还没结束就忽略本次：连点热键会让会话状态反复横跳。
-        if (!await _gate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+    internal Task<Result> EnsureTargetAsync(UuViewTarget target, CancellationToken cancellationToken) =>
+        ExecuteAsync(token => SwitchAsync(target, token), cancellationToken);
+
+    internal static UuViewTarget CaptureTarget()
+    {
+        var streamers = GetStreamerSessionIds();
+        var console = ChildSessionNativeMethods.TryGetConsoleSessionId();
+        return streamers.Count == 0 || streamers[0] == console ? UuViewTarget.Host : UuViewTarget.Child;
+    }
+
+    internal static bool NeedsCorrection(UuViewTarget target)
+    {
+        var session = target == UuViewTarget.Host
+            ? ChildSessionNativeMethods.TryGetConsoleSessionId()
+            : ChildSessionNativeMethods.TryGetChildSessionId();
+        var streamers = GetStreamerSessionIds();
+        return session is { } id && streamers.Count > 0 && !streamers.Contains(id);
+    }
+
+    private async Task<Result> SwitchAsync(UuViewTarget? requestedTarget, CancellationToken cancellationToken)
+    {
+        var automatic = requestedTarget.HasValue;
+        var console = ChildSessionNativeMethods.TryGetConsoleSessionId();
+        var streamers = GetStreamerSessionIds();
+        var child = ChildSessionNativeMethods.TryGetChildSessionId();
+        var target = requestedTarget ?? (
+            (console is { } host && streamers.Contains(host))
+            || (streamers.Count == 0 && child is { } id && ChildSessionNativeMethods.IsSessionActive(id))
+                ? UuViewTarget.Child : UuViewTarget.Host);
+
+        // 闸门内复查：等恢复收尾期间串流端可能已回到目标，或 UU 已断开。
+        if (automatic && !NeedsCorrection(target))
         {
-            return new Result(false, Locale.Get("Uu.Result.Busy"));
+            return new Result(true, string.Empty, target);
         }
 
+        AppLog.Info($"UU 视角切换：目标={target} 自动={automatic} 串流端=[{string.Join(',', streamers)}]");
+        var result = target == UuViewTarget.Host
+            ? await SwitchToMainAsync(cancellationToken, restoreChildConnection: !automatic).ConfigureAwait(false)
+            : await SwitchToChildAsync(cancellationToken, existingSessionOnly: automatic).ConfigureAwait(false);
+        return result with { Target = result.Success ? target : null };
+    }
+
+    /// <summary>切换、纠正及手动修复共用互斥、会话取消边界与服务恢复收尾。</summary>
+    private async Task<Result> ExecuteAsync(Func<CancellationToken, Task<Result>> action, CancellationToken cancellationToken)
+    {
+        ThrowIfDisposed();
+        using var operation = _childSessionService.BeginSessionOperation(cancellationToken);
+        cancellationToken = operation.Token;
+        var acquired = false;
         try
         {
-            // 新的切换开始：停掉上一轮的后台恢复，并等它收手——它可能正处在
-            // 不接取消的 stop→start 收尾里，不等就会被两边同时动 UU 服务。
-            //
-            // 但不清 _killedStreamersInLastSwitch：上一轮如果杀掉串流端后它一直没回来，
-            // 这份「待恢复」的义务要跨过本次切换保留下来，否则恢复就断在半路，
-            // 而两条切换路径都会因为「没有串流端」报成功。
-            if (!await StopStreamerRecoveryAsync().ConfigureAwait(false))
+            await _childSessionService.WaitForSessionEndAsync(cancellationToken).ConfigureAwait(false);
+            acquired = await _gate.WaitAsync(0, cancellationToken).ConfigureAwait(false);
+            if (!acquired) return new Result(false, Locale.Get("Uu.Result.Busy"));
+
+            await StopStreamerRecoveryAsync().ConfigureAwait(false);
+            if (!await _serviceRecovery.WaitForIdleAsync(TimeSpan.FromSeconds(5), cancellationToken)
+                    .ConfigureAwait(false))
             {
-                // 恢复循环还在它的停/启收尾里，这时去动会话，结果取决于两边谁后执行：
-                // 切换可能报「没有串流端」成功，而它随后又把串流端拉起来。
-                // 让用户稍后再切，比给一个不确定的成功更诚实。
-                return new Result(false, Locale.Get("Uu.Result.RecoveryBusy"));
+                return new Result(false, Locale.Get("Uu.Result.ServiceRecoveryPending"));
             }
 
-            var consoleSession = ChildSessionNativeMethods.TryGetConsoleSessionId();
-            var streamerSessions = GetStreamerSessionIds();
-            var childSession = ChildSessionNativeMethods.TryGetChildSessionId();
-
-            AppLog.Info(
-                $"UU 视角切换：串流端会话=[{string.Join(',', streamerSessions)}] "
-                + $"Console={consoleSession?.ToString() ?? "-"} "
-                + $"分身={childSession?.ToString() ?? "-"}");
-
-            if (consoleSession is { } console && streamerSessions.Contains(console))
-            {
-                return await SwitchToChildAsync(cancellationToken).ConfigureAwait(false);
-            }
-
-            if (streamerSessions.Count > 0)
-            {
-                return await SwitchToMainAsync(cancellationToken).ConfigureAwait(false);
-            }
-
-            if (childSession is { } active
-                && ChildSessionNativeMethods.IsSessionActive(active))
-            {
-                return await SwitchToChildAsync(cancellationToken).ConfigureAwait(false);
-            }
-
-            return await SwitchToMainAsync(cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            return await action(cancellationToken).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            return new Result(false, Locale.Get("Uu.Result.ServiceRecoveryPending"));
         }
         catch (OperationCanceledException)
         {
@@ -151,116 +167,19 @@ internal sealed class UuViewSwitchService : IDisposable
         }
         finally
         {
-            try
+            if (acquired)
             {
-                _gate.Release();
+                // 恢复的排入和切换使用同一把闸门，不再用脱离闸门的延迟续体补排。
+                try { ScheduleStreamerRecovery(); }
+                finally { _gate.Release(); }
             }
-            catch (ObjectDisposedException)
-            {
-                // 切换进行中窗口被关掉，服务已释放；此时放行信号量已无意义。
-            }
-
-            // 这一次切换里如果真的结束过串流端，而它迟迟没回来，就交给后台持续重试：
-            // UU 服务在短时间内被连续结束时会进入重启退避，之后不再拉起串流端，
-            // 手机上看到的就是「设备离线」，等多久也不会自愈。
-            ScheduleStreamerRecovery();
-        }
-    }
-
-    /// <summary>
-    /// 最近一次切换成功时的目标会话。调用方在 ToggleAsync 返回后读取，
-    /// 拿它更新「视角锁定」的记录值——这时串流端可能还在 settle，不能靠再读一次。
-    /// </summary>
-    internal uint? LastSwitchTarget => _lastSwitchTarget;
-
-    /// <summary>
-    /// 把串流端放到指定会话上。与 ToggleAsync 的区别是它认目标，不认"对面"——
-    /// 视角锁定用它纠正落错位置的串流端。
-    /// </summary>
-    internal async Task<Result> EnsureSessionAsync(uint targetSession, CancellationToken cancellationToken)
-    {
-        ThrowIfDisposed();
-
-        // 发起前记下代际：纠正可能要跑几十秒，期间用户注销会话（关闭分身）时
-        // 代际会递增，下面的启动会被拒绝，不会把他刚关掉的分身又拉起来。
-        var startGeneration = _childSessionService.StartGeneration;
-
-        if (!await _gate.WaitAsync(0, cancellationToken).ConfigureAwait(false))
-        {
-            return new Result(false, Locale.Get("Uu.Result.Busy"));
-        }
-
-        try
-        {
-            // 手动「修复 UU 串流」正在重启服务时不要插一脚：它走的是另一把闸，
-            // 两边同时动 UU 服务，结果取决于谁后执行。
-            if (_serviceGate.CurrentCount == 0)
-            {
-                return new Result(false, Locale.Get("Uu.Result.Busy"));
-            }
-
-            if (!await StopStreamerRecoveryAsync().ConfigureAwait(false))
-            {
-                return new Result(false, Locale.Get("Uu.Result.RecoveryBusy"));
-            }
-
-            // 等恢复循环收手期间用户可能已经关掉锁定：这里再确认一次再动会话。
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var console = ChildSessionNativeMethods.TryGetConsoleSessionId();
-            if (targetSession == console)
-            {
-                return await SwitchToMainAsync(cancellationToken, restoreChildConnection: false)
-                    .ConfigureAwait(false);
-            }
-
-            // 目标不是主机：必须是当前真实存在的分身会话。
-            // 分身注销后重建时会话号会变，拿旧号去切会对着另一个会话操作、还报成功，
-            // 而调用方记的仍是旧号，下一轮又重复一次——形成反复掐串流端的循环。
-            var childId = ChildSessionNativeMethods.TryGetChildSessionId();
-            if (childId is null)
-            {
-                return new Result(false, Locale.Get("Uu.Result.NoSession"));
-            }
-
-            if (childId != targetSession)
-            {
-                AppLog.Info(
-                    $"UU 视角锁定：记录的分身会话 {targetSession} 已失效，当前是 {childId}，改切当前会话。");
-            }
-
-            return await SwitchToChildAsync(cancellationToken, startGeneration).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            return new Result(false, Locale.Get("Uu.Result.Cancelled"));
-        }
-        catch (Exception exception) when (exception is InvalidOperationException
-                                              or Win32Exception
-                                              or ObjectDisposedException)
-        {
-            AppLog.Warn("UU 视角锁定：把串流端放回指定会话失败。", exception);
-            return new Result(false, Locale.Format("Uu.Result.Failed", exception.GetBaseException().Message));
-        }
-        finally
-        {
-            try
-            {
-                _gate.Release();
-            }
-            catch (ObjectDisposedException)
-            {
-                // 同上：切换中窗口被关掉，服务已释放。
-            }
-
-            ScheduleStreamerRecovery();
         }
     }
 
     /// <summary>
     /// 串流端是否正在被自动恢复（供界面显示状态）。
     /// </summary>
-    public bool IsStreamerRecoveryRunning => _streamRecoveryCancellation is not null;
+    public bool IsStreamerRecoveryRunning => _recoveryTask is { IsCompleted: false } || _serviceRecovery.IsBusy;
 
     /// <summary>
     /// 启动（或重启）串流端的后台恢复循环。
@@ -270,98 +189,32 @@ internal sealed class UuViewSwitchService : IDisposable
     /// </summary>
     private void ScheduleStreamerRecovery()
     {
-        if (_disposed)
-        {
-            return;
-        }
-
+        if (_disposed) return;
         StopStreamerRecovery();
-
-        if (_recoveryTask is { IsCompleted: false })
-        {
-            // 上一轮的收尾还没结束：它仍然在动 UU 服务，这里再起一个只会互相打架。
-            // 但也不能就此丢掉这次请求——等它结束后补排一次，否则串流端一直不回来，
-            // 设备就停在那儿离线，直到用户再切一次。
-            AppLog.Warn("上一轮 UU 恢复仍未结束，等它结束后再排一次。");
-
-            _ = _recoveryTask.ContinueWith(
-                _ => ScheduleStreamerRecovery(),
-                CancellationToken.None,
-                TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
-
-            return;
-        }
-
         if (GetStreamerSessionIds().Count > 0)
         {
-            // 串流端已经在：上一轮的恢复已经成功，义务解除。
             _killedStreamersInLastSwitch = false;
             return;
         }
-
-        if (!_killedStreamersInLastSwitch)
-        {
-            return;
-        }
+        if (!_killedStreamersInLastSwitch) return;
 
         var cancellation = new CancellationTokenSource();
-
-        // 先把 token 取出来，再把这个 source 发布出去：一旦发布，别的线程可能立刻
-        // StopStreamerRecovery 取消并释放它，那时再读 .Token 会抛 ObjectDisposedException。
         var token = cancellation.Token;
         _streamRecoveryCancellation = cancellation;
+        if (_disposed)
+        {
+            StopStreamerRecovery();
+            return;
+        }
         _recoveryTask = Task.Run(() => RecoverStreamerAsync(token));
     }
 
-    /// <summary>
-    /// 停掉恢复循环并等它真正收手。
-    ///
-    /// 恢复循环里有一段 stop→start 的收尾是不接取消的（停了就必须启回来），
-    /// 新一轮切换如果不等它，两边会同时动 UU 服务：切换可能看到「没有串流端」
-    /// 而报成功，旧恢复循环随后又把服务启起来。
-    /// </summary>
-    /// <returns>true 表示恢复循环已经收手；false 表示它还在动 UU 服务。</returns>
-    public async Task<bool> StopStreamerRecoveryAsync()
+    // 调用方持有 _gate。取消等待后，已接受的 SCM 命令仍由 ServiceRecovery 跟踪。
+    private async Task StopStreamerRecoveryAsync()
     {
         StopStreamerRecovery();
-
-        var task = _recoveryTask;
-        if (task is null)
-        {
-            return true;
-        }
-
-        try
-        {
-            // 上限不必覆盖恢复里的完整重启（那可能有几十秒）：闸门已经保证切换的
-            // 重启会排在它后面，等不到也不会并发。
-            await task.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-        }
-        catch (TimeoutException)
-        {
-            // 收尾还没完（最坏是 stop 后等 15 秒超时）：不再拖住切换，
-            // 但它已经收到取消，收尾结束后会自行退出。
-            //
-            // 关键是不清 _recoveryTask：任务还活着，ScheduleStreamerRecovery 据此
-            // 不再起新的恢复循环，避免两个循环同时动 UU 服务。
-            AppLog.Warn("等待 UU 恢复循环退出超时，本次不再启动新的恢复。");
-            return false;
-        }
-        catch (OperationCanceledException)
-        {
-        }
-
-        if (!ReferenceEquals(_recoveryTask, task))
-        {
-            // 等待期间旧任务结束了、它的收尾又排上了一个替代任务：这时候清空引用
-            // 会让后来的切换等不到它，而它照样会去动 UU 服务。保留引用，本次按未收手处理。
-            AppLog.Warn("UU 恢复循环已换成新的一轮，本次切换放弃。");
-            return false;
-        }
-
+        if (_recoveryTask is not null) await _recoveryTask.ConfigureAwait(false);
         _recoveryTask = null;
-        return true;
     }
 
     /// <summary>
@@ -369,21 +222,9 @@ internal sealed class UuViewSwitchService : IDisposable
     /// </summary>
     public void StopStreamerRecovery()
     {
-        var cancellation = _streamRecoveryCancellation;
-        _streamRecoveryCancellation = null;
-        if (cancellation is null)
-        {
-            return;
-        }
-
-        try
-        {
-            cancellation.Cancel();
-        }
-        catch (ObjectDisposedException)
-        {
-        }
-
+        var cancellation = Interlocked.Exchange(ref _streamRecoveryCancellation, null);
+        if (cancellation is null) return;
+        cancellation.Cancel();
         cancellation.Dispose();
     }
 
@@ -398,59 +239,39 @@ internal sealed class UuViewSwitchService : IDisposable
     {
         var attempt = 0;
         var delay = TimeSpan.FromSeconds(15);
-
         try
         {
-            while (!cancellationToken.IsCancellationRequested)
+            while (true)
             {
                 await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
                 delay = TimeSpan.FromSeconds(Math.Min(60, delay.TotalSeconds + 10));
                 attempt++;
 
-                if (GetStreamerSessionIds().Count > 0)
+                Task<ServiceRecovery.Outcome> recovery;
+                await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
                 {
-                    AppLog.Info($"UU 串流端已恢复（自动恢复第 {attempt} 次检查时发现）。");
-                    FinishRecovery(attempt);
-                    return;
-                }
-
-                AppLog.Warn($"UU 串流端仍未拉起，第 {attempt} 次尝试恢复 UU 服务。");
-
-                if (attempt % 4 == 0)
-                {
-                    // 服务本身在跑但不再拉起串流端，说明它退避了：完整重启一次。
-                    // 与手动重启共用同一个带闸门的实现，两边不会互相踩；
-                    // 闸门内会再复查一次串流端，已经回来就跳过，不打断在用的串流。
-                    var outcome = await RestartServiceCoreAsync(
-                            cancellationToken,
-                            skipWhenStreamerPresent: true)
-                        .ConfigureAwait(false);
-
-                    if (outcome == RestartOutcome.StreamerPresent)
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (GetStreamerSessionIds().Count > 0)
                     {
                         FinishRecovery(attempt);
                         return;
                     }
+
+                    AppLog.Warn($"UU 串流端仍未拉起，第 {attempt} 次尝试恢复 UU 服务。");
+                    recovery = _serviceRecovery.EnsureRunningAsync(attempt % 4 == 0, cancellationToken);
                 }
-                else
+                finally
                 {
-                    // 这条 start 也要过闸门：否则它会插进手动重启的 stop 与 start 之间，
-                    // 让那次「等它停下」永远等不到，用户看到的是「无法修复串流」。
-                    await _serviceGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-                    try
-                    {
-                        await RunServiceCommandAsync("start", cancellationToken).ConfigureAwait(false);
-                    }
-                    finally
-                    {
-                        _serviceGate.Release();
-                    }
+                    _gate.Release();
                 }
+
+                // 只取消本轮等待；在途的 stop/start 仍保留在 ServiceRecovery 中。
+                await recovery.ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException)
         {
-            // 切换开始或程序退出：正常结束。
         }
         catch (Exception exception) when (exception is InvalidOperationException
                                               or Win32Exception
@@ -470,7 +291,6 @@ internal sealed class UuViewSwitchService : IDisposable
     {
         AppLog.Info($"UU 串流端已恢复，停止自动恢复（共检查 {attempt} 次）。");
         _killedStreamersInLastSwitch = false;
-        _streamRecoveryCancellation = null;
         RaiseStreamerRecovered();
     }
 
@@ -497,7 +317,7 @@ internal sealed class UuViewSwitchService : IDisposable
 
         _disposed = true;
         StopStreamerRecovery();
-        _gate.Dispose();
+        // 在途操作仍会释放闸门；无需创建 WaitHandle 的信号量交由 GC 回收。
     }
 
     /// <summary>
@@ -508,225 +328,31 @@ internal sealed class UuViewSwitchService : IDisposable
     /// 串流端——手机上看到的就是「设备离线」。重启服务可以清掉这个状态。
     /// </summary>
     /// <param name="cancellationToken">取消标记。</param>
-    public async Task<Result> RestartStreamerServiceAsync(CancellationToken cancellationToken)
+    public Task<Result> RestartStreamerServiceAsync(CancellationToken cancellationToken) =>
+        ExecuteAsync(async token =>
+        {
+            var outcome = await _serviceRecovery.EnsureRunningAsync(restart: true, token)
+                .WaitAsync(TimeSpan.FromSeconds(30), token).ConfigureAwait(false);
+            if (outcome != ServiceRecovery.Outcome.Succeeded)
+            {
+                return new Result(false, Locale.Get(outcome == ServiceRecovery.Outcome.StopFailed
+                    ? "Uu.Result.ServiceStopFailed" : "Uu.Result.ServiceStartFailed"));
+            }
+
+            var settled = await WaitUntilAsync(() => GetStreamerSessionIds().Count > 0,
+                TimeSpan.FromSeconds(15), token).ConfigureAwait(false);
+            return new Result(true, Locale.Get(settled
+                ? "Uu.Result.ServiceRestarted" : "Uu.Result.ServiceRestarted.NoStreamer"));
+        }, cancellationToken);
+
+    private static bool RequestService(bool start)
     {
-        ThrowIfDisposed();
-
-        try
-        {
-            AppLog.Info("正在重启 UU 服务 GameViewerService…");
-
-            var outcome = await RestartServiceCoreAsync(cancellationToken).ConfigureAwait(false);
-            if (outcome != RestartOutcome.Succeeded)
-            {
-                return new Result(false, Locale.Get(
-                    outcome == RestartOutcome.StopFailed
-                        ? "Uu.Result.ServiceStopFailed"
-                        : "Uu.Result.ServiceStartFailed"));
-            }
-
-            // 服务起来后，串流端要等客户端连入才会拉起；这里只确认服务状态。
-            var settled = await WaitUntilAsync(
-                () => GetStreamerSessionIds().Count > 0,
-                TimeSpan.FromSeconds(15),
-                cancellationToken).ConfigureAwait(false);
-
-            return new Result(
-                true,
-                settled
-                    ? Locale.Get("Uu.Result.ServiceRestarted")
-                    : Locale.Get("Uu.Result.ServiceRestarted.NoStreamer"));
-        }
-        catch (OperationCanceledException)
-        {
-            return new Result(false, Locale.Get("Uu.Result.Cancelled"));
-        }
-        catch (Exception exception) when (exception is InvalidOperationException
-                                              or Win32Exception
-                                              or ObjectDisposedException)
-        {
-            AppLog.Warn("重启 UU 服务失败。", exception);
-            return new Result(false, Locale.Format("Uu.Result.Failed", exception.GetBaseException().Message));
-        }
-    }
-
-    private static async Task<bool> RunServiceCommandAsync(
-        string command,
-        CancellationToken cancellationToken)
-    {
-        try
-        {
-            var startInfo = new ProcessStartInfo(
-                Path.Combine(Environment.SystemDirectory, "sc.exe"),
-                $"\"{command}\" \"{StreamerServiceName}\"")
-            {
-                CreateNoWindow = true,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            };
-
-            using var process = Process.Start(startInfo);
-            if (process is null)
-            {
-                return false;
-            }
-
-            using var commandTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            commandTimeout.CancelAfter(ServiceCommandTimeout);
-
-            try
-            {
-                await process.WaitForExitAsync(commandTimeout.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-            {
-                // sc.exe 自己卡住（服务控制管理器不响应）：杀掉它按失败处理，
-                // 否则调用方会在这里无限等下去，恢复循环也永远退不出去。
-                KillQuietly(process);
-                AppLog.Warn($"sc {command} {StreamerServiceName} 超过 {ServiceCommandTimeout.TotalSeconds} 秒未返回。");
-                return false;
-            }
-            catch (OperationCanceledException)
-            {
-                // 调用方取消：同样要把这个进程收掉。否则它会继续占着服务控制，
-                // 和后续的重启操作撞在一起。
-                KillQuietly(process);
-                throw;
-            }
-
-            // sc.exe 的退出码不可全信：「服务已在运行」「服务已停止」都落在失败位。
-            // 所以不看退出码，等状态收敛到目标值——否则 start 被拒也会报成功，
-            // 上层「重启 UU 服务」就变成了一句空话。
-            AppLog.Info($"sc {command} {StreamerServiceName} 退出码 {process.ExitCode}。");
-
-            var expectRunning = !string.Equals(command, "stop", StringComparison.OrdinalIgnoreCase);
-            return await WaitForServiceStateAsync(expectRunning, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception exception) when (exception is Win32Exception
-                                              or InvalidOperationException
-                                              or IOException)
-        {
-            AppLog.Warn($"执行 sc {command} 失败。", exception);
-            return false;
-        }
-    }
-
-    /// <summary>
-    /// 停掉再启动 UU 服务，保证「停了一定会启」。
-    ///
-    /// 全程持有闸门：恢复循环与手动重启不会同时动同一个服务。
-    /// 每一步都有界，任何一步失败都不会留下一个停着的服务。
-    /// </summary>
-    /// <summary>
-    /// 重启 UU 服务的结果。分开报告停和启：只停失败时还停在运行状态，
-    /// 只说「停止失败、启动失败」两句都不对，用户也没法判断现在服务是死是活。
-    /// </summary>
-    private enum RestartOutcome
-    {
-        Succeeded,
-        StopFailed,
-        StartFailed,
-
-        /// <summary>闸门内复查发现串流端已经回来了，什么都没做。</summary>
-        StreamerPresent
-    }
-
-    /// <param name="skipWhenStreamerPresent">
-    /// 自动恢复用 true：拿到闸门后先复查串流端，已经回来就不要再停服务。
-    /// 复查和「停」必须在同一把闸门里，否则中间插进来的手动修复或串流端自己恢复
-    /// 会被紧接着的 stop 打断——那正是自动恢复最容易误伤的地方。
-    /// </param>
-    private async Task<RestartOutcome> RestartServiceCoreAsync(
-        CancellationToken cancellationToken,
-        bool skipWhenStreamerPresent = false)
-    {
-        await _serviceGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            if (skipWhenStreamerPresent && GetStreamerSessionIds().Count > 0)
-            {
-                AppLog.Info("UU 串流端已在闸门内确认恢复，跳过本次重启。");
-                return RestartOutcome.StreamerPresent;
-            }
-
-            var stopped = await RunServiceCommandAsync("stop", CancellationToken.None).ConfigureAwait(false);
-            if (!stopped)
-            {
-                // stop 没在 15 秒内到 STOPPED：再等一轮。在 STOP_PENDING 上发 start
-                // 会被直接拒绝，那就成了「只试了一次、服务还停着」。
-                stopped = await WaitForServiceStateAsync(expectRunning: false, CancellationToken.None)
-                    .ConfigureAwait(false);
-            }
-
-            if (!stopped)
-            {
-                AppLog.Warn("UU 服务未能停下，跳过本次重启。");
-                return RestartOutcome.StopFailed;
-            }
-
-            var started = await RunServiceCommandAsync("start", CancellationToken.None).ConfigureAwait(false);
-            if (!started)
-            {
-                // 刚停下时启动偶尔会被拒：先等一轮状态。
-                started = await WaitForServiceStateAsync(expectRunning: true, CancellationToken.None)
-                    .ConfigureAwait(false);
-            }
-
-            if (!started)
-            {
-                // 还不行就再发一次启动请求。只轮询状态是「等」，不会让服务起来；
-                // 服务已经停着的时候，那 15 秒注定白等。
-                started = await RunServiceCommandAsync("start", CancellationToken.None).ConfigureAwait(false);
-            }
-
-            cancellationToken.ThrowIfCancellationRequested();
-            return started ? RestartOutcome.Succeeded : RestartOutcome.StartFailed;
-        }
-        finally
-        {
-            _serviceGate.Release();
-        }
-    }
-
-    /// <summary>
-    /// 结束子进程，失败也不抛。
-    /// </summary>
-    private static void KillQuietly(Process process)
-    {
-        try
-        {
-            process.Kill();
-        }
-        catch (Exception)
-        {
-        }
-    }
-
-    /// <summary>
-    /// 等 UU 服务到达目标状态。
-    /// </summary>
-    private static async Task<bool> WaitForServiceStateAsync(
-        bool expectRunning,
-        CancellationToken cancellationToken)
-    {
-        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(15);
-
-        while (DateTime.UtcNow < deadline)
-        {
-            if (ServiceNativeMethods.TryQueryState(StreamerServiceName, out var state))
-            {
-                // 1 = stopped，4 = running。
-                if (expectRunning ? state == 4 : state == 1)
-                {
-                    return true;
-                }
-            }
-
-            await Task.Delay(200, cancellationToken).ConfigureAwait(false);
-        }
-
-        return false;
+        string error;
+        var accepted = start
+            ? ServiceNativeMethods.TryStart(StreamerServiceName, out error, waitForState: false)
+            : ServiceNativeMethods.TryStop(StreamerServiceName, out error, waitForState: false);
+        if (!accepted) AppLog.Warn(error);
+        return accepted;
     }
 
     /// <summary>
@@ -736,11 +362,12 @@ internal sealed class UuViewSwitchService : IDisposable
         CancellationToken cancellationToken,
         bool restoreChildConnection = true)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var childSession = ChildSessionNativeMethods.TryGetChildSessionId();
 
         // 先让 RDP 客户端自己断开：这条路径是「有意的断开」，
         // 不会触发「RDP 连接意外断开」的失败提示。
-        _ = _childSessionService.DisconnectDesktopForSwitch();
+        _ = _childSessionService.DisconnectDesktopForSwitch(cancellationToken);
 
         if (childSession is { } sessionId)
         {
@@ -765,6 +392,8 @@ internal sealed class UuViewSwitchService : IDisposable
             }
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
+        cancellationToken.ThrowIfCancellationRequested();
         var killed = KillStreamers(out var killFailed);
 
         // 只有真的杀掉了才置位。写成 killed > 0 会把上一轮的义务覆盖成 false：
@@ -791,7 +420,6 @@ internal sealed class UuViewSwitchService : IDisposable
             // 视角锁定触发的纠正不重连：那可能是用户刚注销的分身，连回来会自作主张。
             if (!restoreChildConnection)
             {
-                _lastSwitchTarget = ChildSessionNativeMethods.TryGetConsoleSessionId();
                 return new Result(false, Locale.Get("Uu.Result.StreamerKillFailed.NotRestored"));
             }
 
@@ -810,8 +438,6 @@ internal sealed class UuViewSwitchService : IDisposable
         if (killed == 0)
         {
             // 手机没连着的时候本来就没有串流端，分身已经断开，目的已经达到。
-            // 目标照样要记：调用方拿它更新视角锁定的记录值。
-            _lastSwitchTarget = ChildSessionNativeMethods.TryGetConsoleSessionId();
             return new Result(true, Locale.Get("Uu.Result.ToMain.NoStreamer"));
         }
 
@@ -835,7 +461,6 @@ internal sealed class UuViewSwitchService : IDisposable
         // 又连回来会让人以为程序在自作主张。
         if (!restoreChildConnection)
         {
-            _lastSwitchTarget = ChildSessionNativeMethods.TryGetConsoleSessionId();
             return new Result(true, Locale.Get("Uu.Result.ToMain"));
         }
 
@@ -843,7 +468,6 @@ internal sealed class UuViewSwitchService : IDisposable
             .ConnectDesktopInBackgroundAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        _lastSwitchTarget = console;
         return new Result(
             true,
             restored
@@ -860,67 +484,54 @@ internal sealed class UuViewSwitchService : IDisposable
     /// </summary>
     private async Task<Result> SwitchToChildAsync(
         CancellationToken cancellationToken,
-        int? expectedGeneration = null)
+        bool existingSessionOnly)
     {
-        // 1) 先看分身到底在不在：可能被关掉、断开、甚至整个注销了。
         var existing = ChildSessionNativeMethods.TryGetChildSessionId();
-        var sessionAlive = existing is { } existingId
-            && ChildSessionNativeMethods.IsSessionActive(existingId);
-
-        if (!sessionAlive)
+        if (existingSessionOnly && existing is null)
         {
-            AppLog.Info(existing is null
-                ? "切回分身：会话不存在（被关闭或注销），走完整启动流程。"
-                : $"切回分身：会话 {existing} 不是 Active，重新连接。");
-            if (!await StartChildSessionAsync(expectedGeneration).ConfigureAwait(true))
+            return new Result(false, Locale.Get("Uu.Result.NoSession"));
+        }
+
+        // 手动切换保留完整启动与失败兜底；纠正不进入任何可能创建会话的路径。
+        if (!existingSessionOnly
+            && (existing is not { } id || !ChildSessionNativeMethods.IsSessionActive(id)))
+        {
+            if (!await _childSessionService.StartAsync(cancellationToken).ConfigureAwait(false))
             {
-                AppLog.Info("UU 视角锁定：启动期间会话代际已变（用户注销了分身），放弃本次纠正。");
-                return new Result(false, Locale.Get("Uu.Result.NoSession"));
+                return new Result(false, Locale.Get("Uu.Result.NotConnected"));
             }
         }
 
-        // 2) 确保 RDP 连上。
-        //    先清掉「正在断开」的排队状态：Disconnect() 之后要等 OnDisconnected 复位，
-        //    回调丢了就会一直卡住，重连只排队不执行——用户看到的就是画面一直黑着。
-        _childSessionService.ResetDisconnectState();
-
-        var connected = await _childSessionService
-            .EnsureDesktopConnectedAsync(cancellationToken)
+        cancellationToken.ThrowIfCancellationRequested();
+        var connected = await _childSessionService.EnsureDesktopConnectedAsync(
+            cancellationToken, existingSessionOnly: existingSessionOnly)
             .ConfigureAwait(false);
 
-        if (!connected)
+        if (!connected && !existingSessionOnly)
         {
-            // 重连没成功，最常见的原因是断开事件没回来：RdpActiveXHost 里
-            // Disconnect() 会置 _disconnectRequested，要等 OnDisconnected 回调复位
-            // 才会真正发起下一次连接。回调丢了就卡在「正在断开」的状态里。
-            // 这里改走一次完整启动流程兜底，而不是让用户自己去点「启动并连接」。
             AppLog.Warn("切回分身：直接重连未成功，改走完整启动流程。");
-            if (!await StartChildSessionAsync(expectedGeneration).ConfigureAwait(true))
+            if (!await _childSessionService.StartAsync(cancellationToken).ConfigureAwait(false))
             {
-                AppLog.Info("UU 视角锁定：启动期间会话代际已变（用户注销了分身），放弃本次纠正。");
-                return new Result(false, Locale.Get("Uu.Result.NoSession"));
+                return new Result(false, Locale.Get("Uu.Result.NotConnected"));
             }
-            connected = await _childSessionService
-                .EnsureDesktopConnectedAsync(cancellationToken)
+            connected = await _childSessionService.EnsureDesktopConnectedAsync(cancellationToken)
                 .ConfigureAwait(false);
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         if (!connected)
         {
             return new Result(false, Locale.Get("Uu.Result.NotConnected"));
         }
 
-        // 3) 会话号重新取一次：上面可能刚重建过，旧的号已经失效。
         var childSession = ChildSessionNativeMethods.TryGetChildSessionId();
         if (childSession is not { } sessionId)
         {
             return new Result(false, Locale.Get("Uu.Result.NoSession"));
         }
 
-        // 4) 弹掉串流端，让服务落到分身。这一步不能因为「已连接」而跳过：
-        //    连接只代表本机能看到画面，UU 那边还挂在 Console 上。
+        cancellationToken.ThrowIfCancellationRequested();
         var killed = KillStreamers(out var killFailed);
-
         if (killed > 0)
         {
             _killedStreamersInLastSwitch = true;
@@ -933,7 +544,6 @@ internal sealed class UuViewSwitchService : IDisposable
 
         if (killed == 0)
         {
-            _lastSwitchTarget = sessionId;
             return new Result(true, Locale.Get("Uu.Result.ToChild.NoStreamer"));
         }
 
@@ -941,35 +551,9 @@ internal sealed class UuViewSwitchService : IDisposable
             () => GetStreamerSessionIds().Contains(sessionId),
             StreamerSettleWait,
             cancellationToken).ConfigureAwait(false);
-
-        if (settled)
-        {
-            _lastSwitchTarget = sessionId;
-        }
-
         return settled
             ? new Result(true, Locale.Get("Uu.Result.ToChild"))
             : new Result(false, Locale.Get("Uu.Result.ToChild.StreamerStuck"));
-    }
-
-    /// <summary>
-    /// 启动分身会话。带代际时由会话服务校验：期间用户注销过就拒绝，
-    /// 避免视角纠正把刚关掉的分身又拉起来。
-    /// </summary>
-    private async Task<bool> StartChildSessionAsync(int? expectedGeneration)
-    {
-        if (expectedGeneration is not { } generation)
-        {
-            await _childSessionService.StartAsync().ConfigureAwait(true);
-            return true;
-        }
-
-        await _childSessionService.StartAsync(generation).ConfigureAwait(true);
-
-        // 启动返回不代表连上了：用户在这期间注销（关闭分身）时，代际已变、
-        // 启动被跳过。此时必须中止，否则后面的 EnsureDesktopConnectedAsync
-        // 会用无参 StartAsync 把刚注销的会话重新建出来。
-        return _childSessionService.StartGeneration == generation;
     }
 
     /// <summary>

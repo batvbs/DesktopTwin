@@ -145,11 +145,6 @@ internal sealed class AutoLoginService : IDisposable
     public string AccountKey => UserName.ToLowerInvariant();
 
     /// <summary>
-    /// 自动登录使用的域。本地账户就是机器名。
-    /// </summary>
-    public string Domain => Environment.UserDomainName;
-
-    /// <summary>
     /// 已经存过密码的账户列表（用于设置界面展示，不含任何密码信息）。
     /// </summary>
     public IReadOnlyList<string> StoredAccountNames
@@ -487,44 +482,18 @@ internal sealed class AutoLoginService : IDisposable
         {
             var configured = raw.Trim();
 
-            // 先拆「域\用户」再判 @：MicrosoftAccount\alice@example.com 是合法写法，
-            // 先看 @ 会把整串当成 UPN 配 null 域，LogonUser 必然失败。
-            var separator = configured.IndexOf('\\');
-            if (separator > 0 && separator < configured.Length - 1)
+            // 解析规则不依赖「是否与当前用户同名」；所有裸名称共用当前 Windows 域。
+            // UPN 的现有兼容处理只用于 UPN，显式的 域\用户 始终优先。
+            string? upnDomain = null;
+            if (configured.Contains('@') && !configured.Contains('\\'))
             {
-                return (configured[(separator + 1)..], configured[..separator]);
+                upnDomain = IsKnownMicrosoftAccount(configured) || (!IsDomainJoined() && !IsEntraJoined())
+                    ? "MicrosoftAccount"
+                    : null;
             }
 
-            // 只剩 UPN：它就是要用的账户，不必去注册表里猜。
-            if (configured.Contains('@'))
-            {
-                // 「带 @」不等于微软账户：AD 域 UPN（alice@example.org）按 Windows 的规定
-                // 必须传 null 域，硬套 MicrosoftAccount 会在校验密码时直接失败。
-                if (IsKnownMicrosoftAccount(configured))
-                {
-                    return (configured, "MicrosoftAccount");
-                }
-
-                // 当前用户的 hive 里没有它，也不代表就不是微软账户——别的 Windows 用户
-                // 的账户不会出现在这个进程的 CurrentUser 下。这里补一条环境判据：
-                // 既没加入 AD 域、也没加入 Entra 的机器上不存在「工作账户」，
-                // UPN 只可能是微软账户；两类加入都算「有组织账户」，
-                // 一律保持 null 域交给系统解析，否则工作账户会被套上 MicrosoftAccount 而失败。
-                // 要在这类机器上用微软账户，写 MicrosoftAccount\邮箱 即可（上面已处理）。
-                return IsDomainJoined() || IsEntraJoined()
-                    ? (configured, null)
-                    : (configured, "MicrosoftAccount");
-            }
-
-            // 显式写了裸账户名：
-            // 与当前登录用户同名时，用当前用户的域——域成员机器上裸写账户名通常就是它自己，
-            // 传机器名会让域账户校验失败。其余情况仍按本机账户解析。
-            if (string.Equals(configured, Environment.UserName, StringComparison.OrdinalIgnoreCase))
-            {
-                return (configured, Environment.UserDomainName);
-            }
-
-            return (configured, Environment.MachineName);
+            var identity = LogonIdentity.ParseConfigured(configured, Environment.UserDomainName, upnDomain);
+            return (identity.UserName, identity.Domain);
         }
 
         // 未配置时才跟随当前登录身份：微软账户需要换成邮箱，本地账户用当前域/机器名。

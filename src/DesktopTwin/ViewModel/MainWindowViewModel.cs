@@ -170,6 +170,7 @@ public partial class MainWindowViewModel : ObservableObject
 
         _uuViewSwitchService = new UuViewSwitchService(childSessionService);
         _uuViewLockService = new UuViewLockService(_uuViewSwitchService, Dispatcher.CurrentDispatcher);
+        _uuViewLockService.MonitoringFailed += OnUuViewLockMonitoringFailed;
         _uuViewSwitchEnabled = settings.Current.Automation.UuViewSwitchEnabled;
         _uuViewLockEnabled = settings.Current.Automation.UuViewLockEnabled;
         _autoLoginEnabled = settings.Current.Automation.AutoLoginEnabled;
@@ -474,63 +475,34 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private async Task StartAsync()
     {
-        // 记下代际要放在最前面：下面这个说明框不是模态的，用户完全可能在它开着的时候
-        // 从诊断面板关掉桌面分身，随后「同意」接着把会话又建回来。
-        var startGeneration = _childSessionService.StartGeneration;
-
-        if (!await EnsureSystemChangeDisclosedAsync())
-        {
-            return;
-        }
-
-        if (_childSessionService.ConnectedState != 1)
-        {
-            // 预检要读上千个计划任务 XML，放后台跑：这里在 UI 线程上，
-            // 同步调用会直接把界面卡住。
-            await Task.Run(() => _childSessionService.RefreshEnvironmentCheckAsync());
-
-            // 服务只是「没启动」时先替用户拉一次：状态栏已经写着「TermService：未启动」，
-            // 用户点「启动」即视为同意。被禁用或启动失败的情况不在这里处理，
-            // 照常走下面的拦截提示，由用户到诊断面板里修。
-            if (_childSessionService.HasBlockingEnvironmentIssue
-                && await Task.Run(() => _childSessionService.TryStartTermServiceIfStopped(out _)))
-            {
-                await Task.Run(() => _childSessionService.RefreshEnvironmentCheckAsync());
-                _childSessionService.RefreshState();
-            }
-
-            // 阻塞项（例如缺少 RDP 主机）直接拒绝，避免用户白等 60 秒超时。
-            // 不再弹一个只有「我知道了」的框——那是个死胡同；直接把诊断面板推到用户面前，
-            // 他下一步要做的事（修复）就在那里。
-            if (_childSessionService.HasBlockingEnvironmentIssue)
-            {
-                ShowDiagnostics(showAll: false, startupFailure: true);
-                return;
-            }
-
-            if (_childSessionService.HasEnvironmentIssue)
-            {
-                // 风险项只是提示，不应该挡住本来可以连上的用户。
-                var confirmed = await Dialogs.ConfirmAsync(
-                    _childSessionService.EnvironmentIssueSummary
-                    + Locale.Get("Startup.IssueConfirm.Suffix"),
-                    Locale.Get("Startup.IssueConfirm.Title"));
-                if (!confirmed)
-                {
-                    return;
-                }
-            }
-        }
-
+        using var operation = _childSessionService.BeginSessionOperation();
         _startRequested = true;
         IsConnectionPromptVisible = false;
-
         try
         {
-            await Dispatcher.Yield(DispatcherPriority.Background);
+            if (!await EnsureSystemChangeDisclosedAsync()) return;
+            operation.Token.ThrowIfCancellationRequested();
+            await _childSessionService.StartAsync(operation.Token, async (issues, token) =>
+            {
+                token.ThrowIfCancellationRequested();
+                if (ChildSessionEnvironmentCheck.HasBlockingIssue(issues))
+                {
+                    ShowDiagnostics(showAll: false, startupFailure: true);
+                    return false;
+                }
 
-            // 带上代际：等待期间被注销的启动由服务侧直接放弃。
-            await _childSessionService.StartAsync(startGeneration);
+                if (issues.Count == 0) return true;
+                var confirmed = await Dialogs.ConfirmAsync(
+                    ChildSessionEnvironmentCheck.BuildSummary(issues)
+                    + Locale.Get("Startup.IssueConfirm.Suffix"),
+                    Locale.Get("Startup.IssueConfirm.Title"));
+                token.ThrowIfCancellationRequested();
+                return confirmed;
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            // 注销或退出取消整次启动，不再显示成连接故障。
         }
         catch (Exception exception)
         {
@@ -640,6 +612,7 @@ public partial class MainWindowViewModel : ObservableObject
     {
         void Notify()
         {
+            _uuViewLockService.RequestCheck();
             ShowNotification(
                 Locale.Get("Uu.Recovered.Title"),
                 Locale.Get("Uu.Recovered.Message"),
@@ -748,8 +721,9 @@ public partial class MainWindowViewModel : ObservableObject
         _sessionAgent.SwitchRequested -= OnSessionAgentSwitchRequested;
         _sessionAgent.Dispose();
         _uuViewSwitchService.StreamerRecovered -= OnStreamerRecovered;
-        _uuViewSwitchService.Dispose();
+        _uuViewLockService.MonitoringFailed -= OnUuViewLockMonitoringFailed;
         _uuViewLockService.Dispose();
+        _uuViewSwitchService.Dispose();
     }
 
     /// <summary>
@@ -789,6 +763,7 @@ public partial class MainWindowViewModel : ObservableObject
         finally
         {
             _uuSwitchInProgress = false;
+            _uuViewLockService.RequestCheck();
         }
     }
 
@@ -798,7 +773,7 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private async Task TriggerUuViewSwitchAsync()
     {
-        if (_uuSwitchInProgress)
+        if (!UuViewSwitchEnabled || _uuSwitchInProgress)
         {
             return;
         }
@@ -825,7 +800,7 @@ public partial class MainWindowViewModel : ObservableObject
             if (result.Success)
             {
                 // 用户主动切换：新的落点就是「正确位置」，不更新的话下一轮锁定会把它纠正回去。
-                _uuViewLockService.RebaseTo(_uuViewSwitchService.LastSwitchTarget);
+                _uuViewLockService.RebaseTo(result.Target);
             }
 
             ShowNotification(
@@ -851,6 +826,7 @@ public partial class MainWindowViewModel : ObservableObject
         finally
         {
             _uuSwitchInProgress = false;
+            _uuViewLockService.RequestCheck();
         }
     }
 
@@ -869,8 +845,27 @@ public partial class MainWindowViewModel : ObservableObject
         ApplyUuViewLock();
     }
 
-    private void ApplyUuViewLock() =>
-        _uuViewLockService.SetEnabled(UuViewLockEnabled, UuViewSwitchEnabled);
+    private void ApplyUuViewLock()
+    {
+        try
+        {
+            _uuViewLockService.SetEnabled(UuViewLockEnabled, UuViewSwitchEnabled);
+        }
+        catch (Exception exception)
+        {
+            OnUuViewLockMonitoringFailed(this, exception);
+        }
+    }
+
+    private void OnUuViewLockMonitoringFailed(object? sender, Exception exception)
+    {
+        AppLog.Warn("UU 视角锁定事件监听失败。", exception);
+        UuViewLockEnabled = false;
+        _settings.Current.Automation.UuViewLockEnabled = false;
+        _settings.SaveSoon();
+        ShowNotification(Locale.Get("Notify.UuLockFailed.Title"),
+            Locale.Get("Notify.UuLockFailed.Message"), InfoBarSeverity.Warning);
+    }
 
     /// <summary>
     /// 启用 / 关闭 UU 视角切换热键。
@@ -892,6 +887,7 @@ public partial class MainWindowViewModel : ObservableObject
         }
 
         _globalHotkey?.Unregister();
+        _sessionAgent.Uninstall();
         ShowNotification(
                 Locale.Get("Notify.UuDisabled.Title"),
                 Locale.Get("Notify.UuDisabled.Message"),
