@@ -136,6 +136,7 @@ internal sealed class UuViewSwitchService : IDisposable
         var acquired = false;
         try
         {
+            await _childSessionService.WaitForSessionEndAsync(cancellationToken).ConfigureAwait(false);
             acquired = await _gate.WaitAsync(0, cancellationToken).ConfigureAwait(false);
             if (!acquired) return new Result(false, Locale.Get("Uu.Result.Busy"));
 

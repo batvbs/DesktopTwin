@@ -191,5 +191,90 @@ public sealed class SessionOperationsTests
         Assert.Equal(new[] { "logoff started", "logoff completed", "new connection" }, events);
     }
 
+    [Fact]
+    public async Task NewOperationsWaitForEveryOverlappingLogoff()
+    {
+        using var operations = new SessionOperations();
+        var firstEntered = Signal();
+        var releaseFirst = Signal();
+        var secondEntered = Signal();
+        var releaseSecond = Signal();
+        var first = operations.EndSessionAsync(async () =>
+        {
+            firstEntered.SetResult();
+            await releaseFirst.Task;
+        });
+        await firstEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        using var superseded = operations.Begin();
+        var supersededWait = operations.WaitForSessionEndAsync(superseded.Token);
+        var second = operations.EndSessionAsync(async () =>
+        {
+            secondEntered.SetResult();
+            await releaseSecond.Task;
+        });
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => supersededWait);
+        using var current = operations.Begin();
+        var admitted = operations.WaitForSessionEndAsync(current.Token);
+        Assert.False(admitted.IsCompleted);
+
+        releaseFirst.SetResult();
+        await first;
+        await secondEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(admitted.IsCompleted);
+        releaseSecond.SetResult();
+        await second;
+        await admitted.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(current.IsCancellationRequested);
+    }
+
+    [Fact]
+    public async Task FailedLogoffReopensAdmissionAndAllowsExplicitStartup()
+    {
+        using var operations = new SessionOperations();
+        var release = Signal();
+        var close = operations.EndSessionAsync(async () =>
+        {
+            await release.Task;
+            throw new InvalidOperationException("Termination failed");
+        });
+        using var request = operations.Begin();
+        var admitted = operations.WaitForSessionEndAsync(request.Token);
+        var start = operations.StartAsync(_ => Task.FromResult(true), request.Token);
+        Assert.False(admitted.IsCompleted);
+        Assert.False(start.IsCompleted);
+        release.SetResult();
+        await Assert.ThrowsAsync<InvalidOperationException>(() => close);
+        await admitted.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(await start.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
+    [Fact]
+    public async Task StartupRequestedByCancellationCallbackStillWaitsForLogoff()
+    {
+        using var operations = new SessionOperations();
+        using var old = operations.Begin();
+        var release = Signal();
+        var events = new List<string>();
+        Task<bool>? start = null;
+        using var registration = old.Token.Register(() =>
+            start = operations.StartAsync(_ =>
+            {
+                events.Add("new connection");
+                return Task.FromResult(true);
+            }, CancellationToken.None));
+        var close = operations.EndSessionAsync(async () =>
+        {
+            events.Add("logoff started");
+            await release.Task;
+            events.Add("logoff completed");
+        });
+        Assert.NotNull(start);
+        Assert.False(start.IsCompleted);
+        release.SetResult();
+        await close;
+        Assert.True(await start.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Equal(new[] { "logoff started", "logoff completed", "new connection" }, events);
+    }
+
     private static TaskCompletionSource Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 }

@@ -148,6 +148,81 @@ public sealed class ServiceRecoveryTests
         Assert.Equal(new[] { "start" }, service.Commands);
     }
 
+    [Fact]
+    public async Task RejectedStopWithUnknownStatusReleasesWaitersAndAllowsAnotherRecovery()
+    {
+        var service = new ControlledService();
+        var stops = 0;
+        var recovery = new ServiceRecovery(() => service.State,
+            () =>
+            {
+                service.Commands.Add("stop");
+                service.State = ++stops == 1 ? null : 3;
+                return stops > 1;
+            },
+            () => { service.Commands.Add("start"); service.State = 2; return true; }, service.Delay);
+        var first = recovery.EnsureRunningAsync(restart: true, CancellationToken.None);
+        await service.WaitForPoll();
+        var joining = recovery.EnsureRunningAsync(restart: true, CancellationToken.None);
+        service.Advance(4);
+        Assert.Equal(ServiceRecovery.Outcome.StopFailed, await first.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Equal(ServiceRecovery.Outcome.StopFailed, await joining);
+        Assert.False(recovery.IsBusy);
+        Assert.True(await recovery.WaitForIdleAsync(TimeSpan.Zero, CancellationToken.None));
+        Assert.Equal(new[] { "stop" }, service.Commands);
+
+        var retry = recovery.EnsureRunningAsync(restart: true, CancellationToken.None);
+        await service.WaitForPoll();
+        service.Advance(1);
+        await service.WaitForPoll();
+        service.Advance(4);
+        Assert.Equal(ServiceRecovery.Outcome.Succeeded, await retry.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Equal(new[] { "stop", "stop", "start" }, service.Commands);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(3)]
+    public async Task RejectedStopWithUnknownStatusStillRestoresAStoppedService(int observedState)
+    {
+        var service = new ControlledService();
+        var recovery = new ServiceRecovery(() => service.State,
+            () => { service.Commands.Add("stop"); service.State = null; return false; },
+            () => { service.Commands.Add("start"); service.State = 2; return true; }, service.Delay);
+        var waiting = recovery.EnsureRunningAsync(restart: true, CancellationToken.None);
+        await service.WaitForPoll();
+        service.Advance(observedState);
+        if (observedState == 3)
+        {
+            await service.WaitForPoll();
+            Assert.True(recovery.IsBusy);
+            service.Advance(1);
+        }
+
+        await service.WaitForPoll();
+        service.Advance(4);
+        Assert.Equal(ServiceRecovery.Outcome.Succeeded, await waiting.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Equal(new[] { "stop", "start" }, service.Commands);
+    }
+
+    [Fact]
+    public async Task CancelledWaiterDoesNotLeaveRejectedStopBusyWhenStatusReturnsToRunning()
+    {
+        var service = new ControlledService();
+        var recovery = new ServiceRecovery(() => service.State,
+            () => { service.State = null; return false; },
+            () => throw new InvalidOperationException("No stop was accepted"), service.Delay);
+        using var cancellation = new CancellationTokenSource();
+        var waiting = recovery.EnsureRunningAsync(restart: true, cancellation.Token);
+        await service.WaitForPoll();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
+        Assert.True(recovery.IsBusy);
+        service.Advance(4);
+        Assert.True(await recovery.WaitForIdleAsync(TimeSpan.FromSeconds(5), CancellationToken.None));
+        Assert.False(recovery.IsBusy);
+    }
+
     private sealed class ControlledService
     {
         internal int? State = 4;

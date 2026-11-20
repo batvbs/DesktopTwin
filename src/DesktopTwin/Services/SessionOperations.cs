@@ -14,6 +14,8 @@ internal sealed class SessionOperations : IDisposable
     private readonly SemaphoreSlim _transition = new(1, 1);
     private CancellationTokenSource _lifetime = new();
     private Task<bool>? _startup;
+    private TaskCompletionSource? _sessionEnd;
+    private int _endingSessions;
     private bool _disposed;
 
     internal CancellationTokenSource Begin(CancellationToken cancellationToken = default)
@@ -22,6 +24,16 @@ internal sealed class SessionOperations : IDisposable
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             return CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token, cancellationToken);
+        }
+    }
+
+    /// <summary>注销期间的新操作等待终止完成；等待也受本次操作的取消边界约束。</summary>
+    internal Task WaitForSessionEndAsync(CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            return (_sessionEnd?.Task ?? Task.CompletedTask).WaitAsync(cancellationToken);
         }
     }
 
@@ -58,6 +70,7 @@ internal sealed class SessionOperations : IDisposable
             try
             {
                 operation.Token.ThrowIfCancellationRequested();
+                await WaitForSessionEndAsync(operation.Token);
                 await _transition.WaitAsync(operation.Token);
                 try
                 {
@@ -99,15 +112,43 @@ internal sealed class SessionOperations : IDisposable
     /// <summary>先取消旧启动，再完成注销；新启动等待注销完成，不能和 WTS 终止会话交叉。</summary>
     internal async Task EndSessionAsync(Func<Task> endSession)
     {
-        CancelPending();
-        await _transition.WaitAsync();
+        CancellationTokenSource previous;
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            // 关闭准入和更新取消边界必须一起发布，不能让新的通知趁注销未完成时重连。
+            _sessionEnd ??= new(TaskCreationOptions.RunContinuationsAsynchronously);
+            _endingSessions++;
+            previous = _lifetime;
+            _lifetime = new();
+            _startup = null;
+        }
+
         try
         {
-            await endSession();
+            try { previous.Cancel(); }
+            finally { previous.Dispose(); }
+            await _transition.WaitAsync();
+            try
+            {
+                await endSession();
+            }
+            finally
+            {
+                _transition.Release();
+            }
         }
         finally
         {
-            _transition.Release();
+            lock (_gate)
+            {
+                // 重叠注销全部收尾后才重新开放，失败也不能留下永久关闭的准入。
+                if (--_endingSessions == 0)
+                {
+                    _sessionEnd!.TrySetResult();
+                    _sessionEnd = null;
+                }
+            }
         }
     }
 

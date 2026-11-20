@@ -76,11 +76,13 @@ internal sealed class ServiceRecovery(
         {
             var accepted = requestStop();
             state = queryState();
-            if (!accepted && state is not (null or Stopped or StopPending)) return Outcome.StopFailed;
             // 接受 stop 后，短暂读到 RUNNING 也不代表停止请求被撤销。
             // 保留责任直到确实停止，不能以一次非 pending 状态结束收尾。
             while (state != Stopped)
             {
+                // stop 被拒绝后，查询失败只代表暂时未知；恢复查询后仍在运行就应退出。
+                // 每次查询都重新判断，不能因为第一次读到 null 就永久等一个未接受的 stop。
+                if (!accepted && state is not (null or StopPending)) return Outcome.StopFailed;
                 await _delay(TimeSpan.FromMilliseconds(200)).ConfigureAwait(false);
                 state = queryState();
             }

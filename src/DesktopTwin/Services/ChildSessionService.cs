@@ -322,6 +322,9 @@ public sealed class ChildSessionService : IDisposable
     internal CancellationTokenSource BeginSessionOperation(CancellationToken cancellationToken = default) =>
         _operations.Begin(cancellationToken);
 
+    internal Task WaitForSessionEndAsync(CancellationToken cancellationToken) =>
+        _operations.WaitForSessionEndAsync(cancellationToken);
+
     internal async Task<bool> StartAsync(
         CancellationToken cancellationToken,
         Func<IReadOnlyList<ChildSessionEnvironmentCheck.Issue>, CancellationToken, Task<bool>>? approve)
@@ -536,6 +539,7 @@ public sealed class ChildSessionService : IDisposable
         ThrowIfDisposed();
         using var operation = BeginSessionOperation(cancellationToken);
         cancellationToken = operation.Token;
+        await WaitForSessionEndAsync(cancellationToken).ConfigureAwait(true);
         cancellationToken.ThrowIfCancellationRequested();
 
         // 同上：这里的每一步都是窗口/RDP 控件操作。
@@ -620,6 +624,7 @@ public sealed class ChildSessionService : IDisposable
         ThrowIfDisposed();
         using var operation = BeginSessionOperation(cancellationToken);
         cancellationToken = operation.Token;
+        await WaitForSessionEndAsync(cancellationToken).ConfigureAwait(true);
         cancellationToken.ThrowIfCancellationRequested();
 
         // 调用方多半在线程池上（切换流程里到处是 ConfigureAwait(false)），
@@ -1569,6 +1574,7 @@ public sealed class ChildSessionService : IDisposable
 
         try
         {
+            await WaitForSessionEndAsync(operation.Token);
             await Task.Delay(retryDelay, operation.Token);
             if (_disposed
                 || generation != _settingsReconnectGeneration
@@ -1634,6 +1640,7 @@ public sealed class ChildSessionService : IDisposable
 
         try
         {
+            await WaitForSessionEndAsync(operation.Token);
             await Task.Delay(retryDelay, operation.Token);
             if (_disposed
                 || _connectionAttemptCompletionSource is null
