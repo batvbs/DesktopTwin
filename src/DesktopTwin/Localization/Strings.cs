@@ -183,7 +183,7 @@ internal static class Strings
         Pair("Uu.Repair.Done", "UU 串流已修复"),
         Pair("Uu.Repair.Failed", "UU 串流修复失败"),
         Pair("Uu.Result.Busy", "上一次切换还没结束，已忽略本次。"),
-        Pair("Uu.Result.RecoveryBusy", "上一轮的串流恢复还在收尾，请稍后再切换。"),
+        Pair("Uu.Result.ServiceRecoveryPending", "UU 服务仍在完成停止/启动，后台会继续恢复。请稍后再试。"),
         Pair("Uu.Result.Cancelled", "切换已取消。"),
         Pair("Uu.Result.Failed", "切换失败：{0}"),
         Pair("Uu.Result.DisconnectFailed", "分身会话没能断开，请稍后重试。"),
@@ -540,7 +540,6 @@ internal static class Strings
 
         Pair("Common.Success", "成功"),
         Pair("Common.Failed", "失败"),
-        Pair("Uu.Result.ServiceRestartFailed2", "重启 UU 服务失败（停止{0}、启动失败）。请在服务管理器里手动重启 GameViewerService。"),
         Pair("Uu.Result.ServiceStopFailed", "无法停止 UU 服务（GameViewerService），本次重启没有继续。请在服务管理器里手动重启它。"),
         Pair("Uu.Result.ServiceStartFailed", "UU 服务已停止但没能重新启动。请在服务管理器里手动启动 GameViewerService。"),
         Pair("AutoLogin.System.NotFound", "找不到 netplwiz.exe，请手动按 Win+R 输入 netplwiz 打开。"),

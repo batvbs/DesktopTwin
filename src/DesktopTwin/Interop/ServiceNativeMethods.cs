@@ -53,9 +53,9 @@ internal static class ServiceNativeMethods
     }
 
     /// <summary>
-    /// 启动服务并等待它进入运行状态。
+    /// 启动服务；默认等待运行态，异步恢复可以只提交请求。
     /// </summary>
-    internal static bool TryStart(string serviceName, out string error)
+    internal static bool TryStart(string serviceName, out string error, bool waitForState = true)
     {
         error = string.Empty;
 
@@ -82,7 +82,7 @@ internal static class ServiceNativeMethods
             }
         }
 
-        if (WaitForState(handle.Value, ServiceRunning))
+        if (!waitForState || WaitForState(handle.Value, ServiceRunning))
         {
             return true;
         }
@@ -92,9 +92,9 @@ internal static class ServiceNativeMethods
     }
 
     /// <summary>
-    /// 停止服务并等待它停下来。服务本来就没运行时视为成功。
+    /// 停止服务；默认等待停止态，异步恢复可以只提交请求。已停止时视为成功。
     /// </summary>
-    internal static bool TryStop(string serviceName, out string error)
+    internal static bool TryStop(string serviceName, out string error, bool waitForState = true)
     {
         error = string.Empty;
 
@@ -126,7 +126,7 @@ internal static class ServiceNativeMethods
             }
         }
 
-        if (WaitForState(handle.Value, ServiceStopped))
+        if (!waitForState || WaitForState(handle.Value, ServiceStopped))
         {
             return true;
         }
