@@ -97,6 +97,9 @@ internal sealed class UuViewChangeMonitor : IDisposable
             _watcher.Stopped -= OnWatcherStopped;
             try
             {
+                // System.Management 10.0.15 的 Dispose 不调 Stop，也不触发会调
+                // Stop 的 finalizer——订阅会在 WMI 里挂着，必须显式停。
+                _watcher.Stop();
                 _watcher.Dispose();
             }
             catch (Exception exception) when (exception is ManagementException or COMException)

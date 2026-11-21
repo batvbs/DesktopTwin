@@ -577,7 +577,13 @@ public sealed class ChildSessionService : IDisposable
             ShowDesktopWindow(window);
         }
 
-        if (window.RdpHost.ConnectedState != 1)
+        // ActiveX 的 Connected 可能滞后于 WTS：会话层面已经断开时，
+        // 不能把「看起来连着」当成真的——强制走重连。
+        var childSessionNow = ChildSessionNativeMethods.TryGetChildSessionId();
+        var sessionUsable = childSessionNow is null
+            || ChildSessionNativeMethods.IsSessionActive(childSessionNow.Value);
+
+        if (window.RdpHost.ConnectedState != 1 || !sessionUsable)
         {
             if (ChildSessionNativeMethods.TryGetChildSessionId() is null)
             {
@@ -1625,6 +1631,9 @@ public sealed class ChildSessionService : IDisposable
         var retryNumber = ConnectionRetryCount - _initialConnectionRetriesRemaining + 1;
         _initialConnectionRetriesRemaining--;
         var retryDelay = ConnectionRetryDelay;
+        // 记下发起时的启动代际：延时期间用户注销过或重新启动过的话，代际已变，
+        // 这次重试只是旧尝试的遗孤——按代际放弃，不能让它动新尝试的连接。
+        var startAttempt = _connectionAttemptCompletionSource;
 
         AppLog.Warn(
             $"分身 RDP 连接失败，将在 {retryDelay.TotalSeconds:0} 秒后重试"
@@ -1643,6 +1652,7 @@ public sealed class ChildSessionService : IDisposable
             await WaitForSessionEndAsync(operation.Token);
             await Task.Delay(retryDelay, operation.Token);
             if (_disposed
+                || !ReferenceEquals(_connectionAttemptCompletionSource, startAttempt)
                 || _connectionAttemptCompletionSource is null
                 || _connectionAttemptCompletionSource.Task.IsCompleted)
             {

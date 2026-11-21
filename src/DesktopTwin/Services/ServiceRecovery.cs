@@ -78,8 +78,15 @@ internal sealed class ServiceRecovery(
             state = queryState();
             // 接受 stop 后，短暂读到 RUNNING 也不代表停止请求被撤销。
             // 保留责任直到确实停止，不能以一次非 pending 状态结束收尾。
+            // 收尾循环的 deadline：StopPending 卡住时不能无限等，超时按失败收场。
+            var stopDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
             while (state != Stopped)
             {
+                if (DateTime.UtcNow > stopDeadline)
+                {
+                    return Outcome.StopFailed;
+                }
+
                 // stop 被拒绝后，查询失败只代表暂时未知；恢复查询后仍在运行就应退出。
                 // 每次查询都重新判断，不能因为第一次读到 null 就永久等一个未接受的 stop。
                 if (!accepted && state is not (null or StopPending)) return Outcome.StopFailed;
@@ -110,10 +117,13 @@ internal sealed class ServiceRecovery(
 
     private async Task<int> WaitForStableStateAsync()
     {
+        // 稳定等待同样有 deadline：服务卡在 pending 状态时不能无限轮询。
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
         while (true)
         {
             var state = queryState();
             if (state is not null and not StartPending and not StopPending) return state.Value;
+            if (DateTime.UtcNow > deadline) throw new TimeoutException();
             await _delay(TimeSpan.FromMilliseconds(200)).ConfigureAwait(false);
         }
     }
