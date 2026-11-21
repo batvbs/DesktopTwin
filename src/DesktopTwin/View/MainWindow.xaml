@@ -233,6 +233,13 @@
                                                  IsCheckable="True"
                                                  IsChecked="{Binding KeepAspectRatio, Mode=OneWay}" />
                                 </ui:MenuItem>
+                                <ui:MenuItem Header="{loc:Loc Menu.StartupApps}">
+                                    <ui:MenuItem Command="{Binding ToggleStartupAppsCommand}"
+                                                 Header="{Binding StartupAppsMenuText}"
+                                                 IsCheckable="True"
+                                                 IsChecked="{Binding StartupAppsEnabled, Mode=OneWay}"
+                                                 ToolTip="{Binding StartupAppsMenuToolTip}" />
+                                </ui:MenuItem>
                                 <ui:MenuItem Header="{loc:Loc Menu.Shortcuts}">
                                     <ui:MenuItem Command="{Binding ToggleSendSystemShortcutsToRemoteCommand}"
                                                  Header="{loc:Loc Menu.SendSystemShortcuts}"

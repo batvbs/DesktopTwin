@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 
 namespace DesktopTwin.Models;
@@ -129,6 +129,15 @@ public sealed class SessionSettings
     /// 窗口是否置顶。
     /// </summary>
     public bool Topmost { get; set; }
+
+    /// <summary>
+    /// 是否允许开机自启动项在分身会话里运行。
+    ///
+    /// 默认关闭：分身在同一个账户下登录，Windows 会把用户和公共启动项在子会话里再跑一遍；
+    /// 单实例程序还会通过协议 / IPC 把窗口拉回主桌面，用户看到的就是「主桌面又冒出来一堆」。
+    /// 关掉之后连接前临时禁用、断开时按原样恢复（见 <c>StartupSnoozeService</c>）。
+    /// </summary>
+    public bool StartupAppsEnabled { get; set; }
 }
 
 /// <summary>

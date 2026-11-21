@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 
 namespace DesktopTwin.Localization;
 
@@ -442,6 +442,14 @@ internal static class Strings
         Pair("Main.SmallWindow.Restore", "还原窗口"),
         Pair("Main.Audio.Unmute", "开启分身声音，不影响主桌面的其他程序；切换时会自动重新连接 RDP"),
         Pair("Main.Audio.Mute", "关闭分身声音，不影响主桌面的其他程序；切换时会自动重新连接 RDP"),
+        Pair("Menu.StartupApps", "开机自启动项"),
+        Pair("Main.StartupApps.Suppressed", "开机自启动项：已关闭"),
+        Pair("Main.StartupApps.Allowed", "开机自启动项：在分身里运行"),
+        Pair("Main.StartupApps.On", "允许开机自启动项在分身里运行"),
+        Pair("Main.StartupApps.Off", "关闭开机自启动项在分身里运行"),
+        Pair("Main.StartupApps.ToolTip", "默认关闭：连接分身之前把这些启动项临时关掉，断开或退出时按原样恢复，避免商店/游戏启动器在子会话里再跑一遍、又把窗口拉回主桌面。"),
+        Pair("Snooze.Title", "开机自启动项"),
+        Pair("Snooze.Partial", "部分启动项无法关闭"),
         Pair("Main.Topmost.On", "置顶"),
         Pair("Main.Topmost.Off", "取消置顶"),
         Pair("Main.Session.None", "分身会话未创建"),

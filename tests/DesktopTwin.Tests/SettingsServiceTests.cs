@@ -50,6 +50,11 @@ public sealed class SettingsServiceTests : IDisposable
 
         // 全屏顶栏默认不固定：只在鼠标到顶端时出现
         Assert.False(settings.Window.FullscreenBarPinned);
+
+        // 开机自启动项默认不在分身里跑：分身在同一个账户下登录，启动项会跟着再跑一遍，
+        // 单实例程序还会把窗口拉回主桌面
+        Assert.False(settings.Session.StartupAppsEnabled);
+        Assert.False(settings.Session.Topmost);
     }
 
     [Fact]
@@ -64,6 +69,8 @@ public sealed class SettingsServiceTests : IDisposable
             writer.Current.Launch.RunAsAdministrator = true;
             writer.Current.ChildSessionNoticeAccepted = true;
             writer.Current.Window.FullscreenBarPinned = true;
+            writer.Current.Session.StartupAppsEnabled = true;
+            writer.Current.Session.Topmost = true;
             writer.Flush();
         }
 
@@ -77,6 +84,10 @@ public sealed class SettingsServiceTests : IDisposable
 
         // 全屏顶栏的固定状态要能记住，否则每次进全屏都要重新点一次图钉。
         Assert.True(reader.Current.Window.FullscreenBarPinned);
+
+        // 这两个开关必须能跨重启记住，否则用户关掉自启动、取消置顶，下次开又被打开。
+        Assert.True(reader.Current.Session.StartupAppsEnabled);
+        Assert.True(reader.Current.Session.Topmost);
     }
 
     [Fact]

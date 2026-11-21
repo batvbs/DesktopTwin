@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.ComponentModel;
 using System.IO;
 using System.Threading;
@@ -28,6 +28,8 @@ public partial class App : Application
     private const string ActivateEventName = @"Global\DesktopTwin.Activate";
 
     private SettingsService? _settings;
+    private StartupSnoozeService? _startupSnooze;
+    private string? _startupRecoveryNotice;
     private AutoLoginService? _autoLogin;
     private ChildSessionService? _childSessionService;
     private MainWindow? _mainWindow;
@@ -131,7 +133,27 @@ public partial class App : Application
         };
 
         _autoLogin = new AutoLoginService(_settings);
-        _childSessionService = new ChildSessionService(_settings, _autoLogin);
+        _startupSnooze = new StartupSnoozeService();
+
+        // 上次异常退出（进程被杀、蓝屏、断电）可能把启动项留在「已关闭」状态。
+        // 必须在用户能点「启动并连接」之前写回去：否则他会以为自启动被永久弄坏了，
+        // 而且再连一次还会在旧日志上继续叠加。
+        try
+        {
+            _startupRecoveryNotice = _startupSnooze.RecoverOnStartup();
+        }
+        catch (Exception exception)
+        {
+            AppLog.Warn("启动时恢复开机启动项失败。", exception);
+            _startupRecoveryNotice = "恢复开机启动项失败：" + exception.Message;
+        }
+
+        if (_startupRecoveryNotice is not null)
+        {
+            AppLog.Warn(_startupRecoveryNotice);
+        }
+
+        _childSessionService = new ChildSessionService(_settings, _autoLogin, _startupSnooze);
 
         // 窗口由服务按需创建（首次显示或首次连接时），这里只负责触发显示，
         // 避免出现「服务持有一个窗口、App 又建了一个窗口」的重复实例。
@@ -141,6 +163,14 @@ public partial class App : Application
 
         // 托盘图标常驻：窗口被隐藏后，这是唯一能把它叫回来的入口。
         _trayIcon = new TrayIconService(_childSessionService);
+
+        // 恢复结果要看得见：托盘图标建好之后才弹，否则提示会掉在地上。
+        if (_startupRecoveryNotice is not null)
+        {
+            var notice = _startupRecoveryNotice;
+            _startupRecoveryNotice = null;
+            ShowTrayBalloon(AppLocale.Get("Snooze.Title"), notice);
+        }
     }
 
     /// <summary>
