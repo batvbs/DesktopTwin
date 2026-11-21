@@ -57,6 +57,8 @@ Menu.UuHotkey=Switch hotkey: {0}
 Notify.UuLockFailed.Title=UU view lock has been turned off: desktop change monitoring is unavailable
 Notify.UuLockFailed.Message=Turn the view lock on again. If monitoring still cannot observe changes of the control target, check the logs for details.
 Menu.UuTrigger=Switch once now
+Menu.UuViewLock=UU view lock
+Menu.UuViewLock.ToolTip=When enabled, the control target is recorded and checked again on desktop session changes or when UU's streamer starts; if it has drifted away from the recorded desktop it is switched back automatically. Only your own manual switch updates the target. With this option alone the target is fixed to the PC host: no hotkey is registered and no agent is installed inside the twin.
 Menu.UuRepair=Repair UU streaming (restart the UU service)
 Menu.UuRepair.ToolTip=After several quick switches the phone may report the device as offline: switching ends the streamer, and ending it repeatedly within a short time makes the UU service treat it as repeated crashes and stop restarting it. Click here to restart the UU service, then reconnect from the phone.
 Menu.AutoLogin.Enabled=Auto sign-in for the twin (enabled)
@@ -615,3 +617,5 @@ Diag.FixHint.ServiceKey=This restores ImagePath and ObjectName to the Windows de
 Diag.FixHint.Persistence=This exports the matched scheduled tasks as XML and the autostart entries as text into the backup folder, then deletes them. Once they are gone these tools can no longer switch the configuration back to the patched state at boot.
 Diag.FixHint.RdpSecurity=This only raises values that are below the Windows default; anything already hardened to a higher value stays as it is. Changes take effect when the Remote Desktop service next starts; the service is not restarted.
 Diag.FixHint.Termsrv=This first restores termsrv.dll from a backup the tool left behind (the copy is re-verified with sfc immediately and rolled back if it does not pass); if no usable backup exists, it stops the Remote Desktop service and repairs that single file in place with sfc /scanfile (seconds to a minute, effective immediately with no reboot). Only if that fails does it start a full sfc /scannow in a new window (usually 5-15 minutes; the window keeps the result on screen).
+Notify.Hotkey.Failed.Message={0}
+The hotkey did not take effect. Pick an unused combination again from the window menu.
