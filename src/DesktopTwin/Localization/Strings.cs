@@ -84,6 +84,19 @@ internal static class Strings
         Pair("Menu.AutoLogin.System", "打开系统自动登录设置…"),
         Pair("Menu.AutoLogin.System.ToolTip", "等同于 Win+R 输入 netplwiz。取消勾选「要使用本计算机，用户必须输入用户名和密码」，点应用后输入账户密码（不是 PIN），重启生效。注意这会让本机开机即进桌面。"),
 
+        // ---- MCP 桌面控制 ----
+        Pair("Menu.Mcp.Enabled", "MCP 桌面控制（已启用）"),
+        Pair("Menu.Mcp.Disabled", "MCP 桌面控制"),
+        Pair("Menu.Mcp.Enable", "启用 MCP 桌面控制"),
+        Pair("Menu.Mcp.Enable.ToolTip", "允许本机 MCP 客户端通过随机令牌保护的 IPv4 环回端点，截取并操作分身桌面。鼠标、键盘和剪贴板操作只在分身会话内生效，不会发送到主桌面。默认关闭。"),
+        Pair("Menu.Mcp.CopyConfig", "复制 MCP 客户端配置"),
+        Pair("Menu.Mcp.CopyConfig.ToolTip", "复制包含随机访问令牌的 JSON。只粘贴到你信任的 MCP 客户端；令牌等同于分身桌面的控制权限。"),
+        Pair("Mcp.Status.Disabled", "MCP 控制未启用"),
+        Pair("Mcp.Status.Failed", "MCP 服务未运行"),
+        Pair("Mcp.Status.WaitingForSession", "MCP 监听中（127.0.0.1:{0}），等待分身桌面连接"),
+        Pair("Mcp.Status.WaitingForAgent", "MCP 监听中（127.0.0.1:{0}），正在启动分身代理"),
+        Pair("Mcp.Status.Ready", "MCP 已就绪（127.0.0.1:{0}）"),
+
         // ---- 自动登录设置对话框 ----
         Pair("AutoLogin.Title", "自动登录设置"),
         Pair("AutoLogin.Intro", "选择一种自动登录方式。两者可以同时开启，也可以都不用。"),
@@ -528,6 +541,13 @@ internal static class Strings
         Pair("Notify.ResolutionMismatch.Message", "桌面分身当前是 {0} × {1}，屏幕是 {2} × {3}。全屏下画面会被拉伸，内容可能模糊；建议在「控制中心 → 桌面分辨率」里改为 {2} × {3}。"),
         Pair("Notify.UuDisabled.Title", "已关闭 UU 视角切换"),
         Pair("Notify.UuDisabled.Message", "热键已注销，不会影响其他程序。"),
+        Pair("Notify.McpEnabled.Title", "MCP 桌面控制已启用"),
+        Pair("Notify.McpEnabled.Message", "已仅在本机环回地址 127.0.0.1:{0} 监听。请从「控制中心 → MCP 桌面控制」复制客户端配置。"),
+        Pair("Notify.McpDisabled.Title", "已关闭 MCP 桌面控制"),
+        Pair("Notify.McpDisabled.Message", "环回端点已停止，新的 MCP 连接无法再控制分身桌面。"),
+        Pair("Notify.McpFailed.Title", "MCP 控制启动失败"),
+        Pair("Notify.McpConfigCopied.Title", "已复制 MCP 客户端配置"),
+        Pair("Notify.McpConfigCopied.Message", "配置包含访问令牌，请只粘贴到你信任的客户端。"),
         Pair("Startup.ElevatedLaunch.Message", "即将以管理员权限在桌面分身中启动：{0}{1}\n\n请确认这是你要运行的程序。"),
         Pair("Startup.ElevatedLaunch.Title", "确认以管理员权限启动"),
         Pair("Notify.TargetSelected.Title", "已选择目标程序"),

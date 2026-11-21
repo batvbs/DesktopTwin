@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
@@ -79,7 +79,8 @@ internal sealed class SessionAgentService : IDisposable
     private DispatcherTimer? _pollTimer;
     private DateTime _lastRequestSeen = DateTime.MinValue;
     private long _lastLaunchTickCount = -1;
-    private string _hotkeyArgument = "Ctrl+Alt+U";
+    private string? _hotkeyArgument;
+    private string? _controlPipeArgument;
 
     /// <summary>连续读心跳失败的次数；成功一次就清零。</summary>
     private int _consecutiveHeartbeatReadFailures;
@@ -125,14 +126,21 @@ internal sealed class SessionAgentService : IDisposable
     /// <summary>
     /// 安装（或更新）分身端：释放 exe、写自启项，并开始轮询请求。
     /// </summary>
-    /// <param name="hotkey">当前热键组合，形如 <c>Ctrl+Alt+U</c>。</param>
+    /// <param name="hotkey">当前热键组合，形如 <c>Ctrl+Alt+U</c>；为空表示不注册热键。</param>
+    /// <param name="controlPipe">MCP 控制管道名；为空表示不开放控制通道。</param>
     /// <param name="error">失败原因。</param>
-    public bool EnsureInstalled(string hotkey, out string error)
+    public bool EnsureInstalled(string? hotkey, string? controlPipe, out string error)
     {
         error = string.Empty;
         ThrowIfDisposed();
 
-        _hotkeyArgument = hotkey;
+        if (string.IsNullOrWhiteSpace(hotkey) && string.IsNullOrWhiteSpace(controlPipe))
+        {
+            throw new ArgumentException("至少需要热键或控制管道中的一项。");
+        }
+
+        _hotkeyArgument = string.IsNullOrWhiteSpace(hotkey) ? null : hotkey;
+        _controlPipeArgument = string.IsNullOrWhiteSpace(controlPipe) ? null : controlPipe;
 
         string? updateError = null;
 
@@ -163,7 +171,12 @@ internal sealed class SessionAgentService : IDisposable
 
         try
         {
-            WriteRunKey(BuildCommandLine(hotkey));
+            var commandLine = BuildCommandLine();
+            if (!string.Equals(ReadRunKey(), commandLine, StringComparison.Ordinal))
+            {
+                WriteRunKey(commandLine);
+                NeedsRestart = true;
+            }
         }
         catch (Exception exception) when (exception is UnauthorizedAccessException
                                               or System.Security.SecurityException
@@ -232,7 +245,7 @@ internal sealed class SessionAgentService : IDisposable
         var ok = ChildSessionProcessLauncher.RunInSession(
             sessionId.Value,
             AgentPath,
-            $"--hotkey \"{_hotkeyArgument}\"",
+            BuildAgentArguments(),
             taskNamePrefix: "DesktopTwin-SessionAgent-");
 
         AppLog.Info(ok
@@ -500,12 +513,40 @@ internal sealed class SessionAgentService : IDisposable
         _dispatcher.BeginInvoke(() => SwitchRequested?.Invoke(this, EventArgs.Empty));
     }
 
-    private static string BuildCommandLine(string hotkey)
+    private string BuildCommandLine()
     {
-        return $"\"{Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "DesktopTwin",
-            AgentFileName)}\" --hotkey \"{hotkey}\"";
+        return $"\"{AgentPath}\" {BuildAgentArguments()}";
+    }
+
+    private string BuildAgentArguments()
+    {
+        return BuildAgentArguments(_hotkeyArgument, _controlPipeArgument);
+    }
+
+    internal static string BuildAgentArguments(string? hotkey, string? controlPipe)
+    {
+        var builder = new StringBuilder();
+        if (string.IsNullOrWhiteSpace(hotkey))
+        {
+            builder.Append("--no-hotkey");
+        }
+        else
+        {
+            builder.Append("--hotkey \"").Append(hotkey).Append('"');
+        }
+
+        if (!string.IsNullOrWhiteSpace(controlPipe))
+        {
+            builder.Append(" --control-pipe \"").Append(controlPipe).Append('"');
+        }
+
+        return builder.ToString();
+    }
+
+    private static string? ReadRunKey()
+    {
+        using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: false);
+        return key?.GetValue(RunValueName) as string;
     }
 
     /// <summary>

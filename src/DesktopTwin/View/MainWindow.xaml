@@ -279,6 +279,20 @@
                                                  Header="{loc:Loc Menu.AutoLogin.System}"
                                                  ToolTip="{loc:Loc Menu.AutoLogin.System.ToolTip}" />
                                 </ui:MenuItem>
+                                <ui:MenuItem Header="{Binding McpMenuHeader}">
+                                    <ui:MenuItem Command="{Binding ToggleMcpControlCommand}"
+                                                 Header="{loc:Loc Menu.Mcp.Enable}"
+                                                 IsCheckable="True"
+                                                 IsChecked="{Binding McpEnabled, Mode=OneWay}"
+                                                 ToolTip="{loc:Loc Menu.Mcp.Enable.ToolTip}" />
+                                    <ui:MenuItem Header="{Binding McpStatusText}"
+                                                 IsEnabled="False" />
+                                    <Separator />
+                                    <ui:MenuItem Command="{Binding CopyMcpClientConfigCommand}"
+                                                 Header="{loc:Loc Menu.Mcp.CopyConfig}"
+                                                 Icon="{ui:SymbolIcon Copy24}"
+                                                 ToolTip="{loc:Loc Menu.Mcp.CopyConfig.ToolTip}" />
+                                </ui:MenuItem>
                                 <Separator />
                                 <ui:MenuItem Header="{loc:Loc Menu.Diagnostics}">
                                     <ui:MenuItem Header="{loc:Loc Menu.Diagnostics.Open}"

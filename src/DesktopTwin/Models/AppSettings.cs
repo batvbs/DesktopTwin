@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 
 namespace DesktopTwin.Models;
@@ -37,6 +37,11 @@ public sealed class AppSettings
     /// 与外部工具联动、以及自动登录相关的可选设置。
     /// </summary>
     public AutomationSettings Automation { get; set; } = new();
+
+    /// <summary>
+    /// 供外部 AI 客户端使用的本机 MCP 控制服务。默认关闭。
+    /// </summary>
+    public McpSettings Mcp { get; set; } = new();
 
     /// <summary>
     /// 用户是否已确认过「本程序会修改系统级 Child Sessions 开关」的首次运行提示。
@@ -256,6 +261,41 @@ public sealed class AutomationSettings
     /// </summary>
     [System.Text.Json.Serialization.JsonPropertyName("AutoLoginPassword")]
     public string? LegacyAutoLoginPassword { get; set; }
+}
+
+/// <summary>
+/// MCP 控制服务设置。
+///
+/// 服务只绑定 IPv4 回环地址，且要求请求路径携带随机令牌。端口和令牌会持久化，
+/// 这样 MCP 客户端配置不必每次启动都改。令牌不是账户凭据，但能发起键鼠操作，
+/// 因此不要粘贴到不可信的日志或公开配置里。
+/// </summary>
+public sealed class McpSettings
+{
+    /// <summary>
+    /// 默认监听端口。端口被占用时会自动改用系统分配的端口并写回这里。
+    /// </summary>
+    public const int DefaultPort = 39721;
+
+    /// <summary>
+    /// 是否启用 MCP 控制服务。
+    /// </summary>
+    public bool Enabled { get; set; }
+
+    /// <summary>
+    /// 监听端口。0 表示由系统分配。
+    /// </summary>
+    public int Port { get; set; } = DefaultPort;
+
+    /// <summary>
+    /// 访问令牌。为空时由主程序生成 256 位随机值。
+    /// </summary>
+    public string AccessToken { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 主进程与分身代理之间的命名管道名。为空时生成随机值。
+    /// </summary>
+    public string PipeName { get; set; } = string.Empty;
 }
 
 /// <summary>

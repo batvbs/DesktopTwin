@@ -1,7 +1,9 @@
-﻿using System;
+using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -33,6 +35,7 @@ public partial class MainWindowViewModel : ObservableObject
     private readonly SessionAgentService _sessionAgent;
     private long _lastAgentStartTicks;
     private GlobalHotkeyService? _globalHotkey;
+    private McpLoopbackServer? _mcpServer;
     private Window? _hotkeyWindow;
     private DiagnosticsWindow? _diagnosticsWindow;
     private bool _startRequested;
@@ -143,6 +146,17 @@ public partial class MainWindowViewModel : ObservableObject
     [ObservableProperty]
     private bool _hasAutoLoginPassword;
 
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(McpMenuHeader))]
+    private bool _mcpEnabled;
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(CopyMcpClientConfigCommand))]
+    private bool _isMcpListening;
+
+    [ObservableProperty]
+    private string _mcpStatusText = Locale.Get("Mcp.Status.Disabled");
+
     /// <summary>
     /// 创建 ViewModel 并订阅服务事件。
     /// </summary>
@@ -168,6 +182,13 @@ public partial class MainWindowViewModel : ObservableObject
         _uuViewSwitchEnabled = settings.Current.Automation.UuViewSwitchEnabled;
         _autoLoginEnabled = settings.Current.Automation.AutoLoginEnabled;
         _hasAutoLoginPassword = childSessionService.AutoLogin?.HasStoredPassword == true;
+        _mcpEnabled = settings.Current.Mcp.Enabled;
+
+        // 只在用户主动开启时新生成机密；关闭状态下保留已有配置，供下次开启继续使用。
+        if (_mcpEnabled && McpSecretStore.Ensure(settings.Current.Mcp))
+        {
+            settings.SaveSoon();
+        }
 
         // 分身内的热键代理：Console 侧的热键在焦点进分身画面后会失效，
         // 必须由分身会话里的这个代理接住，再回头通知主端执行切换。
@@ -702,6 +723,64 @@ public partial class MainWindowViewModel : ObservableObject
     }
 
     /// <summary>
+    /// 开关 MCP 桌面控制。默认关闭，开启后只监听 IPv4 环回地址。
+    /// </summary>
+    [RelayCommand]
+    private void ToggleMcpControl()
+    {
+        McpEnabled = !McpEnabled;
+        _settings.Current.Mcp.Enabled = McpEnabled;
+        _settings.SaveSoon();
+
+        ApplyMcpService(notifyUser: true);
+        SyncSessionAgent();
+    }
+
+    /// <summary>
+    /// 复制可直接粘贴到 MCP 客户端配置里的 JSON。
+    /// </summary>
+    [RelayCommand(CanExecute = nameof(CanCopyMcpClientConfig))]
+    private void CopyMcpClientConfig()
+    {
+        if (_mcpServer is null || !_mcpServer.IsListening)
+        {
+            return;
+        }
+
+        try
+        {
+            var config = new Dictionary<string, object>
+            {
+                ["mcpServers"] = new Dictionary<string, object>
+                {
+                    ["desktop-twin"] = new Dictionary<string, object>
+                    {
+                        ["type"] = "http",
+                        ["url"] = _mcpServer.Endpoint,
+                        ["headers"] = new Dictionary<string, string>
+                        {
+                            ["Authorization"] = "Bearer " + _settings.Current.Mcp.AccessToken
+                        }
+                    }
+                }
+            };
+
+            var json = JsonSerializer.Serialize(
+                config,
+                new JsonSerializerOptions { WriteIndented = true });
+            Clipboard.SetText(json);
+            ShowNotification(
+                Locale.Get("Notify.McpConfigCopied.Title"),
+                Locale.Get("Notify.McpConfigCopied.Message"),
+                InfoBarSeverity.Success);
+        }
+        catch (Exception exception)
+        {
+            ShowError(exception);
+        }
+    }
+
+    /// <summary>
     /// UU 视角切换菜单文本。
     /// </summary>
     public string UuViewSwitchMenuHeader => UuViewSwitchEnabled
@@ -716,6 +795,18 @@ public partial class MainWindowViewModel : ObservableObject
         : Locale.Get("Menu.AutoLogin.Disabled");
 
     /// <summary>
+    /// MCP 菜单文本。
+    /// </summary>
+    public string McpMenuHeader => McpEnabled
+        ? Locale.Get("Menu.Mcp.Enabled")
+        : Locale.Get("Menu.Mcp.Disabled");
+
+    /// <summary>
+    /// 是否已有可复制的 MCP 端点。
+    /// </summary>
+    public bool CanCopyMcpClientConfig => IsMcpListening && _mcpServer is not null;
+
+    /// <summary>
     /// 当前 UU 切换热键的可读文本。
     /// </summary>
     public string UuHotkeyText =>
@@ -728,6 +819,7 @@ public partial class MainWindowViewModel : ObservableObject
     internal void AttachWindow(Window window)
     {
         _hotkeyWindow = window;
+        ApplyMcpService(notifyUser: false);
         ApplyUuHotkey(notifySuccess: false);
     }
 
@@ -737,6 +829,7 @@ public partial class MainWindowViewModel : ObservableObject
     internal void Detach()
     {
         _childSessionService.DesktopSizeChanged -= OnDesktopSizeChanged;
+        StopMcpService();
         _globalHotkey?.Dispose();
         _globalHotkey = null;
         _sessionAgent.SwitchRequested -= OnSessionAgentSwitchRequested;
@@ -1224,7 +1317,7 @@ public partial class MainWindowViewModel : ObservableObject
 
         if (!UuViewSwitchEnabled)
         {
-            _sessionAgent.Uninstall();
+            SyncSessionAgent();
             return;
         }
 
@@ -1232,24 +1325,14 @@ public partial class MainWindowViewModel : ObservableObject
         if (_globalHotkey.TryRegister(_hotkeyWindow, combination, out var error))
         {
             // 分身端：Console 侧热键在焦点进分身画面后会失效，必须由分身会话里的代理接住。
-            var agentReady = _sessionAgent.EnsureInstalled(combination, out var agentError);
-            if (!agentReady)
-            {
-                AppLog.Warn($"分身端安装失败，热键在分身画面内可能不生效：{agentError}");
-            }
-            else
-            {
-                // 自启项只在下次登录时生效，用户当前就开着分身，所以立刻拉一份。
-                _ = _sessionAgent.TryStartInChildSession();
-            }
-
+            var agentReady = SyncSessionAgent();
             if (notifySuccess)
             {
                 ShowNotification(
-                Locale.Get("Notify.UuEnabled.Title"),
-                Locale.Format(
-                    agentReady ? "Notify.UuEnabled.Message.Agent" : "Notify.UuEnabled.Message",
-                    GlobalHotkeyService.Format(combination)),
+                    Locale.Get("Notify.UuEnabled.Title"),
+                    Locale.Format(
+                        agentReady ? "Notify.UuEnabled.Message.Agent" : "Notify.UuEnabled.Message",
+                        GlobalHotkeyService.Format(combination)),
                     InfoBarSeverity.Success,
                     TimeSpan.FromSeconds(7));
             }
@@ -1262,8 +1345,158 @@ public partial class MainWindowViewModel : ObservableObject
         UuViewSwitchEnabled = false;
         _settings.Current.Automation.UuViewSwitchEnabled = false;
         _settings.SaveSoon();
-        _sessionAgent.Uninstall();
-            ShowNotification(Locale.Get("Hotkey.Registered.Failed.Title"), error, InfoBarSeverity.Warning, TimeSpan.FromSeconds(7));
+        SyncSessionAgent();
+        ShowNotification(
+            Locale.Get("Hotkey.Registered.Failed.Title"),
+            error,
+            InfoBarSeverity.Warning,
+            TimeSpan.FromSeconds(7));
+    }
+
+    /// <summary>
+    /// 按当前功能开关同步分身端参数：UU 热键与 MCP 控制管道可以独立启用。
+    /// </summary>
+    /// <returns>分身端是否已按所需设置安装并可用。</returns>
+    private bool SyncSessionAgent()
+    {
+        if (_hotkeyWindow is null)
+        {
+            return false;
+        }
+
+        var hotkey = UuViewSwitchEnabled
+            ? _settings.Current.Automation.UuViewSwitchHotkey
+            : null;
+        var controlPipe = McpEnabled ? _settings.Current.Mcp.PipeName : null;
+
+        if (string.IsNullOrWhiteSpace(hotkey) && string.IsNullOrWhiteSpace(controlPipe))
+        {
+            _sessionAgent.Uninstall();
+            return true;
+        }
+
+        if (!_sessionAgent.EnsureInstalled(hotkey, controlPipe, out var error))
+        {
+            AppLog.Warn($"分身端安装失败：{error}");
+            return false;
+        }
+
+        // 自启项只在下次登录时生效；当前分身已经在运行时立刻补拉一份。
+        _ = _sessionAgent.TryStartInChildSession();
+        return true;
+    }
+
+    /// <summary>
+    /// 启动或停止 MCP 环回监听。
+    /// </summary>
+    private void ApplyMcpService(bool notifyUser)
+    {
+        if (!McpEnabled)
+        {
+            StopMcpService();
+            UpdateMcpStatus();
+
+            if (notifyUser)
+            {
+                ShowNotification(
+                    Locale.Get("Notify.McpDisabled.Title"),
+                    Locale.Get("Notify.McpDisabled.Message"),
+                    InfoBarSeverity.Informational);
+            }
+
+            return;
+        }
+
+        try
+        {
+            var settings = _settings.Current.Mcp;
+            if (McpSecretStore.Ensure(settings))
+            {
+                _settings.SaveSoon();
+            }
+
+            if (_mcpServer is null)
+            {
+                _mcpServer = new McpLoopbackServer(
+                    settings.AccessToken,
+                    settings.Port,
+                    () => _settings.Current.Mcp.PipeName);
+                _mcpServer.Start();
+            }
+
+            // 首选端口被占用时服务会退回系统端口；必须记住实际值，
+            // 否则用户复制出去的端点在下次启动时会失效。
+            if (settings.Port != _mcpServer.Port)
+            {
+                settings.Port = _mcpServer.Port;
+                _settings.SaveSoon();
+            }
+
+            UpdateMcpStatus();
+            if (notifyUser)
+            {
+                ShowNotification(
+                    Locale.Get("Notify.McpEnabled.Title"),
+                    Locale.Format("Notify.McpEnabled.Message", _mcpServer.Port),
+                    InfoBarSeverity.Success,
+                    TimeSpan.FromSeconds(7));
+            }
+        }
+        catch (Exception exception)
+        {
+            StopMcpService();
+            McpEnabled = false;
+            _settings.Current.Mcp.Enabled = false;
+            _settings.SaveSoon();
+            UpdateMcpStatus();
+            AppLog.Error("MCP 控制服务启动失败。", exception);
+
+            if (notifyUser)
+            {
+                ShowNotification(
+                    Locale.Get("Notify.McpFailed.Title"),
+                    exception.GetBaseException().Message,
+                    InfoBarSeverity.Error,
+                    TimeSpan.FromSeconds(10));
+            }
+        }
+    }
+
+    private void StopMcpService()
+    {
+        _mcpServer?.Dispose();
+        _mcpServer = null;
+        IsMcpListening = false;
+    }
+
+    /// <summary>
+    /// 更新 MCP 状态文字。只显示端口，不在界面常驻展示访问令牌。
+    /// </summary>
+    private void UpdateMcpStatus()
+    {
+        IsMcpListening = _mcpServer?.IsListening == true;
+
+        if (!McpEnabled)
+        {
+            McpStatusText = Locale.Get("Mcp.Status.Disabled");
+            return;
+        }
+
+        if (!IsMcpListening || _mcpServer is null)
+        {
+            McpStatusText = Locale.Get("Mcp.Status.Failed");
+            return;
+        }
+
+        if (_childSessionService.ConnectedState != 1)
+        {
+            McpStatusText = Locale.Format("Mcp.Status.WaitingForSession", _mcpServer.Port);
+            return;
+        }
+
+        McpStatusText = _sessionAgent.IsAgentOnline()
+            ? Locale.Format("Mcp.Status.Ready", _mcpServer.Port)
+            : Locale.Format("Mcp.Status.WaitingForAgent", _mcpServer.Port);
     }
 
     /// <summary>
@@ -1640,7 +1873,8 @@ public partial class MainWindowViewModel : ObservableObject
     /// </summary>
     private void EnsureSessionAgentRunning()
     {
-        if (!UuViewSwitchEnabled || _childSessionService.ConnectedState != 1)
+        if ((!UuViewSwitchEnabled && !McpEnabled)
+            || _childSessionService.ConnectedState != 1)
         {
             return;
         }
@@ -1828,6 +2062,7 @@ public partial class MainWindowViewModel : ObservableObject
         IsWatchModeEnabled = _childSessionService.WatchModeEnabled;
         IsAudioMuted = _childSessionService.AudioMuted;
         IsRdpConnected = connectedState == 1;
+        UpdateMcpStatus();
         IsConnectionPromptVisible = IsSessionClosing || (connectedState == 0 && !_startRequested);
 
         // 连上了说明凭据是对的：这次失败的推断作废，面板上那条提示跟着撤掉。

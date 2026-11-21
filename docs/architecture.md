@@ -14,6 +14,9 @@ ViewModel               MainWindowViewModel（状态映射、命令、通知）
 Services                ChildSessionService      会话生命周期与状态机
                         ChildSessionProcessLauncher  跨会话启动进程
                         ChildSessionEnvironmentCheck 只读环境预检
+                        McpLoopbackServer            MCP 环回 HTTP 端点
+                        McpProtocolHandler           JSON-RPC / MCP 工具分发
+                        SessionAgentControlClient    命名管道客户端
                         SettingsService / AppLog     持久化与日志
    │  调用
 Interop                 ChildSessionNativeMethods  wtsapi32 / user32
@@ -63,7 +66,26 @@ LaunchProgramCoreAsync
 `RunLevel` 由设置决定：默认「普通权限」，这样能减少与反作弊/账号安全机制的冲突；
 需要时可在控制中心勾选「以管理员权限启动目标程序」。
 
-### 3. 注销
+### 3. MCP 控制
+
+MCP 端点只监听 IPv4 环回地址。主进程本身不调用 `SendInput` 控制分身，而是把工具请求转发给子会话里的
+`SessionAgent`：
+
+```
+MCP client
+  └─ POST /mcp/{accessToken}
+       └─ McpLoopbackServer          Host / Origin / 路径令牌 / Bearer 校验
+            └─ McpProtocolHandler     initialize、tools/list、tools/call
+                 └─ SessionAgentControlClient
+                      └─ 命名管道（当前用户 ACL + 随机管道名）
+                           └─ SessionAgent（RDP 子会话，STA 串行线程）
+                                └─ 子会话桌面 / 窗口 / 进程 / 剪贴板
+```
+
+这条链路没有主会话输入回退：如果命名管道不可用，工具返回 `agent_unavailable`；如果子会话拒绝注入，
+工具失败而不是改向主桌面发送输入。详细配置与工具清单见 [MCP 桌面控制](mcp.md)。
+
+### 4. 注销
 
 ```
 LogoffAndHideAsync

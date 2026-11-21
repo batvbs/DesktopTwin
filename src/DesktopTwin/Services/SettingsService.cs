@@ -256,6 +256,12 @@ public sealed class SettingsService : IDisposable
             changed = true;
         }
 
+        if (settings.Mcp is null)
+        {
+            settings.Mcp = new McpSettings();
+            changed = true;
+        }
+
         if (settings.SettingsVersion >= AppSettings.CurrentVersion)
         {
             return changed;

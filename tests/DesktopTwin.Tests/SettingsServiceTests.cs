@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using DesktopTwin.Models;
 using DesktopTwin.Services;
 
 namespace DesktopTwin.Tests;
@@ -43,6 +44,12 @@ public sealed class SettingsServiceTests : IDisposable
         Assert.True(settings.Automation.AutoLoginEnabled);
         Assert.Equal("Ctrl+Alt+U", settings.Automation.UuViewSwitchHotkey);
 
+        // MCP 默认关闭；令牌由首次启用时生成，不在默认设置里写死。
+        Assert.False(settings.Mcp.Enabled);
+        Assert.Equal(McpSettings.DefaultPort, settings.Mcp.Port);
+        Assert.Empty(settings.Mcp.AccessToken);
+        Assert.Empty(settings.Mcp.PipeName);
+
         // 密码表默认是空的，且按键不区分大小写（多账户各存一份）
         Assert.Empty(settings.Automation.AutoLoginPasswords);
         settings.Automation.AutoLoginPasswords["SomeUser"] = "x";
@@ -64,6 +71,10 @@ public sealed class SettingsServiceTests : IDisposable
             writer.Current.Launch.RunAsAdministrator = true;
             writer.Current.ChildSessionNoticeAccepted = true;
             writer.Current.Window.FullscreenBarPinned = true;
+            writer.Current.Mcp.Enabled = true;
+            writer.Current.Mcp.Port = 41000;
+            writer.Current.Mcp.AccessToken = "mcp-token";
+            writer.Current.Mcp.PipeName = "pipe-name";
             writer.Flush();
         }
 
@@ -74,9 +85,32 @@ public sealed class SettingsServiceTests : IDisposable
         Assert.Equal(@"C:\Games\game.exe", reader.Current.Launch.TargetPath);
         Assert.True(reader.Current.Launch.RunAsAdministrator);
         Assert.True(reader.Current.ChildSessionNoticeAccepted);
+        Assert.True(reader.Current.Mcp.Enabled);
+        Assert.Equal(41000, reader.Current.Mcp.Port);
+        Assert.Equal("mcp-token", reader.Current.Mcp.AccessToken);
+        Assert.Equal("pipe-name", reader.Current.Mcp.PipeName);
 
         // 全屏顶栏的固定状态要能记住，否则每次进全屏都要重新点一次图钉。
         Assert.True(reader.Current.Window.FullscreenBarPinned);
+    }
+
+    [Fact]
+    public void 显式为null的MCP设置会迁移为默认值()
+    {
+        File.WriteAllText(
+            Path.Combine(_directory, "settings.json"),
+            """
+            {
+              "SettingsVersion": 1,
+              "Mcp": null
+            }
+            """);
+
+        using var service = new SettingsService(_directory);
+
+        Assert.NotNull(service.Current.Mcp);
+        Assert.False(service.Current.Mcp.Enabled);
+        Assert.Equal(McpSettings.DefaultPort, service.Current.Mcp.Port);
     }
 
     [Fact]

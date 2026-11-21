@@ -48,6 +48,7 @@ namespace DesktopTwinSessionAgent
 
         private static Mutex _mutex;
         private static HotkeyWindow _hotkeyWindow;
+        private static SessionAgentControlServer _controlServer;
         private static readonly object LogLock = new object();
         private static int _logLines;
         private static Form _hud;
@@ -68,7 +69,9 @@ namespace DesktopTwinSessionAgent
             _heartbeatPath = Path.Combine(_dataDirectory, "session-agent-heartbeat.txt");
             _logPath = Path.Combine(_dataDirectory, "session-agent.log");
 
-            string hotkey = ReadHotkeyArgument(args);
+            bool noHotkey = HasFlag(args, "--no-hotkey");
+            string hotkey = noHotkey ? null : ReadHotkeyArgument(args);
+            string controlPipe = ReadArgumentValue(args, "--control-pipe");
             bool testMode = HasFlag(args, "--test");
 
             Log("代理启动 pid=" + Process.GetCurrentProcess().Id + " 版本=" + typeof(Program).Assembly.GetName().Version);
@@ -120,14 +123,21 @@ namespace DesktopTwinSessionAgent
                 return 0;
             }
 
-            uint mods;
-            uint vk;
-            ParseHotkey(hotkey, out mods, out vk);
+            uint mods = 0;
+            uint vk = 0;
+            if (!noHotkey)
+            {
+                ParseHotkey(hotkey, out mods, out vk);
 
-            _hotkeyWindow = new HotkeyWindow();
-            _hotkeyWindow.Pressed += OnHotkeyPressed;
-            _registered = Native.RegisterHotKey(_hotkeyWindow.Handle, HotkeyId, mods | ModNoRepeat, vk);
-            Log("热键注册 " + hotkey + ": " + (_registered ? "成功" : "失败"));
+                _hotkeyWindow = new HotkeyWindow();
+                _hotkeyWindow.Pressed += OnHotkeyPressed;
+                _registered = Native.RegisterHotKey(_hotkeyWindow.Handle, HotkeyId, mods | ModNoRepeat, vk);
+                Log("热键注册 " + hotkey + ": " + (_registered ? "成功" : "失败"));
+            }
+            else
+            {
+                Log("热键已禁用，代理仅提供 MCP 控制通道");
+            }
 
             if (testMode)
             {
@@ -141,6 +151,21 @@ namespace DesktopTwinSessionAgent
                 return 0;
             }
 
+            if (!string.IsNullOrEmpty(controlPipe))
+            {
+                try
+                {
+                    _controlServer = new SessionAgentControlServer(controlPipe, Log);
+                    _controlServer.Start();
+                    Log("MCP 控制管道已启动: " + controlPipe);
+                }
+                catch (Exception ex)
+                {
+                    _controlServer = null;
+                    Log("MCP 控制管道启动失败: " + ex.Message);
+                }
+            }
+
             var beat = new System.Windows.Forms.Timer();
             beat.Interval = 2000;
             beat.Tick += delegate { WriteHeartbeat(); };
@@ -148,22 +173,25 @@ namespace DesktopTwinSessionAgent
 
             // 守夜：热键被别的进程占用时每 3 秒重试一次，对方让出后自动接管。
             // 只在状态变化时写日志，避免每 3 秒刷一行。
-            var guard = new System.Windows.Forms.Timer();
-            guard.Interval = 3000;
-            guard.Tick += delegate
+            if (!noHotkey)
             {
-                if (_registered)
+                var guard = new System.Windows.Forms.Timer();
+                guard.Interval = 3000;
+                guard.Tick += delegate
                 {
-                    return;
-                }
+                    if (_registered)
+                    {
+                        return;
+                    }
 
-                _registered = Native.RegisterHotKey(_hotkeyWindow.Handle, HotkeyId, mods | ModNoRepeat, vk);
-                if (_registered)
-                {
-                    Log("热键补注册成功");
-                }
-            };
-            guard.Start();
+                    _registered = Native.RegisterHotKey(_hotkeyWindow.Handle, HotkeyId, mods | ModNoRepeat, vk);
+                    if (_registered)
+                    {
+                        Log("热键补注册成功");
+                    }
+                };
+                guard.Start();
+            }
 
             Log("进入消息循环");
             Application.Run(new AgentContext());
@@ -443,6 +471,19 @@ namespace DesktopTwinSessionAgent
             }
 
             return DefaultHotkey;
+        }
+
+        private static string ReadArgumentValue(string[] args, string name)
+        {
+            for (int i = 0; i < args.Length - 1; i++)
+            {
+                if (string.Equals(args[i], name, StringComparison.OrdinalIgnoreCase))
+                {
+                    return args[i + 1];
+                }
+            }
+
+            return null;
         }
 
         private static bool HasFlag(string[] args, string name)

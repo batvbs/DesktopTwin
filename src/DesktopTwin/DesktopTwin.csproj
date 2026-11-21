@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
 		<OutputType>WinExe</OutputType>
@@ -15,7 +15,7 @@
 		<ApplicationIcon>Assets\DesktopTwin.ico</ApplicationIcon>
 		<!-- WPF 的 DPI 感知由 app.manifest 声明；WinForms 的 WFO0003 分析器不适用于本项目的混合场景 -->
 		<NoWarn>$(NoWarn);WFO0003</NoWarn>
-		<Version>0.3.0</Version>
+		<Version>0.4.0</Version>
 		<Product>DesktopTwin 桌面分身</Product>
 		<AssemblyTitle>DesktopTwin 桌面分身</AssemblyTitle>
 		<Description>把 Windows 自带的第二个桌面会话（RDP Child Session）变成桌面上的一个窗口。</Description>
@@ -53,6 +53,8 @@
 	<Target Name="BuildSessionAgent" BeforeTargets="PrepareForBuild">
 		<PropertyGroup>
 			<SessionAgentSource>$(MSBuildThisFileDirectory)..\SessionAgent\SessionAgentProgram.cs</SessionAgentSource>
+			<SessionAgentControlSource>$(MSBuildThisFileDirectory)..\SessionAgent\SessionAgentControlServer.cs</SessionAgentControlSource>
+			<SessionAgentNativeSource>$(MSBuildThisFileDirectory)..\SessionAgent\SessionAgentDesktopNative.cs</SessionAgentNativeSource>
 			<SessionAgentManifest>$(MSBuildThisFileDirectory)..\SessionAgent\app.manifest</SessionAgentManifest>
 			<SessionAgentIcon>$(MSBuildProjectDirectory)\Assets\DesktopTwin.ico</SessionAgentIcon>
 			<SessionAgentOutput>$(IntermediateOutputPath)DesktopTwin.Agent.exe</SessionAgentOutput>
@@ -63,7 +65,7 @@
 		<Error Condition="!Exists('$(SessionAgentCompiler)')"
 		       Text="找不到 .NET Framework 的编译器，无法构建分身端代理。" />
 		<MakeDir Directories="$(IntermediateOutputPath)" />
-		<Exec Command="&quot;$(SessionAgentCompiler)&quot; /nologo /target:winexe /optimize+ /win32manifest:&quot;$(SessionAgentManifest)&quot; /win32icon:&quot;$(SessionAgentIcon)&quot; /out:&quot;$(SessionAgentOutput)&quot; /reference:System.dll /reference:System.Core.dll /reference:System.Windows.Forms.dll /reference:System.Drawing.dll &quot;$(SessionAgentSource)&quot;" />
+		<Exec Command="&quot;$(SessionAgentCompiler)&quot; /nologo /target:winexe /optimize+ /win32manifest:&quot;$(SessionAgentManifest)&quot; /win32icon:&quot;$(SessionAgentIcon)&quot; /out:&quot;$(SessionAgentOutput)&quot; /reference:System.dll /reference:System.Core.dll /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Web.Extensions.dll &quot;$(SessionAgentSource)&quot; &quot;$(SessionAgentControlSource)&quot; &quot;$(SessionAgentNativeSource)&quot;" />
 
 		<ItemGroup>
 			<EmbeddedResource Include="$(SessionAgentOutput)" LogicalName="DesktopTwin.Agent.exe" />
