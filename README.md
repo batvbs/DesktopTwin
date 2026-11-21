@@ -89,8 +89,7 @@ DesktopTwin 做的事情就是：
 
 ### 使用
 
-1. 从 [Releases](../../releases) 下载两个版本中的一个，放到固定目录
-   （**不要放在 `Downloads` 这类多人可写的目录里**，本程序以管理员权限运行）：
+1. 从 [Github](../../releases) 或 [Gitee](https://gitee.com/batvbs/DesktopTwin/releases)  下载两个版本中的一个，放到固定目录：
 
    | 文件 | 说明 | 适用 |
    | --- | --- | --- |
