@@ -30,6 +30,7 @@ public partial class MainWindowViewModel : ObservableObject
     private readonly SettingsService _settings;
     private readonly DispatcherTimer _notificationTimer;
     private readonly UuViewSwitchService _uuViewSwitchService;
+    private readonly UuViewLockService _uuViewLockService;
     private readonly SessionAgentService _sessionAgent;
     private long _lastAgentStartTicks;
     private GlobalHotkeyService? _globalHotkey;
@@ -137,6 +138,9 @@ public partial class MainWindowViewModel : ObservableObject
     private bool _uuViewSwitchEnabled;
 
     [ObservableProperty]
+    private bool _uuViewLockEnabled;
+
+    [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(AutoLoginMenuHeader))]
     private bool _autoLoginEnabled;
 
@@ -165,7 +169,10 @@ public partial class MainWindowViewModel : ObservableObject
         _isSmallWindowMode = settings.Current.Window.SmallWindowMode;
 
         _uuViewSwitchService = new UuViewSwitchService(childSessionService);
+        _uuViewLockService = new UuViewLockService(_uuViewSwitchService, Dispatcher.CurrentDispatcher);
+        _uuViewLockService.MonitoringFailed += OnUuViewLockMonitoringFailed;
         _uuViewSwitchEnabled = settings.Current.Automation.UuViewSwitchEnabled;
+        _uuViewLockEnabled = settings.Current.Automation.UuViewLockEnabled;
         _autoLoginEnabled = settings.Current.Automation.AutoLoginEnabled;
         _hasAutoLoginPassword = childSessionService.AutoLogin?.HasStoredPassword == true;
 
@@ -316,6 +323,23 @@ public partial class MainWindowViewModel : ObservableObject
             // 先让「正在关闭」状态完成渲染，再执行可能耗时的注销操作。
             await Dispatcher.Yield(DispatcherPriority.Render);
             await _childSessionService.LogoffAndHideAsync();
+
+            // 注销分身会触发 UU 服务重启串流端：视角在主机时这次重启会进入僵尸态
+            // （进程在但不再注册云端，手机显示已离线），从外部检测不到，只能重启
+            // 服务清掉。UU 功能都没开时不做（服务多半没装，白卡几秒）。
+            // 失败只记日志，不阻塞退出。
+            if (UuViewSwitchEnabled || UuViewLockEnabled)
+            {
+                try
+                {
+                    await _uuViewSwitchService.RestartStreamerServiceAsync(
+                        CancellationToken.None).ConfigureAwait(true);
+                }
+                catch (Exception uuException)
+                {
+                    AppLog.Warn("退出时重启 UU 串流服务失败。", uuException);
+                }
+            }
         }
         catch (Exception exception)
         {
@@ -468,63 +492,34 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private async Task StartAsync()
     {
-        // 记下代际要放在最前面：下面这个说明框不是模态的，用户完全可能在它开着的时候
-        // 从诊断面板关掉桌面分身，随后「同意」接着把会话又建回来。
-        var startGeneration = _childSessionService.StartGeneration;
-
-        if (!await EnsureSystemChangeDisclosedAsync())
-        {
-            return;
-        }
-
-        if (_childSessionService.ConnectedState != 1)
-        {
-            // 预检要读上千个计划任务 XML，放后台跑：这里在 UI 线程上，
-            // 同步调用会直接把界面卡住。
-            await Task.Run(() => _childSessionService.RefreshEnvironmentCheckAsync());
-
-            // 服务只是「没启动」时先替用户拉一次：状态栏已经写着「TermService：未启动」，
-            // 用户点「启动」即视为同意。被禁用或启动失败的情况不在这里处理，
-            // 照常走下面的拦截提示，由用户到诊断面板里修。
-            if (_childSessionService.HasBlockingEnvironmentIssue
-                && await Task.Run(() => _childSessionService.TryStartTermServiceIfStopped(out _)))
-            {
-                await Task.Run(() => _childSessionService.RefreshEnvironmentCheckAsync());
-                _childSessionService.RefreshState();
-            }
-
-            // 阻塞项（例如缺少 RDP 主机）直接拒绝，避免用户白等 60 秒超时。
-            // 不再弹一个只有「我知道了」的框——那是个死胡同；直接把诊断面板推到用户面前，
-            // 他下一步要做的事（修复）就在那里。
-            if (_childSessionService.HasBlockingEnvironmentIssue)
-            {
-                ShowDiagnostics(showAll: false, startupFailure: true);
-                return;
-            }
-
-            if (_childSessionService.HasEnvironmentIssue)
-            {
-                // 风险项只是提示，不应该挡住本来可以连上的用户。
-                var confirmed = await Dialogs.ConfirmAsync(
-                    _childSessionService.EnvironmentIssueSummary
-                    + Locale.Get("Startup.IssueConfirm.Suffix"),
-                    Locale.Get("Startup.IssueConfirm.Title"));
-                if (!confirmed)
-                {
-                    return;
-                }
-            }
-        }
-
+        using var operation = _childSessionService.BeginSessionOperation();
         _startRequested = true;
         IsConnectionPromptVisible = false;
-
         try
         {
-            await Dispatcher.Yield(DispatcherPriority.Background);
+            if (!await EnsureSystemChangeDisclosedAsync()) return;
+            operation.Token.ThrowIfCancellationRequested();
+            await _childSessionService.StartAsync(operation.Token, async (issues, token) =>
+            {
+                token.ThrowIfCancellationRequested();
+                if (ChildSessionEnvironmentCheck.HasBlockingIssue(issues))
+                {
+                    ShowDiagnostics(showAll: false, startupFailure: true);
+                    return false;
+                }
 
-            // 带上代际：等待期间被注销的启动由服务侧直接放弃。
-            await _childSessionService.StartAsync(startGeneration);
+                if (issues.Count == 0) return true;
+                var confirmed = await Dialogs.ConfirmAsync(
+                    ChildSessionEnvironmentCheck.BuildSummary(issues)
+                    + Locale.Get("Startup.IssueConfirm.Suffix"),
+                    Locale.Get("Startup.IssueConfirm.Title"));
+                token.ThrowIfCancellationRequested();
+                return confirmed;
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            // 注销或退出取消整次启动，不再显示成连接故障。
         }
         catch (Exception exception)
         {
@@ -634,6 +629,7 @@ public partial class MainWindowViewModel : ObservableObject
     {
         void Notify()
         {
+            _uuViewLockService.RequestCheck();
             ShowNotification(
                 Locale.Get("Uu.Recovered.Title"),
                 Locale.Get("Uu.Recovered.Message"),
@@ -742,6 +738,8 @@ public partial class MainWindowViewModel : ObservableObject
         _sessionAgent.SwitchRequested -= OnSessionAgentSwitchRequested;
         _sessionAgent.Dispose();
         _uuViewSwitchService.StreamerRecovered -= OnStreamerRecovered;
+        _uuViewLockService.MonitoringFailed -= OnUuViewLockMonitoringFailed;
+        _uuViewLockService.Dispose();
         _uuViewSwitchService.Dispose();
     }
 
@@ -782,6 +780,7 @@ public partial class MainWindowViewModel : ObservableObject
         finally
         {
             _uuSwitchInProgress = false;
+            _uuViewLockService.RequestCheck();
         }
     }
 
@@ -791,7 +790,7 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private async Task TriggerUuViewSwitchAsync()
     {
-        if (_uuSwitchInProgress)
+        if (!UuViewSwitchEnabled || _uuSwitchInProgress)
         {
             return;
         }
@@ -814,6 +813,12 @@ public partial class MainWindowViewModel : ObservableObject
             // 排障时只能从「有没有杀串流端」间接猜，代价太高。
             AppLog.Info(
                 $"视角切换结束：{(result.Success ? "成功" : "失败")} —— {result.Message}");
+
+            if (result.Success)
+            {
+                // 用户主动切换：新的落点就是「正确位置」，不更新的话下一轮锁定会把它纠正回去。
+                _uuViewLockService.RebaseTo(result.Target);
+            }
 
             ShowNotification(
                 result.Success
@@ -838,7 +843,45 @@ public partial class MainWindowViewModel : ObservableObject
         finally
         {
             _uuSwitchInProgress = false;
+            _uuViewLockService.RequestCheck();
         }
+    }
+
+    /// <summary>
+    /// 启用 / 关闭 UU 视角锁定。
+    ///
+    /// 只开锁定时不注册热键、不安装分身内代理——那种用法只在主机上操作，
+    /// 记录值固定为电脑主机。
+    /// </summary>
+    [RelayCommand]
+    private void ToggleUuViewLock()
+    {
+        UuViewLockEnabled = !UuViewLockEnabled;
+        _settings.Current.Automation.UuViewLockEnabled = UuViewLockEnabled;
+        _settings.SaveSoon();
+        ApplyUuViewLock();
+    }
+
+    private void ApplyUuViewLock()
+    {
+        try
+        {
+            _uuViewLockService.SetEnabled(UuViewLockEnabled, UuViewSwitchEnabled);
+        }
+        catch (Exception exception)
+        {
+            OnUuViewLockMonitoringFailed(this, exception);
+        }
+    }
+
+    private void OnUuViewLockMonitoringFailed(object? sender, Exception exception)
+    {
+        AppLog.Warn("UU 视角锁定事件监听失败。", exception);
+        UuViewLockEnabled = false;
+        _settings.Current.Automation.UuViewLockEnabled = false;
+        _settings.SaveSoon();
+        ShowNotification(Locale.Get("Notify.UuLockFailed.Title"),
+            Locale.Get("Notify.UuLockFailed.Message"), InfoBarSeverity.Warning);
     }
 
     /// <summary>
@@ -851,6 +894,9 @@ public partial class MainWindowViewModel : ObservableObject
         _settings.Current.Automation.UuViewSwitchEnabled = UuViewSwitchEnabled;
         _settings.SaveSoon();
 
+        // 锁定基线依赖「视角切换」是否开启：两个都开时记录当前会话，只开锁定时固定主机。
+        ApplyUuViewLock();
+
         if (UuViewSwitchEnabled)
         {
             ApplyUuHotkey(notifySuccess: true);
@@ -858,6 +904,7 @@ public partial class MainWindowViewModel : ObservableObject
         }
 
         _globalHotkey?.Unregister();
+        _sessionAgent.Uninstall();
         ShowNotification(
                 Locale.Get("Notify.UuDisabled.Title"),
                 Locale.Get("Notify.UuDisabled.Message"),
@@ -1217,6 +1264,9 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
+        // 打开软件、切换开关都会走到这里，正好是刷新锁定基线（记录串流端位置）的时机。
+        ApplyUuViewLock();
+
         _globalHotkey ??= new GlobalHotkeyService();
         _globalHotkey.Pressed -= OnUuHotkeyPressed;
         _globalHotkey.Pressed += OnUuHotkeyPressed;
@@ -1257,13 +1307,15 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        // 注册失败就把开关退回去，避免界面显示「已启用」但按键没反应。
+        // 注册失败不退开关：退掉之后「快捷键设置」会跟着从菜单里消失（它只在
+        // 视角切换开启时显示），用户连改键的入口都没有了。保持开关、只提示按键没生效。
         AppLog.Warn($"UU 视角切换热键注册失败：{error}");
-        UuViewSwitchEnabled = false;
-        _settings.Current.Automation.UuViewSwitchEnabled = false;
-        _settings.SaveSoon();
         _sessionAgent.Uninstall();
-            ShowNotification(Locale.Get("Hotkey.Registered.Failed.Title"), error, InfoBarSeverity.Warning, TimeSpan.FromSeconds(7));
+        ShowNotification(
+            Locale.Get("Hotkey.Registered.Failed.Title"),
+            Locale.Format("Notify.Hotkey.Failed.Message", error),
+            InfoBarSeverity.Warning,
+            TimeSpan.FromSeconds(10));
     }
 
     /// <summary>

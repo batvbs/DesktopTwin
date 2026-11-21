@@ -245,15 +245,23 @@
                                     <ui:MenuItem Command="{Binding ShowTaskViewCommand}"
                                                  Header="{loc:Loc Menu.SendWinTab}" />
                                     <Separator />
+                                    <ui:MenuItem Command="{Binding ToggleUuViewLockCommand}"
+                                                 Header="{loc:Loc Menu.UuViewLock}"
+                                                 IsCheckable="True"
+                                                 IsChecked="{Binding UuViewLockEnabled, Mode=OneWay}"
+                                                 ToolTip="{loc:Loc Menu.UuViewLock.ToolTip}" />
                                     <ui:MenuItem Command="{Binding ToggleUuViewSwitchCommand}"
                                                  Header="{Binding UuViewSwitchMenuHeader}"
                                                  IsCheckable="True"
                                                  IsChecked="{Binding UuViewSwitchEnabled, Mode=OneWay}"
                                                  ToolTip="{loc:Loc Menu.UuSwitch.ToolTip}" />
+                                    <!-- 快捷键与手动切换只在「视角切换」开启时有意义；只开锁定时不显示。 -->
                                     <ui:MenuItem Command="{Binding ConfigureUuHotkeyCommand}"
-                                                 Header="{Binding UuHotkeyText, StringFormat={loc:Loc Menu.UuHotkey}}" />
+                                                 Header="{Binding UuHotkeyText, StringFormat={loc:Loc Menu.UuHotkey}}"
+                                                 Visibility="{Binding UuViewSwitchEnabled, Converter={StaticResource BooleanToVisibilityConverter}}" />
                                     <ui:MenuItem Command="{Binding TriggerUuViewSwitchCommand}"
-                                                 Header="{loc:Loc Menu.UuTrigger}" />
+                                                 Header="{loc:Loc Menu.UuTrigger}"
+                                                 Visibility="{Binding UuViewSwitchEnabled, Converter={StaticResource BooleanToVisibilityConverter}}" />
                                     <ui:MenuItem Command="{Binding RepairUuStreamingCommand}"
                                                  Header="{loc:Loc Menu.UuRepair}"
                                                  ToolTip="{loc:Loc Menu.UuRepair.ToolTip}" />

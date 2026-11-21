@@ -67,6 +67,11 @@ internal static class Strings
         Pair("Menu.UuSwitch.ToolTip", "启用后可用全局热键在「UU 控制整台电脑」与「UU 控制桌面分身」之间切换。切换时会结束 UU 的串流端进程，让 UU 服务重新挑选会话；分身只是断开，不会注销。"),
         Pair("Menu.UuHotkey", "切换快捷键：{0}"),
         Pair("Menu.UuTrigger", "立即切换一次"),
+        Pair("Notify.Hotkey.Failed.Message", "{0}\n快捷键没有生效，请从窗口菜单里重新设置一个未被占用的组合。"),
+        Pair("Menu.UuViewLock", "UU 视角锁定"),
+        Pair("Menu.UuViewLock.ToolTip", "开启时记录控制目标，桌面会话变化或 UU 串流端启动时再检查，偏离记录的桌面就自动切回；只有你主动切换视角才会更新目标。只勾这一项时固定在电脑主机，不注册热键、也不在分身里装代理。"),
+        Pair("Notify.UuLockFailed.Title", "UU 视角锁定已关闭：无法监听桌面变化"),
+        Pair("Notify.UuLockFailed.Message", "请重新开启视角锁定。如果仍然无法监听控制目标的变化，可查看日志了解原因。"),
         Pair("Menu.UuRepair", "修复 UU 串流（重启 UU 服务）"),
         Pair("Menu.UuRepair.ToolTip", "快速连续切换后，手机上的 UU 可能显示设备离线：切换需要结束串流端，短时间内连续结束会被 UU 服务当成连续崩溃而暂停重拉。点这里重启 UU 服务恢复，然后在手机上重新连接一次。"),
 
@@ -178,7 +183,7 @@ internal static class Strings
         Pair("Uu.Repair.Done", "UU 串流已修复"),
         Pair("Uu.Repair.Failed", "UU 串流修复失败"),
         Pair("Uu.Result.Busy", "上一次切换还没结束，已忽略本次。"),
-        Pair("Uu.Result.RecoveryBusy", "上一轮的串流恢复还在收尾，请稍后再切换。"),
+        Pair("Uu.Result.ServiceRecoveryPending", "UU 服务仍在完成停止/启动，后台会继续恢复。请稍后再试。"),
         Pair("Uu.Result.Cancelled", "切换已取消。"),
         Pair("Uu.Result.Failed", "切换失败：{0}"),
         Pair("Uu.Result.DisconnectFailed", "分身会话没能断开，请稍后重试。"),
@@ -535,7 +540,6 @@ internal static class Strings
 
         Pair("Common.Success", "成功"),
         Pair("Common.Failed", "失败"),
-        Pair("Uu.Result.ServiceRestartFailed2", "重启 UU 服务失败（停止{0}、启动失败）。请在服务管理器里手动重启 GameViewerService。"),
         Pair("Uu.Result.ServiceStopFailed", "无法停止 UU 服务（GameViewerService），本次重启没有继续。请在服务管理器里手动重启它。"),
         Pair("Uu.Result.ServiceStartFailed", "UU 服务已停止但没能重新启动。请在服务管理器里手动启动 GameViewerService。"),
         Pair("AutoLogin.System.NotFound", "找不到 netplwiz.exe，请手动按 Win+R 输入 netplwiz 打开。"),

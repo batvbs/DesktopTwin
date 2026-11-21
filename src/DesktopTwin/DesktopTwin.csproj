@@ -29,6 +29,7 @@
 		<PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
 		<PackageReference Include="Microsoft.Xaml.Behaviors.Wpf" Version="1.1.135" />
 		<PackageReference Include="WPF-UI" Version="4.2.0" />
+		<PackageReference Include="System.Management" Version="10.0.15" />
 	</ItemGroup>
 
 	<ItemGroup>

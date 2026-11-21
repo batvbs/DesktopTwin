@@ -404,6 +404,31 @@ internal sealed class SessionAgentService : IDisposable
     {
         StopPolling();
 
+        // 杀掉还在运行的 agent：它占着全局热键，按下还会弹「正在切换视角」提示，
+        // 而此时主程序已经忽略了它的请求——留着只会让用户以为功能坏了。
+        var agentProcessName = Path.GetFileNameWithoutExtension(AgentFileName);
+        // 只结束「本安装」拉起的 agent：按可执行文件全路径比对，别的用户装的
+        // 同名进程即使落在同号会话里也不能动。
+        foreach (var process in Process.GetProcessesByName(agentProcessName))
+        {
+            try
+            {
+                var imagePath = process.MainModule?.FileName;
+                if (!string.Equals(imagePath, AgentPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                process.Kill();
+                process.WaitForExit(3000);
+            }
+            catch (Exception exception) when (exception is InvalidOperationException
+                                                  or SystemException)
+            {
+                AppLog.Warn("结束分身端 agent 进程失败。", exception);
+            }
+        }
+
         try
         {
             using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true);
