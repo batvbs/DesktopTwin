@@ -35,6 +35,8 @@ public sealed class ServiceRecoveryTests
         var recovery = service.CreateRecovery();
         using var cancellation = new CancellationTokenSource();
         var waiting = recovery.EnsureRunningAsync(restart: true, cancellation.Token);
+        // 未取消的等待者：共享恢复即使第一个等待者取消，也要真正跑到 Running 才算空闲。
+        var survivor = recovery.EnsureRunningAsync(restart: true, CancellationToken.None);
         await service.WaitForPoll();
         cancellation.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting);
@@ -43,6 +45,9 @@ public sealed class ServiceRecoveryTests
         service.Advance(1);
         await service.WaitForPoll();
         service.Advance(4);
+        Assert.Equal(
+            ServiceRecovery.Outcome.Succeeded,
+            await survivor.WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None));
         Assert.True(await recovery.WaitForIdleAsync(TimeSpan.FromSeconds(5), CancellationToken.None));
         Assert.Equal(new[] { "stop", "start" }, service.Commands);
     }

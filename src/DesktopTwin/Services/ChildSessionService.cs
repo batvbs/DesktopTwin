@@ -1192,9 +1192,10 @@ public sealed class ChildSessionService : IDisposable
 
         // 用户主动隐藏过窗口就别弹出来：连接本身不需要窗口可见，
         // 切回分身时突然弹窗会打断他正在做的事。
-        // 同样不惊动已有状态的窗口：最小化的保持最小化、显示中的不抢焦点——
-        // 只有从未显示过的窗口（首次启动，句柄还没建）才 Show。
-        if (!_windowHiddenByUser && !window.IsVisible && !window.IsLoaded)
+        // 注意这里不能一并挡掉「已显示/已最小化」的窗口：走到 ConnectCore 的都是
+        // 启动/重连的完整流程，用户切回分身就是要看画面；「重连不动窗口」由
+        // EnsureDesktopConnectedCoreAsync 与 ReconnectToChildSession 负责。
+        if (!_windowHiddenByUser)
         {
             ShowDesktopWindow(window);
         }

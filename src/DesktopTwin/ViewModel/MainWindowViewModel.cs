@@ -326,15 +326,19 @@ public partial class MainWindowViewModel : ObservableObject
 
             // 注销分身会触发 UU 服务重启串流端：视角在主机时这次重启会进入僵尸态
             // （进程在但不再注册云端，手机显示已离线），从外部检测不到，只能重启
-            // 服务清掉。失败只记日志，不阻塞退出。
-            try
+            // 服务清掉。UU 功能都没开时不做（服务多半没装，白卡几秒）。
+            // 失败只记日志，不阻塞退出。
+            if (UuViewSwitchEnabled || UuViewLockEnabled)
             {
-                await _uuViewSwitchService.RestartStreamerServiceAsync(
-                    CancellationToken.None).ConfigureAwait(true);
-            }
-            catch (Exception uuException)
-            {
-                AppLog.Warn("退出时重启 UU 串流服务失败。", uuException);
+                try
+                {
+                    await _uuViewSwitchService.RestartStreamerServiceAsync(
+                        CancellationToken.None).ConfigureAwait(true);
+                }
+                catch (Exception uuException)
+                {
+                    AppLog.Warn("退出时重启 UU 串流服务失败。", uuException);
+                }
             }
         }
         catch (Exception exception)

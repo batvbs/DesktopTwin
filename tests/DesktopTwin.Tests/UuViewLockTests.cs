@@ -106,7 +106,10 @@ public sealed class UuViewLockTests
         service.SetEnabled(true, true);
         await service.CheckAsync();
         harness.Complete = () => Task.FromResult(new UuViewSwitchService.Result(true, "done"));
-        await service.CheckAsync();
+        // 纠正失败后的重试必须由下一次通知触发（走 RequestCheck 排程），
+        // 直接调 CheckAsync 会绕过排程、漏掉排程本身的回归。
+        harness.Changed();
+        harness.Flush();
 
         Assert.Equal(2, harness.Requests.Count);
     }

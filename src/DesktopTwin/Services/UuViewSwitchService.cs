@@ -42,6 +42,11 @@ internal sealed class UuViewSwitchService : IDisposable
 
     private readonly ChildSessionService _childSessionService;
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private DateTime _lastSwitchFinishedAt = DateTime.MinValue;
+
+    /// <summary>最近几秒内刚有一次切换完成。视角锁定用它跳过「切换落定但记录值未同步」的间隙轮。</summary>
+    internal bool IsSwitchRecentlyFinished =>
+        (DateTime.UtcNow - _lastSwitchFinishedAt).TotalSeconds < 3;
     private CancellationTokenSource? _streamRecoveryCancellation;
     private bool _killedStreamersInLastSwitch;
 
@@ -171,7 +176,11 @@ internal sealed class UuViewSwitchService : IDisposable
             {
                 // 恢复的排入和切换使用同一把闸门，不再用脱离闸门的延迟续体补排。
                 try { ScheduleStreamerRecovery(); }
-                finally { _gate.Release(); }
+                finally
+                {
+                    _lastSwitchFinishedAt = DateTime.UtcNow;
+                    _gate.Release();
+                }
             }
         }
     }

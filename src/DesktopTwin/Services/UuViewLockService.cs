@@ -21,6 +21,8 @@ internal sealed class UuViewLockService : IDisposable
     private CancellationTokenSource? _switchCts;
     private IDisposable? _subscription;
     private bool _checkPending;
+    private DispatcherTimer? _fallbackTimer;
+    private readonly Func<bool> _isSwitchRecentlyFinished;
     private bool _checkQueued;
     private bool _disposed;
 
@@ -30,8 +32,18 @@ internal sealed class UuViewLockService : IDisposable
         : this(UuViewSwitchService.CaptureTarget,
             UuViewSwitchService.NeedsCorrection, switchService.EnsureTargetAsync,
             (changed, failed) => new UuViewChangeMonitor(dispatcher, changed, failed),
-            action => dispatcher.BeginInvoke(DispatcherPriority.Background, action))
+            action => dispatcher.BeginInvoke(DispatcherPriority.Background, action),
+            () => switchService.IsSwitchRecentlyFinished)
     {
+        // 事件之外的兜底：服务恢复超时、恢复完成这类路径不产生事件，恢复结束
+        // 后的漂移需要一条低频检查兜住（一分钟一次，代价可忽略）。
+        var fallback = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromMinutes(1)
+        };
+        fallback.Tick += (_, _) => RequestCheck();
+        fallback.Start();
+        _fallbackTimer = fallback;
     }
 
     internal UuViewLockService(
@@ -39,9 +51,11 @@ internal sealed class UuViewLockService : IDisposable
         Func<UuViewTarget, bool> needsCorrection,
         Func<UuViewTarget, CancellationToken, Task<UuViewSwitchService.Result>> ensureTarget,
         Func<Action, Action<Exception>, IDisposable> subscribe,
-        Action<Action> schedule)
+        Action<Action> schedule,
+        Func<bool>? isSwitchRecentlyFinished = null)
     {
         _captureTarget = captureTarget;
+        _isSwitchRecentlyFinished = isSwitchRecentlyFinished ?? (() => false);
         _needsCorrection = needsCorrection;
         _ensureTarget = ensureTarget;
         _subscribe = subscribe;
@@ -151,6 +165,14 @@ internal sealed class UuViewLockService : IDisposable
         _switchCts = cts;
         try
         {
+            // 手动切换刚落定（闸门已释放、记录值还没被 RebaseTo 更新）的间隙里，
+            // 触发的事件带着旧目标进来，此时纠正会把刚切过去的分身断开——跳过
+            // 本轮，等记录值同步。真正的漂移不受影响，下一轮事件或兜底检查会接住。
+            if (_isSwitchRecentlyFinished())
+            {
+                return;
+            }
+
             if (!_needsCorrection(target))
             {
                 return;
@@ -191,6 +213,7 @@ internal sealed class UuViewLockService : IDisposable
 
         _disposed = true;
         _checkPending = false;
+        _fallbackTimer?.Stop();
         _switchCts?.Cancel();
         _subscription?.Dispose();
     }
