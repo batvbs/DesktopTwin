@@ -380,7 +380,7 @@ public sealed class ChildSessionService : IDisposable
         MarkAttemptStarted();
         try
         {
-            ConnectCore(Locale.Get("Svc.Status.Starting"));
+            ConnectCore(Locale.Get("Svc.Status.Starting"), background: approve is null);
             return await WaitForConnectionAttemptAsync(completion, cancellationToken);
         }
         catch
@@ -1185,17 +1185,18 @@ public sealed class ChildSessionService : IDisposable
         _disposeCancellationTokenSource.Dispose();
     }
 
-    private void ConnectCore(string operationMessage)
+    private void ConnectCore(string operationMessage, bool background = false)
     {
         var existingSessionId = ChildSessionNativeMethods.TryGetChildSessionId();
         var window = EnsureDesktopWindow();
 
-        // 用户主动隐藏过窗口就别弹出来：连接本身不需要窗口可见，
-        // 切回分身时突然弹窗会打断他正在做的事。
-        // 注意这里不能一并挡掉「已显示/已最小化」的窗口：走到 ConnectCore 的都是
-        // 启动/重连的完整流程，用户切回分身就是要看画面；「重连不动窗口」由
-        // EnsureDesktopConnectedCoreAsync 与 ReconnectToChildSession 负责。
-        if (!_windowHiddenByUser)
+        // 显式启动（用户点了启动）照常显示；后台重连（切换流程的恢复路径）不动
+        // 窗口：已显示的不抢焦点、最小化的不还原、隐藏的保持隐藏——RDP 连接只
+        // 依赖句柄，不需要窗口可见。
+        var showAllowed = background
+            ? !window.IsVisible && !window.IsLoaded
+            : !_windowHiddenByUser;
+        if (showAllowed)
         {
             ShowDesktopWindow(window);
         }
