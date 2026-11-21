@@ -426,8 +426,11 @@ internal sealed class UuViewSwitchService : IDisposable
                 return new Result(false, Locale.Get("Uu.Result.StreamerKillFailed"));
             }
 
-            // 视角锁定触发的纠正不重连：那可能是用户刚注销的分身，连回来会自作主张。
-            if (!restoreChildConnection)
+            // 自动纠正不重连的前提是「分身已经不存在」（用户刚注销的，连回来会
+            // 自作主张）。分身还在（只是被这次纠正断开）就必须连回来：启动它的
+            // 用户多半正开着游戏，断开只是纠正手段，用完必须恢复。
+            if (!restoreChildConnection
+                && ChildSessionNativeMethods.TryGetChildSessionId() is null)
             {
                 return new Result(false, Locale.Get("Uu.Result.StreamerKillFailed.NotRestored"));
             }
@@ -468,12 +471,13 @@ internal sealed class UuViewSwitchService : IDisposable
         //
         // 视角锁定触发的纠正不这么做：那边可能是用户刚注销掉分身，把他关掉的会话
         // 又连回来会让人以为程序在自作主张。
-        if (!restoreChildConnection)
+        var restoreAllowed = ChildSessionNativeMethods.TryGetChildSessionId() is not null;
+        if (!restoreChildConnection && !restoreAllowed)
         {
             return new Result(true, Locale.Get("Uu.Result.ToMain"));
         }
 
-        var restored = await _childSessionService
+        var restored = restoreAllowed && await _childSessionService
             .ConnectDesktopInBackgroundAsync(cancellationToken)
             .ConfigureAwait(false);
 
