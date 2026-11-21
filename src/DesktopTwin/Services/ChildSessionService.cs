@@ -627,7 +627,8 @@ public sealed class ChildSessionService : IDisposable
     /// 缩下去等于让他自己去任务栏里找回来。
     /// </param>
     public async Task<bool> ConnectDesktopInBackgroundAsync(
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool existingSessionOnly = false)
     {
         ThrowIfDisposed();
         using var operation = BeginSessionOperation(cancellationToken);
@@ -640,17 +641,20 @@ public sealed class ChildSessionService : IDisposable
         // 必须先切回 UI 线程，否则直接抛 InvalidOperationException。
         if (_dispatcher.CheckAccess())
         {
-            return await ConnectDesktopInBackgroundCoreAsync(cancellationToken);
+            return await ConnectDesktopInBackgroundCoreAsync(cancellationToken, existingSessionOnly);
         }
 
         return await _dispatcher
-            .InvokeAsync(() => ConnectDesktopInBackgroundCoreAsync(cancellationToken), DispatcherPriority.Normal, cancellationToken)
+            .InvokeAsync(
+                () => ConnectDesktopInBackgroundCoreAsync(cancellationToken, existingSessionOnly),
+                DispatcherPriority.Normal, cancellationToken)
             .Task
             .Unwrap().ConfigureAwait(false);
     }
 
     private async Task<bool> ConnectDesktopInBackgroundCoreAsync(
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool existingSessionOnly)
     {
         try
         {
@@ -691,6 +695,15 @@ public sealed class ChildSessionService : IDisposable
                 cancellationToken.ThrowIfCancellationRequested();
 
                 host.ResetDisconnectState();
+
+                // 自动恢复只操作既有会话：排队期间会话以任何方式结束（不只注销），
+                // 都不能让完整启动流程把它重建出来——那是程序在替用户决定重新开分身。
+                if (existingSessionOnly && ChildSessionNativeMethods.TryGetChildSessionId() is null)
+                {
+                    AppLog.Info("后台重连分身：会话已结束，按既有会话限制放弃（不重建）。");
+                    return false;
+                }
+
                 await StartAsync(cancellationToken).ConfigureAwait(true);
 
                 // Connected 属性和会话状态会脱节：断开后属性可能还是 1，

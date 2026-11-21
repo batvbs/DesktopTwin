@@ -478,7 +478,8 @@ internal sealed class UuViewSwitchService : IDisposable
         }
 
         var restored = restoreAllowed && await _childSessionService
-            .ConnectDesktopInBackgroundAsync(cancellationToken)
+            .ConnectDesktopInBackgroundAsync(
+                cancellationToken, existingSessionOnly: !restoreChildConnection)
             .ConfigureAwait(false);
 
         return new Result(
