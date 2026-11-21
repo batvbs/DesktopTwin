@@ -425,7 +425,7 @@ internal sealed class UuViewSwitchService : IDisposable
 
             // 这次切换已经失败，用户还停在分身里：连回来就行，别再把他看着的窗口缩下去。
             var childRestored = await _childSessionService
-                .ConnectDesktopInBackgroundAsync(cancellationToken, minimizeWindow: false)
+                .ConnectDesktopInBackgroundAsync(cancellationToken)
                 .ConfigureAwait(false);
 
             return new Result(

@@ -569,7 +569,10 @@ public sealed class ChildSessionService : IDisposable
         if (existingSessionOnly && ChildSessionNativeMethods.TryGetChildSessionId() is null) return false;
         _desktopWindow?.RdpHost.ResetDisconnectState();
         var window = EnsureDesktopWindow();
-        if (showWindow && !_windowHiddenByUser)
+        // 分辨率/静音/UU 切换等重连不改变窗口状态：已显示的不 Activate（不抢焦点）、
+        // 最小化的不还原、隐藏的保持隐藏。只有从未显示过的窗口（程序刚开、句柄
+        // 还没建）才 Show——RDP 连接只依赖句柄，不需要窗口可见。
+        if (showWindow && !_windowHiddenByUser && !window.IsVisible && !window.IsLoaded)
         {
             ShowDesktopWindow(window);
         }
@@ -618,8 +621,7 @@ public sealed class ChildSessionService : IDisposable
     /// 缩下去等于让他自己去任务栏里找回来。
     /// </param>
     public async Task<bool> ConnectDesktopInBackgroundAsync(
-        CancellationToken cancellationToken,
-        bool minimizeWindow = true)
+        CancellationToken cancellationToken)
     {
         ThrowIfDisposed();
         using var operation = BeginSessionOperation(cancellationToken);
@@ -632,18 +634,17 @@ public sealed class ChildSessionService : IDisposable
         // 必须先切回 UI 线程，否则直接抛 InvalidOperationException。
         if (_dispatcher.CheckAccess())
         {
-            return await ConnectDesktopInBackgroundCoreAsync(cancellationToken, minimizeWindow);
+            return await ConnectDesktopInBackgroundCoreAsync(cancellationToken);
         }
 
         return await _dispatcher
-            .InvokeAsync(() => ConnectDesktopInBackgroundCoreAsync(cancellationToken, minimizeWindow), DispatcherPriority.Normal, cancellationToken)
+            .InvokeAsync(() => ConnectDesktopInBackgroundCoreAsync(cancellationToken), DispatcherPriority.Normal, cancellationToken)
             .Task
             .Unwrap().ConfigureAwait(false);
     }
 
     private async Task<bool> ConnectDesktopInBackgroundCoreAsync(
-        CancellationToken cancellationToken,
-        bool minimizeWindow)
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -724,11 +725,6 @@ public sealed class ChildSessionService : IDisposable
                 ? Locale.Get("Svc.Background.Reconnected")
                 : Locale.Get("Svc.Background.ReconnectFailed"));
 
-            var window = _desktopWindow;
-            if (minimizeWindow && window is not null && window.IsVisible)
-            {
-                window.WindowState = WindowState.Minimized;
-            }
 
             return connected;
         }
@@ -1196,7 +1192,9 @@ public sealed class ChildSessionService : IDisposable
 
         // 用户主动隐藏过窗口就别弹出来：连接本身不需要窗口可见，
         // 切回分身时突然弹窗会打断他正在做的事。
-        if (!_windowHiddenByUser)
+        // 同样不惊动已有状态的窗口：最小化的保持最小化、显示中的不抢焦点——
+        // 只有从未显示过的窗口（首次启动，句柄还没建）才 Show。
+        if (!_windowHiddenByUser && !window.IsVisible && !window.IsLoaded)
         {
             ShowDesktopWindow(window);
         }

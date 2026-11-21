@@ -323,6 +323,19 @@ public partial class MainWindowViewModel : ObservableObject
             // 先让「正在关闭」状态完成渲染，再执行可能耗时的注销操作。
             await Dispatcher.Yield(DispatcherPriority.Render);
             await _childSessionService.LogoffAndHideAsync();
+
+            // 注销分身会触发 UU 服务重启串流端：视角在主机时这次重启会进入僵尸态
+            // （进程在但不再注册云端，手机显示已离线），从外部检测不到，只能重启
+            // 服务清掉。失败只记日志，不阻塞退出。
+            try
+            {
+                await _uuViewSwitchService.RestartStreamerServiceAsync(
+                    CancellationToken.None).ConfigureAwait(true);
+            }
+            catch (Exception uuException)
+            {
+                AppLog.Warn("退出时重启 UU 串流服务失败。", uuException);
+            }
         }
         catch (Exception exception)
         {
